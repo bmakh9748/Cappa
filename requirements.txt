@@ -1,0 +1,9 @@
+PySide6
+pywin32
+mss
+numpy
+rapidocr
+onnxruntime
+ffmpeg-python
+genanki
+anthropic
