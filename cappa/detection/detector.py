@@ -1,0 +1,99 @@
+"""The neural half of detection: PaddleOCR's pretrained text-detection model
+(DBNet, PP-OCRv5 mobile). Given a frame, it returns tight boxes around every
+piece of text — any language, any styling, no background box needed, trained
+on millions of samples. It replaces hand-tuned "does this look like text"
+heuristics; the classifier still decides which of its boxes are captions.
+
+The model runs through onnxruntime — RapidOCR ships the same PP-OCRv5 weights
+pre-converted to ONNX — instead of PaddlePaddle's executor. Same model, same
+boxes, ~7x faster: ~55 ms per scan at the default working size vs ~375 ms
+through Paddle (measured; Paddle can't use its oneDNN fast path on Windows
+without crashing, and its plain executor is that much slower). The worker
+still calls scan() only when the frame actually changed, throttled — never
+per-frame. The frame is shrunk before inference (cost is roughly quadratic in
+side length; captions are big and survive shrinking) and box coordinates are
+scaled back to full resolution.
+
+The model loads lazily (~1 s; RapidOCR downloads the ~5 MB .onnx once ever);
+if loading fails, scan() returns [] and the app keeps running without caption
+detection rather than crashing."""
+
+import sys
+
+TARGET_SIDE = 736    # shrink the long side to this before inference. Sized
+                     # for the worst common case: on a full 1920x1080 browser
+                     # capture, 736 still finds ~26px captions (measured:
+                     # 480 finds NOTHING there, 640 misses small ones);
+                     # smaller captures (popouts, selected areas) shrink less
+                     # or not at all and scan proportionally faster.
+MIN_SCORE = 0.6      # detection confidence gate (the model's box_thresh)
+
+
+class TextDetector:
+    def __init__(self, target_side=TARGET_SIDE, min_score=MIN_SCORE):
+        self._target_side = target_side
+        self._min_score = min_score
+        self._model = None
+        self._failed = False
+
+    def warm(self):
+        """Load the model now (worker calls this at thread start, so the
+        first caption never pays the load time)."""
+        self._ensure()
+
+    @property
+    def ready(self):
+        return self._model is not None
+
+    def scan(self, frame):
+        """frame: (H, W, 4) BGRA uint8. Returns [(l, t, r, b), ...] text
+        boxes in full-resolution frame coordinates."""
+        self._ensure()
+        if self._model is None:
+            return []
+        import cv2
+        import numpy as np
+
+        h, w = frame.shape[:2]
+        scale = min(1.0, self._target_side / max(h, w, 1))
+        if scale < 1.0:  # shrink BGRA first: 4 small copies beat 3 full-res
+            frame = cv2.resize(frame, None, fx=scale, fy=scale,
+                               interpolation=cv2.INTER_AREA)
+        img = np.ascontiguousarray(frame[:, :, :3])
+        result = self._model(img, use_det=True, use_cls=False, use_rec=False)
+        boxes = []
+        for poly in () if result.boxes is None else result.boxes:
+            xs = [float(p[0]) / scale for p in poly]
+            ys = [float(p[1]) / scale for p in poly]
+            boxes.append((int(min(xs)), int(min(ys)),
+                          int(max(xs)), int(max(ys))))
+        return boxes
+
+    def _ensure(self):
+        if self._model is not None or self._failed:
+            return
+        try:
+            from rapidocr import EngineType, ModelType, OCRVersion, RapidOCR
+            self._model = RapidOCR(params={
+                "Global.use_cls": False,
+                "Global.use_rec": False,
+                "Det.engine_type": EngineType.ONNXRUNTIME,
+                "Det.ocr_version": OCRVersion.PPOCRV5,
+                "Det.model_type": ModelType.MOBILE,
+                "Det.box_thresh": self._min_score,
+                # scan() already shrinks; these stop the wrapper resizing
+                # AGAIN (its default limit_type 'min' UPSCALES small frames,
+                # which costs 6x and helped nothing when measured).
+                "Det.limit_side_len": self._target_side,
+                "Det.limit_type": "max",
+            })
+            import logging
+            # After the import, which sets the level itself: otherwise
+            # RapidOCR WARNs on every scan that finds no text — which is
+            # most rescans of a caption-free scene.
+            logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+        except Exception as exc:  # missing package / download failure
+            self._failed = True
+            print("cappa: text detection unavailable (%s: %s) — captions "
+                  "will not be found" % (type(exc).__name__, exc),
+                  file=sys.stderr)
