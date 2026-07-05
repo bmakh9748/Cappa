@@ -48,9 +48,10 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 1. Freeze the hotspots (don't update overlay while popup is open)
 2. Capture current frame as PNG screenshot
 3. Extract ±2s audio clip around current timestamp using ffmpeg → save as MP3
-4. Send (clicked word + full sentence + source language + target language) to Claude API
-5. Claude returns: translation, romanisation if needed, part of speech, example sentence
-6. Small popup appears near the clicked word with all of the above
+4. Translate the clicked word — deep-translator (free Google endpoint). **NO LLM in the
+   translation path — hard user rule.**
+5. Small popup appears near the clicked word: word (edge punctuation stripped), divider,
+   translation
 7. User sees known/unknown toggle + "Save Flashcard" button
 8. If saved → card added to session queue silently in background
 
@@ -98,14 +99,14 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 | OCR (reading text) | **PP-OCRv6 small (multi-script)** via `rapidocr` + `onnxruntime` | One model reads Japanese/Chinese/English/…, ~20 ms/line; paddlepaddle no longer needed at all |
 | Overlay | **pywin32 / win32gui** | Transparent always-on-top window on Windows |
 | Audio extraction | **ffmpeg** via `ffmpeg-python` | Slice audio clips by timestamp |
-| Translation | **Claude API** (`claude-sonnet-4-20250514`) | Translation + definition on word click only (not real-time) |
+| Translation | **deep-translator** (free Google endpoint) | Word translation on click only — free, no key. **NO LLM (hard user rule)** |
 | Flashcard export | **genanki** | Generates Anki `.apkg` files with embedded media |
 | OS | **Windows only** (for now) | Overlay behaviour uses Win32 APIs |
 | Language | **Python 3.11+** | |
 
 ### Install commands
 ```bash
-pip install PySide6 qt-material mss numpy rapidocr onnxruntime pywin32 ffmpeg-python genanki anthropic
+pip install PySide6 qt-material mss numpy rapidocr onnxruntime pywin32 ffmpeg-python genanki deep-translator
 ```
 
 Also requires:
@@ -120,7 +121,7 @@ Also requires:
 - **OCR fires on change, not on a timer** — frame diff means OCR only runs when something on screen actually changes. Lightweight on any PC.
 - **PaddleOCR over Tesseract** — Tesseract is too slow (300-800ms on full screen). PaddleOCR is built for real-time and handles the cropped change region fast.
 - **Rule-based subtitle classifier, not ML** — subtitles have consistent enough traits that a scorer with 5 rules outperforms anything that needs training, and runs in microseconds.
-- **Claude API only on word click** — not in the detection loop. The expensive call only happens when the user deliberately clicks a word. Could be 10 times per video session, not thousands.
+- **Translation only on word click, never via an LLM** — deep-translator's free Google endpoint, called off the UI thread when a word is clicked. The user's explicit rule: no Claude / paid API anywhere in the translation path.
 - **Subtitles can be anywhere on screen** — the change-detection approach doesn't assume a fixed subtitle region. It finds text wherever it appears on each frame change.
 - **PySide6 over PyQt6** — identical API, better license for future distribution.
 - **qt-material over QFluentWidgets** — QFluentWidgets looks better but adds complexity too early.
@@ -152,9 +153,11 @@ cappa/
   __main__.py           # `python -m cappa`
   app.py                # Qt setup + main(): builds and runs the app
   winapi.py             # ALL Win32/ctypes/DWM — no Qt (input, windows, click-through)
+  translate.py          # word -> translation (deep-translator/Google; no Qt; cached)
   ui/                   # everything the user SEES
     overlay_window.py   # OverlayWindow: paint, pick/select modes, follow loop, worker wiring
     launcher.py         # corner icon + pop-up menu (all controls live here)
+    word_popup.py       # the box a clicked word opens: word · divider · translation · Anki btn
   detection/            # everything that FINDS captions (see its __init__ for the map)
     capture.py          # screen grab (mss -> numpy BGRA)     every frame  ~10ms   [done]
     diff.py             # what changed since last frame       every frame  <1ms    [done]
@@ -164,6 +167,7 @@ cappa/
     classifier.py       # caption or not-caption (geometry + text rules)           [done]
     worker.py           # background QThread chaining the stages, emits results
     ocr.py              # read text in accepted boxes (PP-OCRv6 ONNX)  ~20ms       [done]
+    sentence.py         # Sentence/Word model: what a read caption line becomes    [done]
 tests/
   run_all.py            # the whole suite; units first, then live tests
   test_diff/classifier/tracking/watcher.py     # unit tests, instant, windowless
@@ -406,10 +410,143 @@ Boundary rules:
 > `test_ocr_read.py` (real Japanese+English reads through TextReader), text-rule legs in
 > `test_classifier.py`, hysteresis legs in `test_tracking.py`. Suite: 11/11.
 >
-> **Next step:** user validation on real (Japanese) YouTube videos, then word hotspots
-> (#6) — rec can return per-word boxes (rapidocr `return_word_box`) when the overlay
-> needs clickable words; temporal text identity ("same caption?" across scans) is now
-> possible via the ledger + rec text if needed.
+> **Word hotspots (#6) + placeholder popup (done, user-directed).** The loud debug boxes
+> are gone: captions stay undecorated until the cursor reaches for one. `ocr.py` returns
+> per-word geometry alongside the text — the rec model's own word grouping, CTC column
+> spans mapped back to frame px (mapping verified visually on rendered lines): real words
+> for spaced scripts, kanji-block/kana-run groups for Japanese — the PROVISIONAL click
+> unit until the tokeniser-vs-Claude-call decision is made. The ledger carries words with
+> each live caption (`captions()`; the worker emits payload[1] = [(box, words)], words
+> survive blip resurrection). Overlay: hovering a word highlights it (translucent cyan,
+> pointing cursor), clicking opens `ui/word_popup.py` — dark box above the word (below if
+> cramped) with the word text and a ✕ that closes it. Word rects + the open popup are
+> interactive rects, so click-through lifts over them and clicking a word can NEVER
+> click/pause the video underneath; all input is polled on the tick like the other modes.
+> The popup closes on pick/select/idle/park. Fallback: if word geometry is unavailable
+> the whole line is one hotspot; if rec is down there are simply no hotspots (captions
+> still tracked). Hover style: a barely-there white lift over the word + a crisp accent
+> underline (link-hover look). A glyph-exact hue tint (Otsu stroke mask per word, tint
+> painted through it) was BUILT AND REJECTED — on real compressed video the masks go
+> ragged and the effect looks patchy (user-tested); don't retry it without adding mask
+> cleanup (morphological close) AND testing on real H.264 first. For step #7 note: the full line text comes back from read() — store it
+> on the ledger when the Claude call needs "word + sentence". Known flake to watch: one
+> 0xC0000409 teardown crash of test_browser_sim in one suite run (Qt/onnxruntime exit
+> race); passed standalone and on rerun.
+>
+> **Sentence/Word model + word-geometry fix (done, user-reported).** Hotspots often
+> landed BETWEEN words: the spans were built from fixed margins around each word's CTC
+> emission columns, and emission points drift within glyphs. Fixed by midpoint
+> partitioning in `ocr._word_spans` — boundaries sit halfway between adjacent words'
+> edge-character centres so the spans TILE the line (no gaps to land in; the tiling is
+> asserted in test_ocr_read), and the line's outer edges are bounded by the median
+> character pitch, not the det box (a roomy det box must not give the first/last word a
+> hotspot over background). Verified visually on rendered en+ja lines. Same pass added
+> `detection/sentence.py`: a read caption line is now a `Sentence` (text, box, words) of
+> `Word`s (text, box, back-ref to its sentence) — ocr.read returns (Sentence, conf), the
+> ledger stores Sentences (`captions()` returns them, payload[1] = [Sentence]), overlay
+> hotspots carry Word instances, and the popup keeps `popup.word` — so the Claude call
+> (#7) gets word + full sentence straight off the clicked Word, and the Japanese
+> word-unit decision (tokeniser vs Claude) swaps in at exactly one place: how
+> Sentence.words is built.
+>
+> **Stylised/off-centre captions in a user area (done, screenshot-driven).** A user
+> screenshot (Indonesian gaming video: big yellow italic caption + blue "APA?" shout,
+> top-left of frame) exposed two stacked failures. (1) The strict geometric rules
+> rejected the stylised lines even INSIDE a Select-area region ("too tall" / aspect /
+> off-centre). `classifier.filter` now takes `user_area` (worker passes its provider at
+> scan time): in a user-drawn region position rules don't apply — no centredness, no
+> height cap, aspect floor 2.5→1.3 (`USER_AREA_MIN_ASPECT`) — the drawn box IS the
+> position statement; the size floor and burst rule stay. (2) DBNet fragments big
+> spaced/italic text into per-word boxes — six passed at once and the burst rule killed
+> the whole batch. `detector.merge_lines()` (every mode) now glues fragments that
+> overlap vertically and sit within a glyph-height's horizontal gap: one box per text
+> line, which is what the ledger/classifier/watcher/OCR all assume. Verified against
+> the real screenshot end-to-end: whole-window accepts only the centred "Live chat
+> Ivan :" line (conservative by design), Select area accepts and reads all three
+> ('"1 kata buat Manca, Van!"' 0.96, 'APA?' 0.99). Tests: tests/test_merge.py +
+> user-area legs in test_classifier. The screenshot lives untracked in the repo root
+> (*.png is gitignored).
+>
+> **No 'too big', and big text is position-free everywhere (done, user rule +
+> screenshots).** Two more screenshots (fullscreen "BELOK!" ~122px; windowed YouTube
+> with a glowing "LOH?" ~101px) — window/fullscreen tracking rejected stylised captions
+> that Select area accepted. User rules now encoded: (1) the height cap is DELETED —
+> there is no such thing as a too-big caption; (2) text taller than
+> max(36px, 6.5% of region height) skips position rules in EVERY mode (loose aspect
+> 1.3): chat/UI junk is smaller than that, stylised captions bigger — 6.5% sits above
+> page furniture (video titles/headers ~5-6% of a browser window; the browser sim's
+> baseline-quiet assertion guards this boundary, and it caught 4% as too permissive)
+> and below every screenshot caption (7-12%). Verified full-frame: screenshot 1 both
+> stylised lines read (the small "Live chat Ivan :" label is Select-area-only now),
+> "BELOK!" reads at 1.00, and on the browser window the live flow works (baseline mutes
+> page text; the next caption line is accepted alone — cold-scan bursts don't apply to
+> live tracking). User screenshots live in `screenshots/` (gitignored via *.png).
+> IMPORTANT testing note (recurring confusion): in window mode a caption already on
+> screen at lock-on is baseline-muted until the NEXT line — testing window mode on a
+> paused video looks like "never works". Select area judges immediately.
+>
+> **Lock-on UX round (done, user-directed).** Windowed-browser tracking is structurally
+> the weakest mode (video is ~half the window, so captions are proportionally small and
+> off-centre with the pane — two more screenshots confirmed). Three changes: (1) a
+> 6-second on-overlay tip after Pick window — "fullscreen the video, or Select area over
+> it" — reusing the pick/select instruction rendering (`_tip_until`); (2) the baseline
+> scan now JUDGES big pre-existing text instead of memorising it (`_scan(baseline=True)`
+> keeps only `classifier.big_text` boxes from the first scan; small text is still
+> memorised unjudged — furniture safety): a stylised caption already on screen at
+> lock-on is boxed immediately, which was the user's thrice-hit complaint (incl. the
+> browser sim's deliberately-quiet FIRST line — that line is small, so the sim's
+> assertion stands and its comment now explains the split; test_area_rescan gained
+> big-vs-small window-mode legs — note the DET BOX height is the label/backdrop strip,
+> not the glyphs, when sizing test fixtures). (3) screenshots checked: fullscreen
+> captions all work; windowed-pane captions below the big-text bar remain
+> window-mode-rejected (off-centre) — that's what the tip is for, per the user's own
+> call ("prompt the user to either full screen or select an area").
+>
+> **Word popup content (#7, first slice) + accept-all detection (done, user-directed).**
+> Clicking a word now opens the real popup: the word with edge punctuation/symbols
+> stripped (`translate.clean_word`, Unicode categories — 「」, ♪ and commas go, inner
+> marks stay: don't), a divider line, the translation underneath, and a "Create Anki
+> card" button that enables once a translation exists (the card flow behind it lands
+> stepwise next — the button is a stub today). Translation is `cappa/translate.py`:
+> **deep-translator's free Google endpoint — NOT the Claude API. Hard user rule
+> ("do not use Claude to translate"), encoded in the module docstring: no LLM in the
+> translation path, ever.** No key, no per-click cost; source auto-detected per word,
+> target `en` (constant until the settings panel); results cached per word. The popup
+> opens instantly with "Translating…" and fills via a helper thread + queued signal
+> (request-id guard drops stale fills; the popup re-clamps when it grows); failures
+> (no internet) show as a ⚠ line and keep the card button disabled. Smoke-tested
+> end-to-end with a stubbed translator (both legs) + tests/test_translate.py for the
+> cleanup. ALSO: **accept-all detection experiment** (user report: too many real
+> words rejected, sometimes between consecutive lines; hover-only styling makes
+> loose detection cheap). `CaptureWorker(accept_all=True)` — flipped on in
+> overlay_window._start_capture, one arg to revert — stands down ALL caption gates:
+> geometry/position/burst/cooldown (classifier.filter early-out), the OCR text
+> rules, AND the window-mode baseline muting; every text line the detector finds is
+> OCR'd and becomes hoverable words (junk text is hoverable too — that's the deal).
+> The strict path is untouched (default accept_all=False) and still what the sims
+> and unit tests assert; new accept_all leg in test_classifier. Known suspect if
+> words STILL go missing after this: a box whose OCR read comes back empty/None
+> goes live with ZERO word hotspots (Sentence("", box, []) in worker._scan) and is
+> never re-read while it lives — a retry-the-read lever, not built yet.
+>
+> **Refresh / re-scan on demand (done, user-directed).** The user was nudging the
+> window size to make detection look again; now there's a real control. `CaptureWorker.refresh()`
+> flips an atomic bool that the worker loop consumes on its next pass: it drops ALL
+> detection memory (live captions, seen/memorised furniture, pending clears, burst
+> cooldown — `watcher/classifier/ledger.reset()`) and forces one judged scan RIGHT NOW
+> (baseline=False, last_scan=0), then emits even with no events so the overlay's stale
+> hotspots are replaced. Crucially it does NOT reset the diff (that would re-trigger the
+> first-frame branch and re-baseline/re-mute) — it keeps capturing, just re-judges. Wired
+> two ways: a **"Refresh words"** launcher menu item (enabled only while tracking, shows
+> its shortcut) and a global **Ctrl+Alt+Shift+R** hotkey (same triple-modifier scheme as
+> quit — nothing in a browser collides; edge-detected in the overlay tick so holding it
+> fires once). New `winapi.VK_R`; launcher ctor gained an `on_refresh` arg. Covered by a
+> 4th leg in test_area_rescan: baseline memorises the small window-mode line, then a
+> refresh boxes it (verified live — `read small pre-existing line of text (0.99)`).
+>
+> **Next step:** the Anki card flow behind the popup button, in slow steps (card
+> fields -> screenshot -> audio clip -> genanki export), plus the Japanese
+> word-unit decision (local tokeniser vs resolving the clicked segment).
 >
 > _Deferred / known limits:_ settings panel (needs its own planning pass); multi-DPI across
 > mixed-scaling monitors may be slightly off (uses primary-screen DPR); tracking a
