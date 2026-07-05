@@ -5,13 +5,17 @@ tracking border, the click-through hit-testing, the window-pick and
 region-select modes, and the follow loop that keeps the overlay glued to its
 target. All low-level Win32 access is delegated to :mod:`cappa.winapi`."""
 
+import time
+
 from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import Qt, QRect, QTimer, QThread
 from PySide6.QtGui import QPainter, QColor, QPen, QCursor, QFont
 
 from .. import winapi
+from ..audio import LoopbackRecorder
 from ..detection.worker import CaptureWorker
 from .launcher import Launcher
+from .word_popup import WordPopup
 
 OFFSCREEN = -32000   # park the window here to hide it without destroying it
 TICK_MS = 30
@@ -39,6 +43,7 @@ class OverlayWindow(QMainWindow):
         self._picking = False
         self._selecting = False
         self._instruction = ""
+        self._tip_until = 0.0         # instruction shown as a timed tip
         self._sel_start = None        # QPoint, overlay-local logical px
         self._sel_cur = None
         self._sel_active = False      # left button held during a drag
@@ -50,13 +55,23 @@ class OverlayWindow(QMainWindow):
         self._edge_prev_down = False
         self._base_status = ""        # status text before the fps suffix
         self._fps = 0.0
-        self._text_boxes = []         # live caption boxes, region-local physical px
+        self._captions = []           # live Sentences, boxes region-local physical px
+        self._hover_word = None       # (QRect logical, Word) under the cursor
+        self._word_prev_down = False  # LBUTTON edge detection for word clicks
         self._detector_ok = None      # None until the model load resolves
 
         # The launcher is its own top-level window (screen corner), not a
         # child: it must not follow, park, or clip with the overlay.
         self.launcher = Launcher(self._start_pick, self._start_select,
-                                 self._quit)
+                                 self._refresh_words, self._quit)
+        # System-audio recorder: buffers continuously (audio plays whether or
+        # not we're tracking) so a clicked word's clip is already captured.
+        # Fail-soft — no device just means no audio on the card.
+        self._recorder = LoopbackRecorder()
+        self._recorder.start()
+        self._popup = WordPopup(self, region_provider=self._card_region,
+                                recorder=self._recorder)
+        self._refresh_prev_down = False  # edge-detect the refresh hotkey
 
         # Keep our own border out of the frames the pipeline captures —
         # otherwise the diff sees our repaints and OCR would read our own UI.
@@ -108,31 +123,29 @@ class OverlayWindow(QMainWindow):
         if self._region_resizable():
             self._draw_resize_handles(painter, rect, border)
 
-        if (self._text_boxes and self._target_hwnd is not None
+        if (self._hover_word and self._target_hwnd is not None
                 and not self._picking and not self._selecting):
-            self._draw_text_boxes(painter)
+            self._draw_word_highlight(painter)
 
-        if self._instruction and (self._picking or self._selecting):
+        if self._instruction and (self._picking or self._selecting
+                                  or time.time() < self._tip_until):
             self._draw_instruction(painter)
 
-    def _draw_text_boxes(self, painter):
-        """Highlight the caption regions the pipeline is tracking right now —
-        deliberately loud so detection can be judged against real videos by
-        eye. Temporary: word hotspots (Step 6) replace this look. Boxes arrive
-        in region-local physical px; the overlay's origin is the region's
-        origin, so only the DPR conversion is needed."""
-        d = self._dpr()
+    def _draw_word_highlight(self, painter):
+        """The word under the cursor, and nothing else: captions stay
+        undecorated until the user reaches for one. Link-hover look: a
+        barely-there lift over the word plus a crisp accent underline —
+        clean, and readable over any video content. (A glyph-exact hue
+        tint was tried and rejected: compression noise makes the stroke
+        masks ragged on real video.)"""
+        rect, _word = self._hover_word
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(90, 210, 255, 235), 2))
-        painter.setBrush(QColor(90, 210, 255, 45))
-        pad = 3  # breathe a little around the glyphs
-        for l, t, r, b in self._text_boxes:
-            painter.drawRoundedRect(
-                QRect(round(l / d) - pad, round(t / d) - pad,
-                      round((r - l) / d) + 2 * pad,
-                      round((b - t) / d) + 2 * pad),
-                5, 5,
-            )
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 30))
+        painter.drawRoundedRect(rect, 6, 6)
+        bar = QRect(rect.left() + 2, rect.bottom() - 2, rect.width() - 4, 3)
+        painter.setBrush(QColor(90, 210, 255, 235))
+        painter.drawRoundedRect(bar, 1, 1)
 
     def _draw_resize_handles(self, painter, rect, color):
         """Small grips at the corners and edge midpoints of a locked region —
@@ -192,7 +205,9 @@ class OverlayWindow(QMainWindow):
         self._instruction = ""
         self._parked = False
         self._resize_edges = ""
-        self._text_boxes = []
+        self._captions = []
+        self._hover_word = None
+        self._popup.hide()
         self._apply_edge_cursor("")
         self.launcher.show()
         self._set_status("Pick a window to start")
@@ -206,6 +221,8 @@ class OverlayWindow(QMainWindow):
         self._picking = True
         self._region = None
         self._target_hwnd = None
+        self._popup.hide()
+        self._hover_word = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Click the window to track   ·   Esc to cancel"
         self._apply_edge_cursor("")
@@ -229,10 +246,18 @@ class OverlayWindow(QMainWindow):
         self._picking = False
         self._instruction = ""
         self._target_hwnd = hwnd
-        self._text_boxes = []
+        self._captions = []
+        self._hover_word = None
+        self._popup.hide()
         self.launcher.show()
         self._show()  # idle keeps the overlay hidden; tracking needs it up
         self._set_status(f"Tracking: {self._title(hwnd)}")
+        # Whole-window tracking is the weakest mode (page text everywhere,
+        # captions small relative to the window): nudge toward the modes
+        # that detect best. Shown for a few seconds, like pick/select help.
+        self._instruction = ("Tip: fullscreen the video, or Select area "
+                             "over it — captions detect much better")
+        self._tip_until = time.time() + 6.0
         self.update()
 
     def _title(self, hwnd):
@@ -249,6 +274,8 @@ class OverlayWindow(QMainWindow):
         self._selecting = True
         self._sel_start = self._sel_cur = None
         self._sel_active = False
+        self._popup.hide()
+        self._hover_word = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Drag a box over the video / subtitle area   ·   Esc to cancel"
         self._resize_edges = ""
@@ -292,7 +319,7 @@ class OverlayWindow(QMainWindow):
         )
         self._selecting = False
         self._instruction = ""
-        self._text_boxes = []  # region changed; boxes are stale coordinates
+        self._captions = []  # region changed; boxes are stale coordinates
         self.launcher.show()
         self._set_status(f"Area locked in: {self._title(self._target_hwnd)}")
         self.update()
@@ -354,6 +381,8 @@ class OverlayWindow(QMainWindow):
         if self._parked:
             return
         self._parked = True
+        self._popup.hide()
+        self._hover_word = None
         self._apply_click_through(True)
         self.setGeometry(OFFSCREEN, OFFSCREEN, 10, 10)
 
@@ -439,15 +468,66 @@ class OverlayWindow(QMainWindow):
         self._click_through = enabled
 
     def _interactive_rects(self):
-        """Regions that should capture the mouse: a locked region's edge
-        bands. Word hotspots register here in Step 6. (The launcher is its
+        """Regions that should capture the mouse: the word hotspots, the
+        open popup, and a locked region's edge bands. (The launcher is its
         own window and receives clicks natively — nothing to route here.)"""
-        rects = []
+        rects = [entry[0] for entry in self._word_rects()]
+        if self._popup.isVisible():
+            rects.append(self._popup.geometry())
         if self._region_resizable():
             w, h, g = self.width(), self.height(), EDGE_GRIP
             rects += [QRect(0, 0, w, g), QRect(0, h - g, w, g),
                       QRect(0, 0, g, h), QRect(w - g, 0, g, h)]
         return rects
+
+    # ------------------------------------------------------------ word click
+    def _word_rects(self):
+        """The clickable hotspots: [(QRect logical, Word)] across the live
+        captions. Word boxes arrive in region-local physical px, same space
+        as the caption boxes."""
+        if (self._target_hwnd is None or self._parked or self._picking
+                or self._selecting):
+            return []
+        d = self._dpr()
+        pad = 2  # a little slack around the glyphs
+        rects = []
+        for sentence in self._captions:
+            for word in sentence.words:
+                word.text = ''.join(e for e in word.text if e.isalnum())
+                l, t, r, b = word.box
+                rects.append((QRect(round(l / d) - pad, round(t / d) - pad,
+                                    round((r - l) / d) + 2 * pad,
+                                    round((b - t) / d) + 2 * pad), word))
+        return rects
+
+    def _handle_words(self):
+        """Highlight the word under the cursor; a click on it opens the
+        popup. Polling-based like the app's other modes — the overlay may
+        have been click-through a tick earlier, so Qt press events aren't
+        reliable here."""
+        local = self.mapFromGlobal(QCursor.pos())
+        hover = None
+        if not (self._resize_edges or self._hover_edges
+                or (self._popup.isVisible()
+                    and self._popup.geometry().contains(local))):
+            for rect, word in self._word_rects():
+                if rect.contains(local):
+                    hover = (rect, word)
+                    break
+        if (hover is None) != (self._hover_word is None) or (
+                hover is not None and hover[0] != self._hover_word[0]):
+            self._hover_word = hover
+            if not self._hover_edges:
+                if hover is not None:
+                    self.setCursor(Qt.PointingHandCursor)
+                else:
+                    self.unsetCursor()
+            self.update()
+
+        down = winapi.key_down(winapi.VK_LBUTTON)
+        if down and not self._word_prev_down and self._hover_word is not None:
+            self._popup.show_for(self._hover_word[1], self._hover_word[0])
+        self._word_prev_down = down
 
     def _update_click_through(self):
         """Flip off click-through only while the cursor is over an interactive
@@ -482,7 +562,7 @@ class OverlayWindow(QMainWindow):
             else:
                 # Always show the count while tracking: "0 captions" means
                 # alive-and-looking, which reads very differently from silence.
-                n = len(self._text_boxes)
+                n = len(self._captions)
                 text += f"   ·   {n} caption" + ("" if n == 1 else "s")
         else:
             text = self._base_status
@@ -502,6 +582,12 @@ class OverlayWindow(QMainWindow):
             # as capture_region): a user-drawn area is judged from the first
             # scan, so a paused video's on-screen caption is found instantly.
             user_area_provider=lambda: self._region is not None,
+            # Experiment (user call): too many real caption words were being
+            # rejected — sometimes between consecutive lines — and hover-only
+            # styling makes loose detection cheap. Every text line the
+            # detector finds becomes hoverable words; junk text is hoverable
+            # too, nothing more. Flip to False to restore the caption gates.
+            accept_all=True,
         )
         self._capture_worker.moveToThread(self._capture_thread)
         self._capture_thread.started.connect(self._capture_worker.run)
@@ -515,6 +601,14 @@ class OverlayWindow(QMainWindow):
         self._capture_worker.stop()
         self._capture_thread.quit()
         self._capture_thread.wait(1000)
+        self._recorder.stop()
+
+    def _card_region(self):
+        """The tracked area to screenshot for a flashcard: physical
+        (left, top, width, height), or None when nothing's grabbable. Same
+        rect the capture worker uses, so the shot matches what was detected.
+        Called from the popup's card thread — atomic reads only."""
+        return self.capture_region()
 
     def _on_capture_fps(self, fps):
         self._fps = fps
@@ -525,11 +619,11 @@ class OverlayWindow(QMainWindow):
         self._render_status()
 
     def _on_regions(self, payload):
-        """Caption boxes appeared or cleared: repaint the outlines and the
-        count in the launcher tooltip. Payload is (events, active_boxes);
-        the active list fully replaces what we were drawing."""
-        events, boxes = payload
-        self._text_boxes = boxes
+        """Captions appeared or cleared: refresh the hotspots and the count
+        in the launcher tooltip. Payload is (events, live_captions) where
+        live_captions is [(box, words)] — it fully replaces what we had."""
+        events, captions = payload
+        self._captions = captions
         self._render_status()
         self.update()
 
@@ -561,12 +655,44 @@ class OverlayWindow(QMainWindow):
                 and winapi.key_down(winapi.VK_SHIFT)
                 and winapi.key_down(winapi.VK_X))
 
+    # ------------------------------------------------------------- refresh
+    def _refresh_combo_down(self):
+        # Ctrl+Alt+Shift+R: same triple-modifier scheme as quit, so nothing
+        # in a browser collides with it. Re-scans the tracked region.
+        return (winapi.key_down(winapi.VK_CONTROL)
+                and winapi.key_down(winapi.VK_MENU)
+                and winapi.key_down(winapi.VK_SHIFT)
+                and winapi.key_down(winapi.VK_R))
+
+    def _refresh_words(self):
+        """Force the worker to drop its detection memory and re-scan now —
+        the launcher's 'Refresh words' and the Ctrl+Alt+Shift+R hotkey. A
+        no-op when nothing is tracked (there's no region to scan). The open
+        popup keeps its word until the fresh hotspots land."""
+        if self._target_hwnd is None:
+            return
+        self._capture_worker.refresh()
+
     # ---------------------------------------------------------------- tick
     def _on_tick(self):
         # Ctrl+Alt+Shift+X quits from anywhere (won't fire while typing).
         if self._quit_combo_down():
             self._quit()
             return
+
+        # Ctrl+Alt+Shift+R re-scans the tracked region. Edge-detected so
+        # holding the combo fires exactly one refresh, not one per tick.
+        refresh_down = self._refresh_combo_down()
+        if refresh_down and not self._refresh_prev_down:
+            self._refresh_words()
+        self._refresh_prev_down = refresh_down
+
+        # The lock-on tip expires on its own.
+        if self._tip_until and time.time() >= self._tip_until:
+            self._tip_until = 0.0
+            if not (self._picking or self._selecting):
+                self._instruction = ""
+            self.update()
 
         # Escape only cancels a pending pick/drag — it never closes the app, so
         # it stays free for YouTube's minimize-video shortcut.
@@ -589,5 +715,7 @@ class OverlayWindow(QMainWindow):
             self._follow_target()
             if self._region_resizable():
                 self._handle_region_resize()
+            if self._target_hwnd is not None and not self._parked:
+                self._handle_words()
 
         self._update_click_through()

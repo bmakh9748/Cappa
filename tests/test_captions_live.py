@@ -75,8 +75,8 @@ while overlay._detector_ok is None:
 
 # 1. video playing, no caption: no boxes
 pump(2.0)
-assert overlay._text_boxes == [], (
-    "FAIL: boxes on plain video: %r" % overlay._text_boxes
+assert overlay._captions == [], (
+    "FAIL: boxes on plain video: %r" % overlay._captions
 )
 print("PASS: playing video alone yields no caption boxes")
 
@@ -84,29 +84,62 @@ print("PASS: playing video alone yields no caption boxes")
 caption.show()
 pump(2.5)
 d = overlay._dpr()
-assert len(overlay._text_boxes) == 1, (
-    "FAIL: expected 1 box, got %r" % overlay._text_boxes
+assert len(overlay._captions) == 1, (
+    "FAIL: expected 1 box, got %r" % overlay._captions
 )
-l, t, r, b = overlay._text_boxes[0]
+sentence = overlay._captions[0]
+box, words = sentence.box, sentence.words
+l, t, r, b = box
 lab = (120 * d, 260 * d, 520 * d, 320 * d)   # label geometry, physical px
 cx, cy = (lab[0] + lab[2]) / 2, (lab[1] + lab[3]) / 2
 assert (l >= lab[0] - 16 and t >= lab[1] - 16
         and r <= lab[2] + 16 and b <= lab[3] + 16), (
-    "FAIL: box %r outside label %r" % (overlay._text_boxes[0], lab)
+    "FAIL: box %r outside label %r" % (box, lab)
 )
 assert l < cx < r and t < cy < b, (
-    "FAIL: box %r misses label centre (%r, %r)" % (overlay._text_boxes[0], cx, cy)
+    "FAIL: box %r misses label centre (%r, %r)" % (box, cx, cy)
 )
 assert "1 caption" in overlay.launcher.status_text(), \
     overlay.launcher.status_text()
 print("PASS: live caption text boxed at %r (label %r)"
-      % (overlay._text_boxes[0], tuple(int(v) for v in lab)))
+      % (box, tuple(int(v) for v in lab)))
+
+# 2b. word hotspots: each Word sits inside the line box and knows its
+# Sentence; hotspots are interactive; a click opens a popup carrying the
+# Word, and the close button closes it
+assert len(words) >= 2, "FAIL: expected word boxes, got %r" % (words,)
+for w in words:
+    wl, wt, wr, wb = w.box
+    assert l - 8 <= wl <= wr <= r + 8 and t - 8 <= wt <= wb <= b + 8, (
+        "FAIL: word box %r outside line %r" % (w.box, box)
+    )
+    assert w.sentence is sentence, "FAIL: word lost its sentence"
+assert "".join(w.text for w in words).replace(" ", "") \
+    == sentence.text.replace(" ", ""), "FAIL: words don't rebuild the line"
+hotspots = overlay._word_rects()
+assert len(hotspots) == len(words), "FAIL: hotspot/word count mismatch"
+assert len(overlay._interactive_rects()) >= len(words), (
+    "FAIL: word hotspots not interactive"
+)
+rect, word = hotspots[0]
+overlay._popup.show_for(word, rect)
+assert overlay._popup.isVisible(), "FAIL: popup did not open"
+assert overlay._popup.word is word, "FAIL: popup lost the Word instance"
+assert overlay._popup.geometry() in overlay._interactive_rects(), (
+    "FAIL: open popup is not clickable"
+)
+from PySide6.QtWidgets import QPushButton
+
+overlay._popup.findChild(QPushButton).click()
+assert not overlay._popup.isVisible(), "FAIL: close button did not close it"
+print("PASS: %d word hotspots; click opens popup carrying the Word, close "
+      "button closes it (first: %r)" % (len(words), words[0].text))
 
 # 3. caption disappears: box cleared promptly
 caption.hide()
 pump(1.5)
-assert overlay._text_boxes == [], (
-    "FAIL: stale boxes after caption cleared: %r" % overlay._text_boxes
+assert overlay._captions == [], (
+    "FAIL: stale boxes after caption cleared: %r" % overlay._captions
 )
 assert "0 captions" in overlay.launcher.status_text()
 print("PASS: box cleared when the caption vanished")

@@ -87,9 +87,12 @@ caption.setStyleSheet("background: black; color: white; font-size: 22px;"
                       "font-weight: bold;")
 caption.setAlignment(Qt.AlignCenter)
 caption.setGeometry(215, 400, 420, 40)  # centred IN THE VIDEO, not the window
-# NOTE: visible from the start â€” like real usage, where a caption is already
-# on screen when the user picks the window. The baseline scan memorises it;
-# the NEXT line must still get through (content fingerprints).
+# NOTE: visible from the start, like real usage, where a caption is already
+# on screen when the user picks the window. This line is SMALL text, so the
+# baseline scan memorises it unjudged (furniture safety) and the FIRST line
+# is never boxed; the NEXT line must still get through (content
+# fingerprints). BIG text at lock-on IS judged and boxed - that path is
+# covered by test_area_rescan leg 2.
 
 boxes_layer = BoxLayer(browser)
 boxes_layer.setGeometry(0, 0, 1272, 692)
@@ -120,7 +123,7 @@ def on_regions(payload):
     global live_now
     events.extend((k, b, time.perf_counter()) for k, b in payload[0])
     live_now = list(payload[1])
-    boxes_layer.boxes = [tuple(v / d for v in b) for b in payload[1]]
+    boxes_layer.boxes = [tuple(v / d for v in s.box) for s in payload[1]]
     boxes_layer.update()
 
 

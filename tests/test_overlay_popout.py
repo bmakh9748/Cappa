@@ -79,9 +79,9 @@ while "fps" not in overlay.launcher.status_text():
 pip.setStyleSheet("background: #2020c0;")  # red -> blue: one visual change
 pip.update()
 pump(2.0)
-assert overlay._text_boxes == [], (
+assert overlay._captions == [], (
     "FAIL: a flat colour flip must not become a caption: %r"
-    % overlay._text_boxes
+    % overlay._captions
 )
 assert "0 captions" in overlay.launcher.status_text(), \
     overlay.launcher.status_text()

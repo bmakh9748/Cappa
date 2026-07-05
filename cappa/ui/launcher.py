@@ -1,9 +1,13 @@
 """The Parsec-style launcher: a small translucent icon parked at the
 bottom-left of the primary screen. Clicking it pops the app's menu — Pick
-window / Select area / Exit — and hovering shows the current status
-(tracking target, fps, caption count) as its tooltip. A coloured dot
+window / Select area / Refresh words / Exit — and hovering shows the current
+status (tracking target, fps, caption count) as its tooltip. A coloured dot
 on the icon mirrors the app state: green = tracking, grey = idle, red = text
 detection failed to load.
+
+'Refresh words' (and its Ctrl+Alt+Shift+R hotkey) forces the detector to
+re-scan the tracked region from scratch — the deliberate way to make it look
+again without nudging the window size. Enabled only while tracking.
 
 It replaces the old in-overlay control bar and is a top-level window of its
 own — NOT a child of the overlay — so it neither follows nor parks with the
@@ -51,7 +55,7 @@ _MENU_STYLE = """
 
 
 class Launcher(QWidget):
-    def __init__(self, on_pick, on_region, on_exit):
+    def __init__(self, on_pick, on_region, on_refresh, on_exit):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -76,6 +80,12 @@ class Launcher(QWidget):
         self._menu.addAction("Pick window", on_pick)
         self._act_select = self._menu.addAction("Select area", on_region)
         self._act_select.setEnabled(False)  # until a window is tracked
+        # Force a full re-scan of the tracked region — the alternative to
+        # nudging the window size to make detection look again.
+        self._act_refresh = self._menu.addAction("Refresh words", on_refresh)
+        self._act_refresh.setEnabled(False)  # nothing to rescan until tracking
+        self._act_refresh.setShortcut(QKeySequence("Ctrl+Alt+Shift+R"))
+        self._act_refresh.setShortcutVisibleInContextMenu(True)
         self._menu.addSeparator()
         exit_act = self._menu.addAction("Exit", on_exit)
         # Display-only here: the hotkey itself is polled globally by the
@@ -110,6 +120,7 @@ class Launcher(QWidget):
         self._tracking = tracking
         self._detector_ok = detector_ok
         self._act_select.setEnabled(tracking)
+        self._act_refresh.setEnabled(tracking)
         self.update()
 
     # -------------------------------------------------------------- menu
