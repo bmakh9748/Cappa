@@ -493,7 +493,6 @@ class OverlayWindow(QMainWindow):
         rects = []
         for sentence in self._captions:
             for word in sentence.words:
-                word.text = ''.join(e for e in word.text if e.isalnum())
                 l, t, r, b = word.box
                 rects.append((QRect(round(l / d) - pad, round(t / d) - pad,
                                     round((r - l) / d) + 2 * pad,

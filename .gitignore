@@ -10,3 +10,4 @@ screenshots/
 *.mp3
 *.png
 .env
+AGENTS.md

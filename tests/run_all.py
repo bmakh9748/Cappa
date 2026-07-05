@@ -25,6 +25,7 @@ UNIT = [
     "test_tracking.py",      # ledger: live/seen, fingerprints, clear debounce
     "test_watcher.py",       # instant caption-vanished detection
     "test_translate.py",     # popup word cleanup (pure, no network)
+    "test_flashcard.py",     # draft folders: text, provenance, media paths
     "test_ocr_read.py",      # rec reads Japanese + English (loads the model)
 ]
 LIVE = [

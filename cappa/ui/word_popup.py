@@ -4,11 +4,12 @@ Shows the word (edge punctuation stripped), a divider line, and the
 translation. The translation is fetched on a helper thread so the UI never
 blocks: the popup opens instantly with "Translating…" and fills in when the
 call returns — or shows the failure (no network) as a ⚠ line. Below sits the
-Create Anki card button: clicking it gathers the card's ingredients
-(word + sentence translations, a screenshot of the area, and the audio clip
-cut from the rolling recorder buffer around when the sentence was on screen)
-via cappa.flashcard, also off the UI thread. The .apkg export is the next
-step; today the button saves the pieces and reports what it collected.
+Create Anki card button: the screenshot is captured immediately when the word
+is clicked, then clicking the button gathers the card's remaining ingredients
+(word + sentence translations and the audio clip cut from the rolling recorder
+buffer around when the sentence was on screen) via cappa.flashcard, also off
+the UI thread. The .apkg export is the next step; today the button saves the
+pieces and reports what it collected.
 
 A child of the overlay, so it parks/hides with it and is excluded from
 capture along with it. The overlay adds its geometry to the interactive
@@ -16,6 +17,7 @@ rects while visible, which is what lets its controls receive clicks. The
 overlay supplies `region_provider` (the tracked area to screenshot) and
 `recorder` (the audio ring buffer) — the popup owns the threading."""
 
+import os
 import threading
 
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
@@ -100,6 +102,8 @@ class WordPopup(QWidget):
         # the LoopbackRecorder (or None if audio is unavailable).
         self._region_provider = region_provider
         self._recorder = recorder
+        self._snapshot_png = None
+        self._snapshot_note = ""
 
         self._word_label = QLabel("", self)
         self._word_label.setObjectName("word")
@@ -145,6 +149,7 @@ class WordPopup(QWidget):
         on self.word — its .sentence is what the Anki card needs later."""
         self.word = word
         self._anchor = QRect(anchor)
+        self._snapshot_png, self._snapshot_note = self._capture_click_image()
         shown = clean_word(word.text) or word.text
         self._word_label.setText(shown)
         self._trans.setText("Translating…")
@@ -161,9 +166,28 @@ class WordPopup(QWidget):
         self.raise_()
 
     # ------------------------------------------------------------ internals
+    def _capture_click_image(self):
+        """Freeze the tracked video region at the word-click moment."""
+        try:
+            region = (
+                self._region_provider() if self._region_provider else None
+            )
+        except Exception as exc:
+            return None, "click screenshot region failed: %s" % exc
+        if region is None:
+            return None, "no tracked area for a screenshot"
+        try:
+            data = flashcard.capture_png(region)
+        except Exception as exc:
+            return None, "click screenshot failed: %s" % exc
+        if not data:
+            return None, "click screenshot returned no image"
+        return data, ""
+
     def _fetch(self, req, word_text, sentence_text):
-        """Helper thread: the blocking Claude call. Never touches widgets —
-        the result crosses back through the queued _translated signal."""
+        """Helper thread: the blocking translation call. Never touches
+        widgets; the result crosses back through the queued _translated
+        signal."""
         try:
             text, err = translate(word_text, sentence_text), ""
         except TranslationError as exc:
@@ -180,36 +204,41 @@ class WordPopup(QWidget):
         self._place()  # the popup grew; re-clamp around the same word
 
     def _create_card(self):
-        """Gather the card's pieces off the UI thread: word + sentence
-        translations, a screenshot of the tracked area, and the audio clip
-        cut around the sentence's on-screen window. The screenshot must be
-        grabbed while the frame is still current, so the region is snapshotted
-        HERE (fast) and handed to the thread; audio is already buffered."""
+        """Gather the card's pieces off the UI thread using the click-time
+        screenshot already captured in show_for()."""
         if self.word is None:
             return
-        region = (self._region_provider() if self._region_provider else None)
         word = self.word
+        screenshot_png = self._snapshot_png
+        screenshot_note = self._snapshot_note
         self._anki.setEnabled(False)
         self._anki.setText("Saving…")
         self._req += 1
         threading.Thread(
-            target=self._build_card, args=(self._req, word, region),
+            target=self._build_card,
+            args=(self._req, word, screenshot_png, screenshot_note),
             daemon=True,
         ).start()
 
-    def _build_card(self, req, word, region):
+    def _build_card(self, req, word, screenshot_png, screenshot_note):
         """Helper thread: the blocking gather (translations + WAV write).
         Result crosses back through the queued _carded signal."""
         try:
-            draft = flashcard.build_draft(word, region, self._recorder)
+            draft = flashcard.build_draft(
+                word, None, self._recorder,
+                screenshot_png=screenshot_png,
+                screenshot_note=screenshot_note,
+            )
             print("[cappa] card: " + draft.summary())
-            ok = draft.audio_path is not None or draft.image_path is not None
-            msg = "Saved ✓" if not draft.notes else "Saved (%s)" % draft.notes[0]
+            ok = draft.folder_path is not None
+            folder = (os.path.basename(draft.folder_path)
+                      if draft.folder_path else "draft")
+            msg = "Saved %s" % folder
             if not ok:
-                msg = "⚠ " + (draft.notes[0] if draft.notes else "nothing saved")
+                msg = "Card failed"
             self._carded.emit(req, ok, msg)
         except Exception as exc:
-            self._carded.emit(req, False, "⚠ card failed: %s" % exc)
+            self._carded.emit(req, False, "Card failed: %s" % exc)
 
     def _card_done(self, req, ok, message):
         if req != self._req or not self.isVisible():
