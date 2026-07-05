@@ -5,6 +5,8 @@ __pycache__/
 venv/
 *.apkg
 media/
+cards/
+screenshots/
 *.mp3
 *.png
 .env
