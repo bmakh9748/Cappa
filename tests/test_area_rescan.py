@@ -1,8 +1,9 @@
-"""A user-drawn area must be searched immediately: a caption ALREADY on
-screen when the area lands (think: paused video) is judged by the first scan
-instead of being memorised as page furniture. Control leg: a whole-window
-lock still memorises it (the search-bar rule), so nothing is boxed until the
-next caption line."""
+"""What happens to text ALREADY on screen at lock-on (think: paused video):
+- user-drawn area: judged immediately, any size (the user pointed here)
+- whole window, BIG text: judged immediately (stylised captions are big;
+  page furniture isn't)
+- whole window, small text: memorised unjudged until it changes (the
+  search-bar rule) — the furniture-safety control leg."""
 
 import ctypes
 import sys
@@ -31,7 +32,7 @@ win.setStyleSheet("background: #202028;")
 win.setGeometry(200, 200, 640, 360)
 caption = QLabel("A CAPTION ALREADY ON SCREEN", win)
 caption.setStyleSheet(
-    "background: black; color: white; font-size: 26px; font-weight: bold;"
+    "background: black; color: white; font-size: 30px; font-weight: bold;"
 )
 caption.setAlignment(Qt.AlignCenter)
 caption.setGeometry(90, 260, 460, 60)
@@ -45,10 +46,14 @@ wl, wt, wr, wb = winapi.extended_frame_bounds(int(win.winId()))
 region = (wl, wt, wr - wl, wb - wt)
 
 
-def run_leg(user_area, settle=3.0, timeout=60.0):
+def run_leg(user_area, settle=3.0, timeout=60.0, refresh=False):
     """Drive the real worker over the static window. Returns the 'appeared'
     boxes seen within `settle` seconds after the loop starts reporting fps
-    (i.e. well after the baseline/first scan)."""
+    (i.e. well after the baseline/first scan).
+
+    refresh=True: let the baseline settle, discard whatever it boxed, then
+    fire worker.refresh() and collect only what the forced re-scan boxes —
+    this is the 'check again for words' path."""
     events, fps = [], []
     thread = QThread()
     worker = CaptureWorker(
@@ -62,14 +67,23 @@ def run_leg(user_area, settle=3.0, timeout=60.0):
     thread.start()
     t0 = time.perf_counter()
     ready_at = None
+    fired = False
     while time.perf_counter() - t0 < timeout:
         app.processEvents()
         time.sleep(0.02)
-        if user_area and any(k == "appeared" for k, _ in events):
+        if user_area and not refresh and any(k == "appeared" for k, _ in events):
             break  # got what we came for (can beat the first fps report)
         if ready_at is None and fps:
             ready_at = time.perf_counter()
         if ready_at is not None and time.perf_counter() - ready_at >= settle:
+            if refresh and not fired:
+                # Baseline has settled and (for small text) memorised it.
+                # Drop what it boxed, force a fresh judged scan, keep timing.
+                events.clear()
+                fired = True
+                worker.refresh()
+                ready_at = time.perf_counter()
+                continue
             break
     if not user_area:  # control leg must have watched the loop actually run
         assert ready_at is not None, "FAIL: worker never reported fps"
@@ -91,12 +105,31 @@ assert l < cx < r and t < cy < b, (
 )
 print("PASS: user-drawn area judges pre-existing caption on the first scan")
 
-# --- leg 2: whole-window lock => memorised, NOT boxed (search-bar rule) -----
+# --- leg 2: whole-window lock, BIG caption => judged at lock-on too ---------
+boxes = run_leg(user_area=False)
+assert boxes, "FAIL: big caption at lock-on not boxed in window mode"
+print("PASS: big caption at lock-on is boxed in window mode")
+
+# --- leg 3: whole-window lock, SMALL text => memorised (furniture rule) -----
+caption.setStyleSheet(
+    "background: black; color: white; font-size: 13px; font-weight: bold;"
+)
+caption.setText("small pre-existing line of text")
+caption.setGeometry(140, 275, 360, 20)  # tight: the black label strip IS
+app.processEvents()                     # the det box, so keep it small
+app.processEvents()
 boxes = run_leg(user_area=False)
 assert not boxes, (
-    "FAIL: whole-window lock must memorise pre-existing text, boxed %r"
-    % boxes
+    "FAIL: small pre-existing text must be memorised, boxed %r" % boxes
 )
-print("PASS: whole-window lock still memorises pre-existing text")
+print("PASS: small pre-existing text stays memorised in window mode")
+
+# --- leg 4: refresh re-scans and boxes even that memorised small text -------
+# The whole point of "check again for words": a forced refresh judges what
+# the baseline had muted, so the small line the control leg left memorised
+# now gets boxed.
+boxes = run_leg(user_area=False, refresh=True)
+assert boxes, "FAIL: refresh did not re-scan the memorised small text"
+print("PASS: refresh forces a fresh scan of previously-memorised text")
 
 print("ALL PASS")

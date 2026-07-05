@@ -136,7 +136,7 @@ worker.moveToThread(thread)
 thread.started.connect(worker.run)
 def on_regions(payload):
     events.extend((k, b, time.perf_counter()) for k, b in payload[0])
-    sim.det_boxes = [tuple(v / d for v in b) for b in payload[1]]
+    sim.det_boxes = [tuple(v / d for v in s.box) for s in payload[1]]
 
 
 worker.regions.connect(on_regions)

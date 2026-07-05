@@ -27,16 +27,21 @@ print("PASS: centred caption-shaped band accepted")
 assert not accepts(c, (280, 440, 680, 449))  # 9px tall
 print("PASS: too-small text rejected")
 
-# huge band (title card / scene) -> rejected in a roomy region
-assert not accepts(c, (200, 200, 760, 320))  # 120px tall > 14% of 540
-print("PASS: too-tall band rejected")
+# BIG text is a caption wherever it sits: no 'too tall' rule (user call —
+# stylised captions can be huge), and no position rules for it either
+assert accepts(c, (200, 200, 760, 320))       # 120px tall, centred
+assert accepts(c, (40, 100, 700, 180))        # 80px tall, off-centre
+assert accepts(c, (250, 227, 415, 295))       # 68px "APA?": loose aspect
+assert not accepts(c, (430, 200, 530, 340))   # tall block, aspect 0.7: not
+print("PASS: big text accepted anywhere, any size; blocks still rejected")
 
 # tall narrow block (poster, column of UI) -> rejected
 assert not accepts(c, (430, 200, 530, 300))  # aspect 1.0
 print("PASS: non-line aspect rejected")
 
-# left-anchored text (YouTube hover title) with no history -> rejected
-title = (20, 30, 420, 70)  # cx=220, far off centre
+# left-anchored SMALL text (YouTube hover title) -> rejected; UI text is
+# small relative to its window, which is exactly why big text is exempt
+title = (20, 30, 420, 56)  # 26px, cx=220, far off centre
 assert not accepts(c, title)
 print("PASS: off-centre title rejected cold")
 
@@ -44,7 +49,7 @@ print("PASS: off-centre title rejected cold")
 # "matches history" backdoor (it used to let chat lines of caption-ish
 # height in once a real caption seeded it)
 assert accepts(c, caption)
-offcentre_same_zone = (60, 442, 380, 478)  # cx=220 (27% off), caption zone
+offcentre_same_zone = (60, 444, 380, 476)  # 32px chat-like, cx=220 (27% off)
 assert not accepts(c, offcentre_same_zone), (
     "FAIL: off-centre box admitted via history backdoor"
 )
@@ -74,6 +79,20 @@ c2 = CaptionClassifier()
 assert accepts(c2, (10, 4, 600, 44), shape=(52, 620))
 print("PASS: cropped subtitle strip exempt from the height cap")
 
+# user-drawn area: position rules don't apply to ANY size — the user
+# pointed at the caption zone. Size floor and the burst rule survive.
+c3 = CaptionClassifier()
+offcentre = (60, 444, 380, 476)          # small + off-centre: window mode
+assert not accepts(c3, offcentre)        # rejects, user area accepts
+assert c3.filter([offcentre], SHAPE, user_area=True) == [offcentre]
+tiny = (280, 440, 680, 449)              # 9px: unreadable everywhere
+assert c3.filter([tiny], SHAPE, user_area=True) == []
+burst5 = [(100, 100 + i * 60, 500, 130 + i * 60) for i in range(5)]
+assert c3.filter(burst5, SHAPE, user_area=True) == [], (
+    "FAIL: burst rule must survive in user areas"
+)
+print("PASS: user area drops position rules, keeps size floor and burst")
+
 # text rules: FAIL-OPEN — real captions in ANY script pass, and so does
 # anything the recogniser couldn't read confidently; only positively
 # identified junk is rejected.
@@ -102,5 +121,18 @@ for text, conf in JUNK:
         "FAIL: junk passed: %r" % (text,)
     )
 print("PASS: text rules keep captions (any script), reject confirmed junk")
+
+# accept-all experiment: EVERY gate stands down — tiny, off-centre, blocky
+# and burst-sized batches all sail through, and a prior burst cooldown is
+# ignored (hover-only UI makes loose detection cheap; the worker skips the
+# text rules under the same flag).
+c5 = CaptionClassifier()
+assert c5.filter(burst5, SHAPE) == []          # strict path: burst rejected
+everything = [offcentre, tiny, (430, 200, 530, 300)] + burst5
+assert c5.filter(everything, SHAPE, accept_all=True) == everything, (
+    "FAIL: accept_all still rejected something"
+)
+assert c5.last_rejects == []
+print("PASS: accept_all bypasses every gate, including an active cooldown")
 
 print("ALL PASS")

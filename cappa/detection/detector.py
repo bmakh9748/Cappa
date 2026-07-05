@@ -27,6 +27,38 @@ TARGET_SIDE = 736    # shrink the long side to this before inference. Sized
                      # smaller captures (popouts, selected areas) shrink less
                      # or not at all and scan proportionally faster.
 MIN_SCORE = 0.6      # detection confidence gate (the model's box_thresh)
+MERGE_GAP = 0.9      # of line height: max horizontal gap between fragments
+                     # of the same text line (big/spaced/italic styles come
+                     # back from DBNet as several boxes)
+MERGE_OVERLAP = 0.6  # of the smaller height: vertical overlap = "same line"
+
+
+def merge_lines(boxes):
+    """One box per TEXT LINE: DBNet returns big/spaced/italic captions as
+    several fragments (per word or word-group), which downstream misreads
+    as a crowd of boxes — the burst rule then rejects the lot. Fragments
+    that overlap vertically and sit within a glyph-height's gap
+    horizontally are the same line; everything downstream (ledger,
+    classifier, watcher, OCR) wants them as one."""
+    merged = []
+    for box in sorted(boxes, key=lambda b: b[0]):
+        for i, m in enumerate(merged):
+            if _same_line(m, box):
+                merged[i] = (min(m[0], box[0]), min(m[1], box[1]),
+                             max(m[2], box[2]), max(m[3], box[3]))
+                break
+        else:
+            merged.append(box)
+    return merged
+
+
+def _same_line(a, b):
+    ah, bh = a[3] - a[1], b[3] - b[1]
+    overlap = min(a[3], b[3]) - max(a[1], b[1])
+    if overlap < MERGE_OVERLAP * max(min(ah, bh), 1):
+        return False
+    gap = max(a[0], b[0]) - min(a[2], b[2])  # negative when they overlap
+    return gap <= MERGE_GAP * max(ah, bh)
 
 
 class TextDetector:
@@ -67,7 +99,7 @@ class TextDetector:
             ys = [float(p[1]) / scale for p in poly]
             boxes.append((int(min(xs)), int(min(ys)),
                           int(max(xs)), int(max(ys))))
-        return boxes
+        return merge_lines(boxes)
 
     def _ensure(self):
         if self._model is not None or self._failed:

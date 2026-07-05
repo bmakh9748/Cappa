@@ -35,6 +35,8 @@ import time
 
 import numpy as np
 
+from .sentence import Sentence
+
 MATCH_OVERLAP = 0.55   # intersection / smaller-area to call two boxes "same"
 SEEN_TTL = 4.0         # seconds a vanished (rejected) box stays remembered
 MISS_LIMIT = 3         # consecutive scans not seeing a live caption = stale
@@ -91,10 +93,15 @@ class CaptionLedger:
         self._seen = []   # [box, last_seen, fingerprint] of rejected text
         self._misses = {}  # live box -> consecutive scans that didn't see it
         self._fps = {}     # live box -> fingerprint captured at accept time
-        self._pending = []  # [box, accept_fp, deadline] clears awaiting confirm
+        self._sentences = {}  # live box -> Sentence (text + Words)
+        self._pending = []  # [box, fp, deadline, sentence] awaiting confirm
 
     def live(self):
         return list(self._live)
+
+    def captions(self):
+        """What the overlay renders: the live captions as Sentences."""
+        return [self._sentences[box] for box in self._live]
 
     def fresh(self, scan_boxes, sample=None, scale=1):
         """The scan's boxes that are genuinely new: not a live caption, and
@@ -111,11 +118,17 @@ class CaptionLedger:
             out.append(box)
         return out
 
-    def accept(self, box, sample=None, scale=1):
+    def accept(self, box, sample=None, scale=1, sentence=None,
+               appeared_at=0.0):
         """The fingerprint is taken NOW, while the caption is on screen —
-        it's what resurrect() compares against after a suspected clear."""
+        it's what resurrect() compares against after a suspected clear.
+        appeared_at is the capture-clock time of the frame this box was
+        detected in — the flashcard's audio clip is anchored to it."""
         self._live.append(box)
         self._fps[box] = _fingerprint(box, sample, scale)
+        sentence = sentence or Sentence("", box, [])
+        sentence.appeared_at = appeared_at or time.monotonic()
+        self._sentences[box] = sentence
 
     def mark_seen(self, scan_boxes, sample=None, scale=1):
         """After judging a scan: refresh/remember every non-live box the scan
@@ -148,6 +161,9 @@ class CaptionLedger:
                 self._live.remove(box)
                 self._misses.pop(box, None)
                 self._fps.pop(box, None)
+                sent = self._sentences.pop(box, None)
+                if sent is not None:
+                    sent.cleared_at = time.monotonic()
                 stale.append(box)
         return stale
 
@@ -158,9 +174,16 @@ class CaptionLedger:
         if box in self._live:
             self._live.remove(box)
             self._misses.pop(box, None)
+            sent = self._sentences.pop(box, None)
+            if sent is not None:
+                # Stamp the vanish NOW (when the watcher noticed) rather than
+                # at expire — closest to the true on-screen disappearance,
+                # before the CLEAR_CONFIRM debounce. A resurrect() clears it
+                # again below if this turns out to be a blip.
+                sent.cleared_at = time.monotonic()
             self._pending.append(
                 [box, self._fps.pop(box, None),
-                 time.monotonic() + CLEAR_CONFIRM])
+                 time.monotonic() + CLEAR_CONFIRM, sent])
             return True
         return False
 
@@ -182,6 +205,12 @@ class CaptionLedger:
                     self._pending.remove(entry)
                     self._live.append(box)
                     self._fps[box] = _fingerprint(box, sample, scale)
+                    # same text, ~same spot: the Sentence rides through, and
+                    # the clear that turned out to be a blip is undone so its
+                    # appeared_at still anchors the (unbroken) audio clip.
+                    sent = entry[3] or Sentence("", box, [])
+                    sent.cleared_at = 0.0
+                    self._sentences[box] = sent
                     revived.append(box)
                     break
         return revived
@@ -199,4 +228,5 @@ class CaptionLedger:
         self._seen = []
         self._misses = {}
         self._fps = {}
+        self._sentences = {}
         self._pending = []

@@ -65,20 +65,44 @@ print("model load: %.1f s" % (time.perf_counter() - t0))
 for name, want in SAMPLES:
     frame, box = make_frame(want)
     t0 = time.perf_counter()
-    got, conf = reader.read(frame, box)
+    sentence, conf = reader.read(frame, box)
     ms = (time.perf_counter() - t0) * 1e3
-    got = got or ""
+    got = sentence.text if sentence else ""
     ratio = SequenceMatcher(None, want, got).ratio()
     assert ratio >= 0.6 and conf >= 0.6, (
         "FAIL: %s read %s (conf %.2f, match %.0f%%), wanted %s"
         % (name, ascii(got), conf, ratio * 100, ascii(want))
     )
-    print("PASS: %s read %s (conf %.2f, match %.0f%%, %.0f ms)"
-          % (name, ascii(got), conf, ratio * 100, ms))
+    # Word geometry: several units, each horizontally inside the line box,
+    # tiling its text left to right with no gaps (that gap-free property
+    # is what keeps a hover from landing 'between' words), and each Word
+    # knowing its Sentence.
+    words = sentence.words
+    assert len(words) >= 2, (
+        "FAIL: %s expected word boxes, got %r" % (name, words)
+    )
+    l, t, r, b = box
+    prev_r = None
+    for w in words:
+        wl, wt, wr, wb = w.box
+        assert w.text, "FAIL: empty word text"
+        assert w.sentence is sentence, "FAIL: word lost its sentence"
+        assert l - 12 <= wl < wr <= r + 12, (
+            "FAIL: %s word %s box %r outside line %r"
+            % (name, ascii(w.text), w.box, box)
+        )
+        assert prev_r is None or abs(wl - prev_r) <= 1, (
+            "FAIL: %s gap between words at x=%r" % (name, wl)
+        )
+        prev_r = wr
+    assert "".join(w.text for w in words).replace(" ", "") \
+        == got.replace(" ", ""), "FAIL: word texts don't rebuild the line"
+    print("PASS: %s read %s (conf %.2f, match %.0f%%, %d words, %.0f ms)"
+          % (name, ascii(got), conf, ratio * 100, len(words), ms))
 
 # a sliver of a box: must not crash, must return no-evidence
-got, conf = reader.read(frame, (0, 0, 1, 1))
-assert got is None and conf == 0.0
+sentence, conf = reader.read(frame, (0, 0, 1, 1))
+assert sentence is None and conf == 0.0
 print("PASS: degenerate crop returns no evidence, no crash")
 
 print("ALL PASS")

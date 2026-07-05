@@ -7,11 +7,15 @@ Geometry and timing (the class below) separate captions from most UI text;
 geometry accepted) removes confirmed junk that reads like a clock, a URL or
 a handle:
 
-    size         caption glyphs sit in a height band — not tiny timestamps,
-                 not a huge title card
-    shape        captions are wide, short lines (aspect gate)
-    position     burned-in captions are horizontally centred; hover-titles
-                 are left-anchored, sidebars live off-centre
+    size         a floor only: tiny text (timestamps, channel names) isn't
+                 a readable caption. There is NO ceiling — stylised
+                 captions can be huge, and big text skips position rules
+                 entirely (chat/UI junk is small)
+    shape        captions are wide-ish lines (aspect gate; loose for big
+                 text and user-drawn areas — short shouts count)
+    position     small centred text reads as captions; small off-centre
+                 text is hover-titles/sidebars/chat. Applies only to small
+                 text in whole-window mode
     burst        a scroll or page redraw floods the caption zone with many
                  boxes that PASS the rules above at once; captions never
                  arrive as a crowd — reject those and cool down briefly.
@@ -33,8 +37,17 @@ import time
 MIN_HEIGHT_PX = 12       # physical px; smaller text isn't a readable caption.
                          # 12 keeps captions inside small popout windows
                          # (video scaled down = caption glyphs ~12-16px).
-MAX_HEIGHT_FRAC = 0.14   # of region height (only when the region is roomy)
+BIG_TEXT_FRAC = 0.065    # of region height: text at least this tall is a
+                         # caption REGARDLESS of position, in every mode —
+                         # captions are allowed to be huge (user rule: there
+                         # is no such thing as too big). Sized ABOVE page
+                         # furniture: video titles / section headers reach
+                         # ~5-6% of a browser window's height (the browser
+                         # sim guards this), stylised captions 7%+.
+BIG_TEXT_MIN_PX = 36     # ...but never call text 'big' below this: small
+                         # regions (popouts, cropped strips) scale everything
 MIN_ASPECT = 2.5         # width / height: caption lines are wide and short
+LOOSE_MIN_ASPECT = 1.3   # big text / user area: a short shout ("APA?") counts
 CENTER_TOLERANCE = 0.22  # |box centre - region centre| as fraction of width.
                          # Generous on purpose: tracking the whole browser in
                          # default YouTube layout puts the video pane (and its
@@ -46,6 +59,12 @@ BURST_COOLDOWN = 0.7     # seconds to distrust everything after a burst
 MIN_READ_CONF = 0.75     # below this the reading is a guess, not evidence
 MIN_LETTER_RATIO = 0.3   # letters (any script) / characters; lower = UI junk
 _URL_HINTS = ("www.", "http", ".com", ".net", ".org", ".tv", ".gg")
+
+
+def big_text(box, shape):
+    """Text tall enough to be trusted as a caption regardless of position
+    (chat/UI/page furniture is smaller). shape: (h, w) of the region."""
+    return box[3] - box[1] >= max(BIG_TEXT_MIN_PX, BIG_TEXT_FRAC * shape[0])
 
 
 def text_verdict(text, confidence):
@@ -75,19 +94,34 @@ class CaptionClassifier:
         self._distrust_until = 0.0
         self.last_rejects = []  # (box, reason) from the latest filter() call
 
-    def filter(self, boxes, shape):
+    def filter(self, boxes, shape, user_area=False, accept_all=False):
         """boxes: candidate (l, t, r, b) tuples that appeared THIS frame,
         full-resolution region-local px. shape: (h, w) of the region.
         Returns the ones that behave like captions. Rejections (with the
-        rule that fired) are left in `last_rejects` for diagnostics."""
-        now = time.monotonic()
+        rule that fired) are left in `last_rejects` for diagnostics.
+
+        user_area=True means the region was DRAWN BY THE USER around the
+        caption zone — an explicit "captions live here". Position rules
+        don't apply there: no centredness, no height cap, and a gentler
+        aspect gate (stylised captions are often big, off-centre, or short
+        exclamations — the exact styles the strict rules exist to reject
+        in whole-window mode). Size floor and the burst rule stay.
+
+        accept_all=True stands EVERY gate down — size, aspect, position,
+        burst, cooldown: whatever the detector boxed comes back accepted.
+        The experiment behind it (user call): too many real caption words
+        were being rejected, and the hover-only UI makes loose detection
+        cheap — junk text becomes hoverable words, nothing more."""
         self.last_rejects = []
+        if accept_all:
+            return list(boxes)
+        now = time.monotonic()
         if now < self._distrust_until:
             self.last_rejects = [(b, "burst cooldown") for b in boxes]
             return []
         kept = []
         for box in boxes:
-            why = self._judge(box, shape)
+            why = self._judge(box, shape, user_area)
             if why is None:
                 kept.append(box)
             else:
@@ -109,15 +143,21 @@ class CaptionClassifier:
         self.last_rejects = []
 
     # ------------------------------------------------------------- internals
-    def _judge(self, box, shape):
+    def _judge(self, box, shape, user_area=False):
         """None if the box behaves like a caption, else the rule it broke."""
         h, w = shape
         l, t, r, b = box
         bw, bh = r - l, b - t
         if bh < MIN_HEIGHT_PX:
             return "too small (%dpx)" % bh
-        if h > 3 * bh and bh > MAX_HEIGHT_FRAC * h:
-            return "too tall (%dpx)" % bh
+        # Position rules don't apply when the user drew the region (the box
+        # IS the position statement) or when the text is BIG — stylised
+        # captions can be huge and sit anywhere, while chat/UI junk is
+        # small. Both modes behave the same for such text, per user report.
+        if user_area or big_text(box, shape):
+            if bw < LOOSE_MIN_ASPECT * bh:
+                return "not a text line (aspect %.1f)" % (bw / max(bh, 1))
+            return None
         if bw < MIN_ASPECT * bh:
             return "not a text line (aspect %.1f)" % (bw / max(bh, 1))
         if abs((l + r) / 2 - w / 2) <= CENTER_TOLERANCE * w:

@@ -30,7 +30,7 @@ import time
 from PySide6.QtCore import QObject, Signal, Slot
 
 from .capture import ScreenCapture
-from .classifier import CaptionClassifier, text_verdict
+from .classifier import CaptionClassifier, big_text, text_verdict
 from .detector import TextDetector
 from .diff import FrameDiff, DOWNSCALE
 from .ocr import TextReader
@@ -62,7 +62,7 @@ class CaptureWorker(QObject):
     detector_ok = Signal(bool)  # emitted once the neural model load resolves
 
     def __init__(self, region_provider, target_fps=30,
-                 user_area_provider=None):
+                 user_area_provider=None, accept_all=False):
         super().__init__()
         # region_provider() -> (left, top, width, height) physical, or None
         # when there's nothing to capture (no target / parked / picking).
@@ -71,6 +71,13 @@ class CaptureWorker(QObject):
         # the user (Select area / edge-resize) rather than being a whole
         # window. Decides whether the first scan memorises or judges.
         self._user_area_provider = user_area_provider
+        # accept_all: every text line the detector finds becomes a live
+        # caption — no geometry/text gates, no baseline muting. See
+        # classifier.filter for the experiment's rationale.
+        self._accept_all = accept_all
+        # Set by refresh() from the UI thread (atomic bool), consumed by the
+        # loop: drop every detection memory and rescan right now.
+        self._refresh = False
         self._interval = 1.0 / target_fps
         # True from birth, cleared by stop(). run() must not set it, so a
         # stop() that lands before the queued run() even starts still wins.
@@ -113,6 +120,9 @@ class CaptureWorker(QObject):
                     baseline = True
                 else:
                     img = capture.grab(region)
+                    # monotonic clock, shared with the audio recorder's ring
+                    # buffer — this is what anchors a caption's audio clip.
+                    grab_time = time.monotonic()
                     diff.feed(img)
                     if diff.mask is None:  # first frame / resize: no baseline
                         watcher.reset()
@@ -121,6 +131,21 @@ class CaptureWorker(QObject):
                         dirty = True
                         baseline = True
                     else:
+                        refreshed = False
+                        if self._refresh:
+                            # The user's "check again for words": drop every
+                            # detection memory (live, seen, pending clears,
+                            # burst cooldown) and scan NOW — judging, never
+                            # memorising: an explicit refresh must not
+                            # baseline-mute what it was asked to find.
+                            self._refresh = False
+                            refreshed = True
+                            watcher.reset()
+                            classifier.reset()
+                            ledger.reset()
+                            dirty = True
+                            baseline = False
+                            last_scan = 0.0
                         events = []
                         if (diff.mask.sum()
                                 >= ACTIVITY_FRACTION * diff.mask.size):
@@ -139,30 +164,37 @@ class CaptureWorker(QObject):
                             events.append(("cleared", box))
                         if (dirty and time.perf_counter() - last_scan
                                 >= SCAN_INTERVAL):
-                            if baseline and not self._user_area():
-                                # Memorise what the page ALREADY shows so
-                                # pre-existing furniture that happens to sit
-                                # centre-ish can't pass as a caption. Only
-                                # changed/new text after this gets judged
-                                # (the ledger's content fingerprints free a
-                                # spot the moment its text changes). A USER-
-                                # DRAWN area skips this: the user just said
-                                # "captions live in here", so text already on
-                                # screen — a paused video's caption — must be
-                                # judged by the first scan, not muted.
-                                scan = detector.scan(img)
-                                ledger.mark_seen(scan, diff.sample, DOWNSCALE)
-                                print("[cappa] baseline: %d text boxes "
-                                      "memorised" % len(scan))
+                            if (baseline and not self._user_area()
+                                    and not self._accept_all):
+                                # Lock-on scan: BIG text is judged (a
+                                # stylised caption may already be on screen
+                                # and must be caught); smaller text might be
+                                # page furniture sitting centre-ish, so it
+                                # is memorised unjudged until its content
+                                # changes (the fingerprints free the spot).
+                                # A USER-DRAWN area skips all of this: the
+                                # user said "captions live in here", so the
+                                # first scan judges everything. accept_all
+                                # skips it too — nothing gets muted, ever.
+                                events += self._scan(img, diff, detector,
+                                                     reader, classifier,
+                                                     watcher, ledger,
+                                                     baseline=True,
+                                                     grab_time=grab_time)
                             else:
                                 events += self._scan(img, diff, detector,
                                                      reader, classifier,
-                                                     watcher, ledger)
+                                                     watcher, ledger,
+                                                     self._user_area(),
+                                                     accept_all=self._accept_all,
+                                                     grab_time=grab_time)
                             baseline = False
                             last_scan = time.perf_counter()
                             dirty = False
-                        if events:
-                            self.regions.emit((events, ledger.live()))
+                        if events or refreshed:
+                            # A refresh emits even with no events, so the
+                            # overlay's stale hotspots are replaced either way.
+                            self.regions.emit((events, ledger.captions()))
                     frames += 1
 
                 if loop_start - window_start >= 1.0:
@@ -175,7 +207,9 @@ class CaptureWorker(QObject):
             capture.close()
 
     @staticmethod
-    def _scan(img, diff, detector, reader, classifier, watcher, ledger):
+    def _scan(img, diff, detector, reader, classifier, watcher, ledger,
+              user_area=False, baseline=False, accept_all=False,
+              grab_time=0.0):
         """One neural pass: box all text, keep what's new, caption-shaped
         AND caption-worded, start watching it. Returns the events. Prints a
         one-line diagnostic per interesting scan so a terminal run shows what
@@ -189,22 +223,32 @@ class CaptureWorker(QObject):
             watcher.watch(box)
             print("[cappa]   blip: caption re-confirmed, clear suppressed")
         fresh = ledger.fresh(scan, diff.sample, DOWNSCALE)
+        if baseline:
+            # Only BIG pre-existing text gets judged at lock-on; the rest
+            # is memorised by mark_seen below, unjudged, until it changes.
+            fresh = [b for b in fresh if big_text(b, img.shape[:2])]
+            print("[cappa] baseline: %d text boxes, %d big enough to judge"
+                  % (len(scan), len(fresh)))
         kept = 0
-        for box in classifier.filter(fresh, img.shape[:2]):
+        for box in classifier.filter(fresh, img.shape[:2], user_area,
+                                     accept_all):
             # Read the text (~20 ms, only for boxes that got this far). The
             # rules are fail-open: only confirmed junk is rejected, so
-            # unreadable scripts keep working exactly as before.
-            text, conf = reader.read(img, box)
-            why = text_verdict(text, conf)
+            # unreadable scripts keep working exactly as before. accept_all
+            # keeps even confirmed junk — hoverable clocks beat missing words.
+            sentence, conf = reader.read(img, box)
+            why = (None if accept_all else
+                   text_verdict(sentence.text if sentence else None, conf))
             if why is not None:
                 classifier.last_rejects.append((box, why))
                 continue  # mark_seen below remembers it as judged junk
             kept += 1
-            ledger.accept(box, diff.sample, DOWNSCALE)
+            ledger.accept(box, diff.sample, DOWNSCALE, sentence, grab_time)
             watcher.watch(box)
             events.append(("appeared", box))
-            if text:
-                print("[cappa]   read %s (%.2f)" % (_printable(text), conf))
+            if sentence and sentence.text:
+                print("[cappa]   read %s (%.2f)"
+                      % (_printable(sentence.text), conf))
         ledger.mark_seen(scan, diff.sample, DOWNSCALE)
         for box in ledger.sweep(scan):  # stale: scans stopped seeing it
             watcher.unwatch(box)
@@ -234,6 +278,12 @@ class CaptureWorker(QObject):
         remaining = self._interval - (time.perf_counter() - loop_start)
         if remaining > 0:
             time.sleep(remaining)
+
+    def refresh(self):
+        """UI thread: rescan the region from scratch on the next loop pass —
+        the launcher's "Refresh words" / Ctrl+Alt+Shift+R. Just flips an
+        attribute; the worker loop does the actual resetting on its side."""
+        self._refresh = True
 
     def stop(self):
         self._running = False

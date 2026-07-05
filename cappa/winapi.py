@@ -17,6 +17,7 @@ VK_ESCAPE = 0x1B
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
 VK_MENU = 0x12  # Alt
+VK_R = 0x52
 VK_X = 0x58
 
 _GA_ROOT = 2
