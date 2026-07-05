@@ -6,4 +6,5 @@ rapidocr
 onnxruntime
 ffmpeg-python
 genanki
-anthropic
+deep-translator
+PyAudioWPatch
