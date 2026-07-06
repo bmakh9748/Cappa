@@ -13,14 +13,17 @@ instant and off the network.
 It stays in the signature because the popup already has it and a
 context-aware backend (or the Anki card) will want it.
 
-Source language is auto-detected per word — right for burned-in captions
-of unknown origin. TARGET_LANGUAGE moves to the settings panel when that
-lands. No Qt; the deep_translator import is deferred so the app and test
-suite run without the package — only clicking a word touches it."""
+SOURCE_LANGUAGE defaults to auto-detect, but auto-detect fails on lone words
+(a bare "BAWA" comes back "BAWA"): naming the video's language via the settings
+panel makes single words translate ("BAWA" -> "BRING"). Both SOURCE_LANGUAGE and
+TARGET_LANGUAGE are driven from settings. No Qt; the deep_translator import is
+deferred so the app and test suite run without the package — only clicking a
+word touches it."""
 
 import unicodedata
 
-TARGET_LANGUAGE = "en"
+SOURCE_LANGUAGE = "auto"   # the video's language; set from the settings panel
+TARGET_LANGUAGE = "en"     # the user's language
 _CACHE_MAX = 256
 
 _cache = {}   # word -> translation
@@ -28,6 +31,24 @@ _cache = {}   # word -> translation
 
 class TranslationError(Exception):
     """A failure whose str() is fit for the popup ('no connection — …')."""
+
+
+def set_target_language(code):
+    """Set the language words are translated into (from the settings panel).
+    Clears the cache, whose entries were for the previous target."""
+    global TARGET_LANGUAGE
+    if code and code != TARGET_LANGUAGE:
+        TARGET_LANGUAGE = code
+        _cache.clear()
+
+
+def set_source_language(code):
+    """Set the video's language (from the settings panel). 'auto' restores
+    per-word auto-detect. Clears the cache, keyed by word for the old source."""
+    global SOURCE_LANGUAGE
+    if code and code != SOURCE_LANGUAGE:
+        SOURCE_LANGUAGE = code
+        _cache.clear()
 
 
 def clean_word(text):
@@ -55,7 +76,7 @@ def translate(word, sentence=""):
     except ImportError:
         raise TranslationError("deep-translator not installed")
     try:
-        text = GoogleTranslator(source="auto",
+        text = GoogleTranslator(source=SOURCE_LANGUAGE,
                                 target=TARGET_LANGUAGE).translate(word)
     except Exception as exc:
         raise TranslationError("no translation — check your internet") from exc
