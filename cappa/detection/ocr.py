@@ -122,13 +122,13 @@ class TextReader:
             return Sentence("", box, []), 0.0
         text = res.txts[0]
         score = float(res.scores[0]) if res.scores else 0.0
-        spans = self._word_spans(res, cl, cr, t, b)
+        spans = self._word_spans(res, cl, cr, l, r, t, b)
         if not spans and text:
             spans = [(text, box)]  # no geometry: the line is one hotspot
         return Sentence(text, box, spans), score
 
     @staticmethod
-    def _word_spans(res, cl, cr, t, b):
+    def _word_spans(res, cl, cr, l, r, t, b):
         """Partition the line into word spans at the MIDPOINTS between
         adjacent words' edge-character columns. The recogniser emits each
         character at one CTC column, but the emission point drifts within
@@ -153,14 +153,20 @@ class TextReader:
         deltas = [(cols[i + 1] - cols[i]) * unit
                   for _, cols in groups for i in range(len(cols) - 1)]
         pitch = sorted(deltas)[len(deltas) // 2] if deltas else (b - t)
-        line_l = max(0.0, centres[0][0] - 0.7 * pitch)
-        line_r = min(float(cr - cl), centres[-1][1] + 0.7 * pitch)
+        # Hotspots stay inside the LINE box: the crop is padded PAD px past
+        # it, and an end word clamped to the CROP edge hung over the box by
+        # that pad — which failed the card's box-containment provenance.
+        lo, hi = float(l - cl), float(r - cl)
+        line_l = max(lo, centres[0][0] - 0.7 * pitch)
+        line_r = min(hi, centres[-1][1] + 0.7 * pitch)
         spans = []
         for i, (chars, _cols) in enumerate(groups):
             left = line_l if i == 0 else \
                 (centres[i - 1][1] + centres[i][0]) / 2
             right = line_r if i == len(groups) - 1 else \
                 (centres[i][1] + centres[i + 1][0]) / 2
+            left = min(max(left, lo), hi)
+            right = min(max(right, lo), hi)
             spans.append((_fix_rtl("".join(chars)),
                           (int(cl + left), t, int(cl + right), b)))
         return spans
