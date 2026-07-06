@@ -55,7 +55,8 @@ _MENU_STYLE = """
 
 
 class Launcher(QWidget):
-    def __init__(self, on_pick, on_region, on_refresh, on_exit):
+    def __init__(self, on_pick, on_region, on_refresh, on_exit,
+                 on_set_video=None, on_settings=None):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -86,7 +87,15 @@ class Launcher(QWidget):
         self._act_refresh.setEnabled(False)  # nothing to rescan until tracking
         self._act_refresh.setShortcut(QKeySequence("Ctrl+Alt+Shift+R"))
         self._act_refresh.setShortcutVisibleInContextMenu(True)
+        # Point the app at the YouTube video being watched: copy its URL, then
+        # click this. Gives cards exact caption timing + audio. (The browser
+        # bridge will set this automatically in a later stage.)
+        if on_set_video is not None:
+            self._menu.addSeparator()
+            self._menu.addAction("Use video from clipboard", on_set_video)
         self._menu.addSeparator()
+        if on_settings is not None:
+            self._menu.addAction("Settings...", on_settings)
         exit_act = self._menu.addAction("Exit", on_exit)
         # Display-only here: the hotkey itself is polled globally by the
         # overlay's tick (this window never has focus to fire a QShortcut).
