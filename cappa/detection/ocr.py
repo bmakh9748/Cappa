@@ -39,6 +39,34 @@ _SCRIPT_MODELS = {
 }
 
 
+def _fix_rtl(word_text):
+    """Return `word_text` in logical (reading) order.
+
+    The recogniser emits per-word character groups in CTC column order —
+    visual left-to-right — which for right-to-left script is the READING
+    ORDER REVERSED. rapidocr repairs the full line's text in its own
+    postprocess, but the word_results groups stay raw, so hotspot words came
+    out mirrored (تعلمت became تملعت) and neither matched the sentence nor
+    translated. Reverse a group back when it's an RTL run; guarded on content,
+    not the loaded model, so Latin words (and digit runs, which stay LTR even
+    inside Arabic text) are never touched."""
+    if not word_text:
+        return word_text
+    rtl = sum(1 for ch in word_text if _is_rtl(ch))
+    if rtl * 2 <= len(word_text):        # not predominantly RTL
+        return word_text
+    if any(ch.isascii() and ch.isalnum() for ch in word_text):
+        return word_text                 # mixed run: leave it untouched
+    return word_text[::-1]
+
+
+def _is_rtl(ch):
+    o = ord(ch)
+    return (0x0590 <= o <= 0x08FF        # Hebrew, Arabic + supplements
+            or 0xFB1D <= o <= 0xFDFF     # presentation forms A
+            or 0xFE70 <= o <= 0xFEFF)    # presentation forms B
+
+
 class TextReader:
     def __init__(self, lang=None):
         self._model = None
@@ -133,7 +161,7 @@ class TextReader:
                 (centres[i - 1][1] + centres[i][0]) / 2
             right = line_r if i == len(groups) - 1 else \
                 (centres[i][1] + centres[i + 1][0]) / 2
-            spans.append(("".join(chars),
+            spans.append((_fix_rtl("".join(chars)),
                           (int(cl + left), t, int(cl + right), b)))
         return spans
 
