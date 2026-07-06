@@ -14,6 +14,8 @@ from PySide6.QtGui import QPainter, QColor, QPen, QCursor, QFont
 from .. import winapi
 from ..audio import LoopbackRecorder
 from ..detection.worker import CaptureWorker
+from ..source.bridge import BrowserBridge
+from ..source.session import SourceSession
 from .launcher import Launcher
 from .word_popup import WordPopup
 
@@ -31,7 +33,7 @@ _EDGE_CURSORS = {
 
 
 class OverlayWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, on_settings=None, video_language=None):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -59,18 +61,39 @@ class OverlayWindow(QMainWindow):
         self._hover_word = None       # (QRect logical, Word) under the cursor
         self._word_prev_down = False  # LBUTTON edge detection for word clicks
         self._detector_ok = None      # None until the model load resolves
+        self._src_status_shown = ""   # last source status pushed to the tooltip
 
         # The launcher is its own top-level window (screen corner), not a
         # child: it must not follow, park, or clip with the overlay.
         self.launcher = Launcher(self._start_pick, self._start_select,
-                                 self._refresh_words, self._quit)
+                                 self._refresh_words, self._quit,
+                                 on_set_video=self._use_clipboard_video,
+                                 on_settings=on_settings)
         # System-audio recorder: buffers continuously (audio plays whether or
         # not we're tracking) so a clicked word's clip is already captured.
         # Fail-soft — no device just means no audio on the card.
         self._recorder = LoopbackRecorder()
         self._recorder.start()
+        # The video language from Settings: caption-track preference AND which
+        # rec model OCR reads captions with (Arabic needs its own pack).
+        self._video_language = video_language
+        # The active YouTube video: when it can align a caption line, cards get
+        # exact caption-track audio instead of the loopback buffer. Fail-soft —
+        # stays idle otherwise. The browser bridge (below) points it at whatever
+        # YouTube tab is playing and feeds it the live playback position; the
+        # launcher's clipboard action is the manual fallback.
+        self._source = SourceSession(lang=video_language)
+        self._bridge = BrowserBridge()
+        self._bridge.start()
+        self._source.set_position_provider(self._bridge.current)
+        # Lets a card cut caption-exact audio from the loopback buffer when
+        # the source download is missing (bot check, still in flight, ...).
+        self._source.set_mono_mapper(self._bridge.mono_at)
+        self._bridge_video_id = None      # last video the bridge auto-selected
+        if self._bridge.error:
+            print("[cappa] browser bridge: " + self._bridge.error)
         self._popup = WordPopup(self, region_provider=self._card_region,
-                                recorder=self._recorder)
+                                recorder=self._recorder, source=self._source)
         self._refresh_prev_down = False  # edge-detect the refresh hotkey
 
         # Keep our own border out of the frames the pipeline captures —
@@ -565,6 +588,8 @@ class OverlayWindow(QMainWindow):
                 text += f"   ·   {n} caption" + ("" if n == 1 else "s")
         else:
             text = self._base_status
+        if self._source.status != "idle":
+            text += "   ·   yt: " + self._source.status
         self.launcher.set_status(text)
         self.launcher.set_state(self._target_hwnd is not None,
                                 self._detector_ok)
@@ -587,6 +612,9 @@ class OverlayWindow(QMainWindow):
             # detector finds becomes hoverable words; junk text is hoverable
             # too, nothing more. Flip to False to restore the caption gates.
             accept_all=True,
+            # The video language from Settings decides which rec model reads
+            # captions (Arabic etc. need their own pack; None = default).
+            ocr_lang=self._video_language,
         )
         self._capture_worker.moveToThread(self._capture_thread)
         self._capture_thread.started.connect(self._capture_worker.run)
@@ -601,6 +629,7 @@ class OverlayWindow(QMainWindow):
         self._capture_thread.quit()
         self._capture_thread.wait(1000)
         self._recorder.stop()
+        self._bridge.stop()
 
     def _card_region(self):
         """The tracked area to screenshot for a flashcard: physical
@@ -672,6 +701,51 @@ class OverlayWindow(QMainWindow):
             return
         self._capture_worker.refresh()
 
+    # ------------------------------------------------------------ yt source
+    def _poll_browser(self):
+        """Auto-select the video the browser extension reports. A no-op when the
+        extension isn't installed / the bridge is down (current() -> None) or the
+        video hasn't changed, so the manual clipboard path still works."""
+        state = self._bridge.current()
+        if not state:
+            return
+        vid = state.get("videoId")
+        if vid and vid != self._bridge_video_id:
+            self._bridge_video_id = vid
+            self._source.set_video(state.get("url") or vid)
+            print("[cappa] source: browser video %s" % vid)
+
+    def set_video_language(self, lang):
+        """Apply a new video language from Settings: caption tracks fetched
+        from now on prefer it (the current video keeps its captions), and the
+        OCR reader swaps to that script's rec model and re-scans. Translation
+        source is set separately."""
+        self._video_language = lang
+        self._source.set_language(lang)
+        self._capture_worker.set_ocr_language(lang)
+
+    def _use_clipboard_video(self):
+        """Point the source session at the YouTube video whose URL is on the
+        clipboard. Cards made afterwards get exact caption-track timing/audio;
+        fetching happens in the background. A later stage feeds this from the
+        browser automatically."""
+        from ..source.youtube import SourceError, extract_video_id
+        text = (QApplication.clipboard().text() or "").strip()
+        try:
+            vid = extract_video_id(text)
+        except SourceError:
+            self._show_tip("Copy a YouTube video URL first, then try again")
+            return
+        self._source.set_video(text)
+        print("[cappa] source: loading %s" % vid)
+        self._show_tip("Loading captions for %s ..." % vid)
+        self._render_status()
+
+    def _show_tip(self, text, seconds=4.0):
+        self._instruction = text
+        self._tip_until = time.time() + seconds
+        self.update()
+
     # ---------------------------------------------------------------- tick
     def _on_tick(self):
         # Ctrl+Alt+Shift+X quits from anywhere (won't fire while typing).
@@ -685,6 +759,14 @@ class OverlayWindow(QMainWindow):
         if refresh_down and not self._refresh_prev_down:
             self._refresh_words()
         self._refresh_prev_down = refresh_down
+
+        # Follow whatever YouTube video the browser reports, and reflect the
+        # background caption-fetch progress in the launcher tooltip promptly
+        # (even while idle, when no fps events are firing).
+        self._poll_browser()
+        if self._source.status != self._src_status_shown:
+            self._src_status_shown = self._source.status
+            self._render_status()
 
         # The lock-on tip expires on its own.
         if self._tip_until and time.time() >= self._tip_until:
