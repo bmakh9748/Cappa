@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
 from .. import flashcard
+from ..detection.sentence import caption_block
 from ..translate import TranslationError, clean_word, translate
 
 MARGIN = 10           # gap between the word and the popup
@@ -91,7 +92,7 @@ class WordPopup(QWidget):
     _carded = Signal(int, bool, str)
 
     def __init__(self, parent, region_provider=None, recorder=None,
-                 source=None):
+                 source=None, captions_provider=None):
         super().__init__(parent)
         self.setObjectName("wordPopup")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -105,8 +106,13 @@ class WordPopup(QWidget):
         self._region_provider = region_provider
         self._recorder = recorder
         self._source = source
+        # captions_provider() -> the live Sentence list; snapshotted at click
+        # time so a two-line caption joins the clicked line on the card even
+        # if the caption clears while the popup sits open.
+        self._captions_provider = captions_provider
         self._snapshot_png = None
         self._snapshot_note = ""
+        self._snapshot_captions = []
         self._snapshot_play_time = None  # playback position frozen at click
                                          # time (it drifts while the popup sits)
 
@@ -156,13 +162,22 @@ class WordPopup(QWidget):
         self._anchor = QRect(anchor)
         self._snapshot_png, self._snapshot_note = self._capture_click_image()
         self._snapshot_play_time = self._capture_play_time()
+        self._snapshot_captions = (
+            self._captions_provider() if self._captions_provider else None
+        ) or []
         shown = clean_word(word.text) or word.text
         self._word_label.setText(shown)
         self._trans.setText("Translating…")
         self._anki.setText("Create Anki card")
         self._anki.setEnabled(False)
         self._req += 1
-        sentence = word.sentence.text if word.sentence else ""
+        # Translate with the WHOLE visible caption as context: a two-line
+        # subtitle is one sentence split for layout, not two sentences.
+        if word.sentence:
+            lines = caption_block(word.sentence, self._snapshot_captions)
+            sentence = " ".join(s.text for s in lines if s.text)
+        else:
+            sentence = ""
         threading.Thread(
             target=self._fetch, args=(self._req, shown, sentence),
             daemon=True,
@@ -229,16 +244,19 @@ class WordPopup(QWidget):
         screenshot_png = self._snapshot_png
         screenshot_note = self._snapshot_note
         near_t = self._snapshot_play_time
+        captions = self._snapshot_captions
         self._anki.setEnabled(False)
         self._anki.setText("Saving…")
         self._req += 1
         threading.Thread(
             target=self._build_card,
-            args=(self._req, word, screenshot_png, screenshot_note, near_t),
+            args=(self._req, word, screenshot_png, screenshot_note, near_t,
+                  captions),
             daemon=True,
         ).start()
 
-    def _build_card(self, req, word, screenshot_png, screenshot_note, near_t):
+    def _build_card(self, req, word, screenshot_png, screenshot_note, near_t,
+                    captions):
         """Helper thread: the blocking gather (translations + WAV write).
         Result crosses back through the queued _carded signal."""
         try:
@@ -248,6 +266,7 @@ class WordPopup(QWidget):
                 screenshot_note=screenshot_note,
                 source=self._source,
                 near_t=near_t,
+                captions=captions,
             )
             print("[cappa] card: " + draft.summary())
             ok = draft.folder_path is not None
