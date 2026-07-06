@@ -44,7 +44,17 @@ CLEAR_CONFIRM = 0.35   # seconds a clear stays pending before it surfaces —
                        # long enough for the post-clear fast rescan
                        # (RESCAN_AFTER_CLEAR + one scan) to resurrect a blip
 FP_BLOCKS = (2, 4)     # fingerprint grid over the box (rows, cols)
-FP_TOLERANCE = 14      # max per-block grey delta (0-255) = "same content"
+FP_TOLERANCE = 8       # max per-block grey delta (0-255) = "same content".
+                       # Was 14: loose enough that a new caption line over a
+                       # remembered spot could read as "unchanged" and stay
+                       # muted — the words were on screen but unclickable
+                       # until a manual refresh. An untouched box drifts by
+                       # ~0-4, so 8 still absorbs wobble and compression.
+DRIFT_CONFIRM = 0.30   # seconds a live box's content must STAY different
+                       # from its accept-time fingerprint before it's retired
+                       # as replaced-in-place — a control-bar gradient
+                       # sliding over the caption must not retire it (the
+                       # same blip the pending-clear machinery absorbs)
 
 
 def _same(a, b):
@@ -95,6 +105,8 @@ class CaptionLedger:
         self._fps = {}     # live box -> fingerprint captured at accept time
         self._sentences = {}  # live box -> Sentence (text + Words)
         self._pending = []  # [box, fp, deadline, sentence] awaiting confirm
+        self._drift = {}    # live box -> monotonic time its content stopped
+                            # matching the accept-time fingerprint
 
     def live(self):
         return list(self._live)
@@ -147,6 +159,36 @@ class CaptionLedger:
                 self._seen.append([box, now, fp])
         self._seen = [e for e in self._seen if now - e[1] <= SEEN_TTL]
 
+    def drifted(self, sample=None, scale=1):
+        """Live boxes whose pixels stopped matching their accept-time
+        fingerprint: the line was REPLACED IN PLACE (next caption, same
+        spot) without a clean vanish in between, so the watcher never fires
+        and the stale text would sit unclickable until a manual refresh.
+        Retire them — the scan that called this then re-reads the box as
+        fresh. Drift must persist DRIFT_CONFIRM before it counts, so a
+        gradient or popup sliding over the caption is absorbed the same way
+        pending clears absorb blips. Returns the retired boxes."""
+        now = time.monotonic()
+        out = []
+        for box in list(self._live):
+            fp = _fingerprint(box, sample, scale)
+            old = self._fps.get(box)
+            if fp is None or old is None or _fp_close(fp, old):
+                self._drift.pop(box, None)
+                continue
+            first = self._drift.setdefault(box, now)
+            if now - first < DRIFT_CONFIRM:
+                continue
+            self._drift.pop(box, None)
+            self._live.remove(box)
+            self._misses.pop(box, None)
+            self._fps.pop(box, None)
+            sent = self._sentences.pop(box, None)
+            if sent is not None:
+                sent.cleared_at = first  # the content changed back THEN
+            out.append(box)
+        return out
+
     def sweep(self, scan_boxes):
         """Safety net behind the pixel watcher: a live caption that several
         consecutive scans no longer see is stale (e.g. it vanished in the
@@ -161,6 +203,7 @@ class CaptionLedger:
                 self._live.remove(box)
                 self._misses.pop(box, None)
                 self._fps.pop(box, None)
+                self._drift.pop(box, None)
                 sent = self._sentences.pop(box, None)
                 if sent is not None:
                     sent.cleared_at = time.monotonic()
@@ -174,6 +217,7 @@ class CaptionLedger:
         if box in self._live:
             self._live.remove(box)
             self._misses.pop(box, None)
+            self._drift.pop(box, None)
             sent = self._sentences.pop(box, None)
             if sent is not None:
                 # Stamp the vanish NOW (when the watcher noticed) rather than
@@ -230,3 +274,4 @@ class CaptionLedger:
         self._fps = {}
         self._sentences = {}
         self._pending = []
+        self._drift = {}

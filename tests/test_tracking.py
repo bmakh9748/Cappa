@@ -108,6 +108,33 @@ time.sleep(0.15)
 assert led3.expire_clears() == [CAPTION_WOBBLE], "a real clear must surface"
 print("PASS: blip clears resurrect silently; real clears surface on expiry")
 
+# drift: a live caption whose CONTENT changes in place (the next line drawn
+# over the same spot with no clean vanish between) is retired once the change
+# persists past DRIFT_CONFIRM, and the spot is immediately fresh — the
+# automatic version of the manual refresh this used to require. A momentary
+# blip (control-bar gradient) that reverts must NOT retire it.
+tracking.DRIFT_CONFIRM = 0.1
+led4 = CaptionLedger()
+led4.accept(CAPTION, sample(200), SCALE)
+assert led4.drifted(sample(200), SCALE) == [], "unchanged content drifted?"
+assert led4.drifted(changed, SCALE) == [], "drift must not retire instantly"
+assert led4.drifted(sample(200), SCALE) == [], "reverted blip retired the line"
+time.sleep(0.15)
+assert led4.drifted(sample(200), SCALE) == [], (
+    "unchanged content retired after the blip reset"
+)
+assert led4.live() == [CAPTION]
+assert led4.drifted(changed, SCALE) == []      # drift first noticed
+time.sleep(0.15)
+assert led4.drifted(changed, SCALE) == [CAPTION], (
+    "persistent content change must retire the live line"
+)
+assert led4.live() == []
+assert led4.fresh([CAPTION], changed, SCALE) == [CAPTION], (
+    "the replaced spot must be immediately fresh"
+)
+print("PASS: in-place content change retires the line; blips do not")
+
 led.reset()
 assert led.live() == [] and led.fresh([CAPTION]) == [CAPTION]
 print("PASS: reset clears everything")

@@ -54,6 +54,11 @@ SCAN_INTERVAL = 0.2        # min seconds between neural scans. Playing video
                            # of one core while video plays, vs ~15% at 0.5s.
 RESCAN_AFTER_CLEAR = 0.15  # a cleared line usually means a new one is up
 ACTIVITY_FRACTION = 0.001  # sampled pixels changing = "something happened"
+FORCED_RESCAN = 1.0        # max seconds between scans while tracking, even
+                           # on a quiet screen: the automatic version of the
+                           # launcher's "Refresh words" — catches whatever
+                           # the diff/watcher misjudged, and gives pending
+                           # content-drift its confirming scan within ~1s.
 
 
 class CaptureWorker(QObject):
@@ -163,6 +168,8 @@ class CaptureWorker(QObject):
                         if (diff.mask.sum()
                                 >= ACTIVITY_FRACTION * diff.mask.size):
                             dirty = True
+                        if time.perf_counter() - last_scan >= FORCED_RESCAN:
+                            dirty = True
                         for box in watcher.feed(diff.sample, diff.mask):
                             if ledger.clear(box):
                                 # PENDING, not emitted: the fast rescan below
@@ -235,6 +242,14 @@ class CaptureWorker(QObject):
         for box in ledger.resurrect(scan, diff.sample, DOWNSCALE):
             watcher.watch(box)
             print("[cappa]   blip: caption re-confirmed, clear suppressed")
+        # A live caption whose content stopped matching its accept-time
+        # fingerprint was replaced in place (new line, same spot, no clean
+        # vanish between). Retire it here so THIS scan re-reads the new
+        # text as fresh — no manual refresh needed.
+        for box in ledger.drifted(diff.sample, DOWNSCALE):
+            watcher.unwatch(box)
+            events.append(("cleared", box))
+            print("[cappa]   live caption content changed; re-reading")
         fresh = ledger.fresh(scan, diff.sample, DOWNSCALE)
         if baseline:
             # Only BIG pre-existing text gets judged at lock-on; the rest
