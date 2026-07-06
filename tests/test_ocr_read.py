@@ -19,7 +19,18 @@ from difflib import SequenceMatcher
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from cappa.detection.ocr import TextReader
+from cappa.detection.ocr import TextReader, _respace
+
+# _respace (pure, no model): a line whose text lost a space between words
+# (card_0044: 'KARENA APA' read as 'KARENAAPA') is rebuilt from the word
+# spans; already-correct text, CJK lines and mismatched spans are untouched.
+B = (0, 0, 1, 1)  # span boxes are irrelevant here
+assert _respace("KARENAAPA!?", [("KARENA", B), ("APA!?", B)]) == "KARENA APA!?"
+assert _respace("KARENA APA!?", [("KARENA", B), ("APA!?", B)]) == "KARENA APA!?"
+assert _respace("木漏れ日", [("木漏", B), ("れ日", B)]) == "木漏れ日"
+assert _respace("mismatch", [("mis", B), ("take", B)]) == "mismatch"
+assert _respace("oneword", [("oneword", B)]) == "oneword"
+print("PASS: dropped spaces rebuilt from word spans (never CJK/mismatches)")
 
 FONTS = [r"C:\Windows\Fonts\YuGothM.ttc", r"C:\Windows\Fonts\meiryo.ttc",
          r"C:\Windows\Fonts\msgothic.ttc"]

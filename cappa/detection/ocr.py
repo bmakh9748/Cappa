@@ -60,6 +60,33 @@ def _fix_rtl(word_text):
     return word_text[::-1]
 
 
+def _is_cjk(ch):
+    o = ord(ch)
+    return (0x3040 <= o <= 0x30FF        # hiragana + katakana
+            or 0x3400 <= o <= 0x9FFF     # CJK ideographs
+            or 0xF900 <= o <= 0xFAFF     # compatibility ideographs
+            or 0xFF66 <= o <= 0xFF9F     # halfwidth katakana
+            or 0xAC00 <= o <= 0xD7AF)    # hangul
+
+
+def _respace(text, spans):
+    """The rec model sometimes reads a tight stylised line with a space
+    missing ('KARENA APA' came back 'KARENAAPA', card_0044) while its word
+    grouping still splits the words. When the span texts equal the line
+    text ignoring whitespace, the spans are the better segmentation —
+    rebuild the text from them. Never for CJK lines: no spaces there is
+    correct, and the spans are script-run groups, not words. RTL lines are
+    naturally guarded: their spans sit in visual order, so a genuinely
+    reordered join fails the ignore-whitespace equality and the raw text
+    stays."""
+    if len(spans) < 2 or any(_is_cjk(ch) for ch in text):
+        return text
+    joined = " ".join(t for t, _ in spans)
+    if joined != text and joined.replace(" ", "") == text.replace(" ", ""):
+        return joined
+    return text
+
+
 def _is_rtl(ch):
     o = ord(ch)
     return (0x0590 <= o <= 0x08FF        # Hebrew, Arabic + supplements
@@ -123,7 +150,9 @@ class TextReader:
         text = res.txts[0]
         score = float(res.scores[0]) if res.scores else 0.0
         spans = self._word_spans(res, cl, cr, l, r, t, b)
-        if not spans and text:
+        if spans:
+            text = _respace(text, spans)
+        elif text:
             spans = [(text, box)]  # no geometry: the line is one hotspot
         return Sentence(text, box, spans), score
 
