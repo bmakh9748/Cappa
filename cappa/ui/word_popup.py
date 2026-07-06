@@ -90,7 +90,8 @@ class WordPopup(QWidget):
     # (request id, ok, message) from the card-build thread, same reason.
     _carded = Signal(int, bool, str)
 
-    def __init__(self, parent, region_provider=None, recorder=None):
+    def __init__(self, parent, region_provider=None, recorder=None,
+                 source=None):
         super().__init__(parent)
         self.setObjectName("wordPopup")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -99,11 +100,15 @@ class WordPopup(QWidget):
         self._req = 0          # stale-response guard: latest fetch wins
         # Data sources for the card, supplied by the overlay. region_provider()
         # -> physical (l, t, w, h) of the tracked area, or None; recorder is
-        # the LoopbackRecorder (or None if audio is unavailable).
+        # the LoopbackRecorder (or None if audio is unavailable); source is the
+        # active-video SourceSession (or None) that supplies caption-track audio.
         self._region_provider = region_provider
         self._recorder = recorder
+        self._source = source
         self._snapshot_png = None
         self._snapshot_note = ""
+        self._snapshot_play_time = None  # playback position frozen at click
+                                         # time (it drifts while the popup sits)
 
         self._word_label = QLabel("", self)
         self._word_label.setObjectName("word")
@@ -150,6 +155,7 @@ class WordPopup(QWidget):
         self.word = word
         self._anchor = QRect(anchor)
         self._snapshot_png, self._snapshot_note = self._capture_click_image()
+        self._snapshot_play_time = self._capture_play_time()
         shown = clean_word(word.text) or word.text
         self._word_label.setText(shown)
         self._trans.setText("Translating…")
@@ -184,6 +190,17 @@ class WordPopup(QWidget):
             return None, "click screenshot returned no image"
         return data, ""
 
+    def _capture_play_time(self):
+        """Freeze the video's playback position at click time. It both aims the
+        caption search at where you are and feeds the position fallback. None
+        when there's no source/bridge."""
+        if self._source is None:
+            return None
+        try:
+            return self._source.play_time()
+        except Exception:
+            return None
+
     def _fetch(self, req, word_text, sentence_text):
         """Helper thread: the blocking translation call. Never touches
         widgets; the result crosses back through the queued _translated
@@ -211,16 +228,17 @@ class WordPopup(QWidget):
         word = self.word
         screenshot_png = self._snapshot_png
         screenshot_note = self._snapshot_note
+        near_t = self._snapshot_play_time
         self._anki.setEnabled(False)
         self._anki.setText("Saving…")
         self._req += 1
         threading.Thread(
             target=self._build_card,
-            args=(self._req, word, screenshot_png, screenshot_note),
+            args=(self._req, word, screenshot_png, screenshot_note, near_t),
             daemon=True,
         ).start()
 
-    def _build_card(self, req, word, screenshot_png, screenshot_note):
+    def _build_card(self, req, word, screenshot_png, screenshot_note, near_t):
         """Helper thread: the blocking gather (translations + WAV write).
         Result crosses back through the queued _carded signal."""
         try:
@@ -228,12 +246,19 @@ class WordPopup(QWidget):
                 word, None, self._recorder,
                 screenshot_png=screenshot_png,
                 screenshot_note=screenshot_note,
+                source=self._source,
+                near_t=near_t,
             )
             print("[cappa] card: " + draft.summary())
             ok = draft.folder_path is not None
             folder = (os.path.basename(draft.folder_path)
                       if draft.folder_path else "draft")
             msg = "Saved %s" % folder
+            if draft.notes:
+                # Something degraded (audio fell back, no screenshot, ...) —
+                # say so instead of a silent thumbs-up; details in the console.
+                msg += " · %d note%s" % (len(draft.notes),
+                                         "" if len(draft.notes) == 1 else "s")
             if not ok:
                 msg = "Card failed"
             self._carded.emit(req, ok, msg)
