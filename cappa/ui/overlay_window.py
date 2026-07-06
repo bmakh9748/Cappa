@@ -62,6 +62,8 @@ class OverlayWindow(QMainWindow):
         self._word_prev_down = False  # LBUTTON edge detection for word clicks
         self._detector_ok = None      # None until the model load resolves
         self._src_status_shown = ""   # last source status pushed to the tooltip
+        self._src_ready_tipped = False  # 'captions ready' announced for this video
+        self._ext_version = ""        # extension version, as reported by it
 
         # The launcher is its own top-level window (screen corner), not a
         # child: it must not follow, park, or clip with the overlay.
@@ -93,7 +95,8 @@ class OverlayWindow(QMainWindow):
         if self._bridge.error:
             print("[cappa] browser bridge: " + self._bridge.error)
         self._popup = WordPopup(self, region_provider=self._card_region,
-                                recorder=self._recorder, source=self._source)
+                                recorder=self._recorder, source=self._source,
+                                captions_provider=lambda: list(self._captions))
         self._refresh_prev_down = False  # edge-detect the refresh hotkey
 
         # Keep our own border out of the frames the pipeline captures —
@@ -590,9 +593,40 @@ class OverlayWindow(QMainWindow):
             text = self._base_status
         if self._source.status != "idle":
             text += "   ·   yt: " + self._source.status
+        if self._ext_version:
+            text += "   ·   ext " + self._ext_version
         self.launcher.set_status(text)
         self.launcher.set_state(self._target_hwnd is not None,
-                                self._detector_ok)
+                                self._detector_ok, self._yt_light())
+
+    def _yt_light(self):
+        """The launcher's caption-source dot: 'ready' (green) = caption track
+        usable for cards, 'loading' (amber) = fetch in flight, 'error' (red)
+        = this video has no usable track, None = no video yet."""
+        if self._source.transcript_ready:
+            return "ready"
+        status = self._source.status
+        if status == "idle":
+            return None
+        if status == "loading captions":
+            return "loading"
+        return "error"
+
+    def _announce_source_status(self):
+        """The launcher tooltip only shows on hover, so caption-track progress
+        was invisible — pop the overlay tip on the transitions that matter:
+        the track becoming usable, or this video not having one."""
+        if self._source.transcript_ready:
+            if not self._src_ready_tipped:
+                self._src_ready_tipped = True
+                self._show_tip(
+                    "YouTube captions ready — cards get caption-exact audio")
+        else:
+            self._src_ready_tipped = False
+            if self._source.status in ("no captions", "bad URL"):
+                self._show_tip("YouTube captions unavailable (%s) — card "
+                               "audio falls back to what just played"
+                               % self._source.status)
 
     # ------------------------------------------------------------- capture
     def _start_capture(self):
@@ -709,11 +743,13 @@ class OverlayWindow(QMainWindow):
         state = self._bridge.current()
         if not state:
             return
+        self._ext_version = state.get("ext") or self._ext_version
         vid = state.get("videoId")
         if vid and vid != self._bridge_video_id:
             self._bridge_video_id = vid
             self._source.set_video(state.get("url") or vid)
-            print("[cappa] source: browser video %s" % vid)
+            print("[cappa] source: browser video %s (%s)"
+                  % (vid, (state.get("title") or "?")[:50]))
 
     def set_video_language(self, lang):
         """Apply a new video language from Settings: caption tracks fetched
@@ -766,6 +802,7 @@ class OverlayWindow(QMainWindow):
         self._poll_browser()
         if self._source.status != self._src_status_shown:
             self._src_status_shown = self._source.status
+            self._announce_source_status()
             self._render_status()
 
         # The lock-on tip expires on its own.

@@ -70,6 +70,7 @@ class Launcher(QWidget):
         self._hover = False
         self._tracking = False
         self._detector_ok = None
+        self._yt = None      # caption source: None/"loading"/"ready"/"error"
         self._status = ""
 
         self._menu = QMenu(self)
@@ -123,11 +124,13 @@ class Launcher(QWidget):
     def status_text(self):
         return self._status
 
-    def set_state(self, tracking, detector_ok):
-        if (tracking, detector_ok) == (self._tracking, self._detector_ok):
+    def set_state(self, tracking, detector_ok, yt=None):
+        if (tracking, detector_ok, yt) == (self._tracking, self._detector_ok,
+                                           self._yt):
             return
         self._tracking = tracking
         self._detector_ok = detector_ok
+        self._yt = yt
         self._act_select.setEnabled(tracking)
         self._act_refresh.setEnabled(tracking)
         self.update()
@@ -164,6 +167,15 @@ class Launcher(QWidget):
         p.setPen(Qt.NoPen)
         p.setBrush(dot)
         p.drawEllipse(QPoint(r.right() - 8, r.bottom() - 8), 3, 3)
+        # Bottom-LEFT dot: the YouTube caption source. Green = caption track
+        # ready (cards get exact audio), amber = fetching, red = this video
+        # has no usable track. No dot until a video is known.
+        yt = {"ready": QColor(92, 200, 132),
+              "loading": QColor(226, 179, 76),
+              "error": QColor(226, 76, 76)}.get(self._yt)
+        if yt is not None:
+            p.setBrush(yt)
+            p.drawEllipse(QPoint(r.left() + 8, r.bottom() - 8), 3, 3)
 
     def _draw_glyph(self, p, r):
         """Placeholder logo: a bold C. Swap for the real logo when it's
