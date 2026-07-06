@@ -25,8 +25,12 @@ UNIT = [
     "test_tracking.py",      # ledger: live/seen, fingerprints, clear debounce
     "test_watcher.py",       # instant caption-vanished detection
     "test_translate.py",     # popup word cleanup (pure, no network)
+    "test_settings.py",      # settings load/save + translate target switch
     "test_flashcard.py",     # draft folders: text, provenance, media paths
+    "test_youtube_source.py",  # VTT parse + OCR->caption alignment (fixtures)
+    "test_bridge.py",        # localhost browser bridge: POST/GET + play_time
     "test_ocr_read.py",      # rec reads Japanese + English (loads the model)
+    "test_ocr_arabic.py",    # video language -> rec model: Arabic pack works
 ]
 LIVE = [
     "test_overlay_popout.py",    # popout tracking, deselect-on-close
