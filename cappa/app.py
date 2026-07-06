@@ -5,7 +5,10 @@ import sys
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 
+from . import settings as settings_mod
+from . import translate
 from .ui.overlay_window import OverlayWindow
+from .ui.startup import StartupWindow
 
 
 def main():
@@ -25,7 +28,29 @@ def main():
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
-    # Starts idle: only the launcher icon is visible; the overlay window
-    # shows itself when a window is picked. The reference keeps it alive.
-    overlay = OverlayWindow()  # noqa: F841
+
+    # Show the startup window first: pick the translation target, then start.
+    # The overlay (and its launcher icon) is created only once the user
+    # confirms; afterwards the same window reopens as a live settings panel
+    # from the launcher's Settings item. `state` keeps the references alive.
+    app_settings = settings_mod.load()
+    translate.set_source_language(app_settings.source_language)
+    translate.set_target_language(app_settings.target_language)
+    state = {"overlay": None}
+    startup = StartupWindow(app_settings)
+
+    def on_confirmed():
+        translate.set_source_language(app_settings.source_language)
+        translate.set_target_language(app_settings.target_language)
+        settings_mod.save(app_settings)
+        cap_lang = settings_mod.caption_lang(app_settings.source_language)
+        if state["overlay"] is None:
+            state["overlay"] = OverlayWindow(on_settings=startup.open_settings,
+                                             video_language=cap_lang)
+        else:
+            state["overlay"].set_video_language(cap_lang)
+        startup.hide()
+
+    startup.confirmed.connect(on_confirmed)
+    startup.show()
     return app.exec()
