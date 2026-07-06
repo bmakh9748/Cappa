@@ -127,7 +127,7 @@ def test_builder_prefers_caption_track():
         sentence = Sentence(
             "dari pemikiran muncullah kemajuan", (10, 20, 300, 50),
             [("dari", (10, 20, 50, 50)), ("kemajuan", (60, 20, 300, 50))])
-        match = {"start": 16.44, "end": 19.86, "score": 0.96, "i": 0, "j": 4,
+        match = {"start": 16.44, "end": 18.86, "score": 0.96, "i": 0, "j": 4,
                  "text": "Dari pemikiran, muncullah kemajuan."}
         meta = {"video_id": "abc", "url": "u", "title": "t", "channel": "c",
                 "caption_lang": "id", "caption_auto": False}
@@ -148,7 +148,7 @@ def test_builder_prefers_caption_track():
         assert m["video_source"]["caption_lang"] == "id"
         assert m["video_source"]["caption_auto"] is False
         assert not any("recorder" in n for n in m["notes"]), m["notes"]
-        print("PASS builder: caption-track audio preferred (window 16.44-19.86)")
+        print("PASS builder: caption-track audio preferred (window 16.44-18.86)")
 
 
 def test_window_for_near():
@@ -206,7 +206,7 @@ def test_builder_position_fallback():
         sentence = Sentence(
             "english translation not in the track", (0, 0, 10, 10),
             [("english", (0, 0, 5, 5)), ("track", (6, 0, 10, 10))])
-        pos = {"start": 40.0, "end": 43.5, "score": 0.0,
+        pos = {"start": 40.0, "end": 42.5, "score": 0.0,
                "text": "spoken words", "by": "position"}
         src = FakeSource(None, {"video_id": "vid", "caption_lang": "ja",
                                 "caption_auto": True}, pos=pos)
@@ -335,6 +335,180 @@ def test_builder_falls_back_when_no_match():
         print("PASS builder: no caption match -> loopback fallback path")
 
 
+def test_builder_snaps_ocr_to_track():
+    """The card_0018 failure: OCR read a punctuation glyph as an alif
+    (معروف -> معروفا), which broke the word's translation. With a strong text
+    match against a HUMAN-MADE track its words are ground truth, so the
+    misread word (and the sentence) snap to them BEFORE translation."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence(
+            "وغير معروفا", (0, 0, 200, 40),
+            [("وغير", (0, 0, 90, 40)), ("معروفا", (100, 0, 200, 40))])
+        match = {"start": 10.0, "end": 12.0, "score": 0.82,
+                 "text": "وغير معروف", "by": "text"}
+        meta = {"video_id": "x", "caption_lang": "ar", "caption_auto": False}
+        src = FakeSource(match, meta)
+        calls = []
+
+        def spy_translate(t, s=""):
+            calls.append((t, s))
+            return "tx:" + t
+
+        draft = build_draft(sentence.words[1], None, None, out_dir=tmp,
+                            translator=spy_translate,
+                            screenshot_note="no shot", source=src,
+                            near_t=11.0)
+        assert draft.word == "معروف", draft.word
+        assert draft.sentence == "وغير معروف", draft.sentence
+        # translation ran AFTER the snap, and with the sentence for context
+        assert ("معروف", "وغير معروف") in calls, calls
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["word"] == "معروف", m["word"]
+        assert m["word_translation"] == "tx:معروف", m["word_translation"]
+        assert m["video_source"]["ocr_sentence"] == "وغير معروفا", (
+            m["video_source"])
+        assert any("معروفا -> معروف" in n for n in m["notes"]), m["notes"]
+        print("PASS snap: phantom alif corrected from the caption track")
+
+
+def test_snap_guards():
+    """No snapping without a STRONG TEXT match, and never across genuinely
+    different words -- auto-captions are ASR and may legitimately disagree
+    with a burned-in subtitle."""
+    from cappa.flashcard.builder import _snap_to_track
+    from cappa.flashcard.model import CardDraft
+
+    def draft_with(window, word="hello", sent="hello there"):
+        d = CardDraft(word, sent)
+        d.word_index = 0
+        d.audio_window = window
+        return d
+
+    # Position match: the text never aligned, nothing to trust.
+    d = draft_with({"matched_by": "position", "score": 0.0,
+                    "caption_text": "goodbye there"})
+    _snap_to_track(d)
+    assert d.sentence == "hello there" and d.word == "hello"
+
+    # AUTO captions: ASR is often wrong; it must NEVER rewrite a burned-in
+    # subtitle a person wrote, however strong the alignment.
+    d = draft_with({"matched_by": "text", "score": 0.95, "auto": True,
+                    "caption_text": "hallo there"})
+    _snap_to_track(d)
+    assert d.sentence == "hello there" and d.word == "hello"
+
+    # Weak text match: below the strong threshold, leave the OCR alone.
+    d = draft_with({"matched_by": "text", "score": 0.70,
+                    "caption_text": "hello then"})
+    _snap_to_track(d)
+    assert d.sentence == "hello there" and d.word == "hello"
+
+    # Strong match but a genuinely different word: not a misread, keep OCR.
+    d = draft_with({"matched_by": "text", "score": 0.80,
+                    "caption_text": "goodbye there"})
+    _snap_to_track(d)
+    assert d.sentence == "hello there" and d.word == "hello"
+
+    # Strong match, near-identical word: the misread is fixed, the clicked
+    # word rides along, and the note says what changed.
+    d = draft_with({"matched_by": "text", "score": 0.80,
+                    "caption_text": "hallo there"})
+    _snap_to_track(d)
+    assert d.sentence == "hallo there" and d.word == "hallo", (
+        d.sentence, d.word)
+    assert any("hello -> hallo" in n for n in d.notes), d.notes
+
+    # Uneven split (insert/delete): the line broke differently, don't touch.
+    d = draft_with({"matched_by": "text", "score": 0.80,
+                    "caption_text": "well hello there"})
+    _snap_to_track(d)
+    assert d.sentence == "hello there" and d.word == "hello"
+    print("PASS snap guards: only strong text matches fix near-identical words")
+
+
+def test_builder_skips_audio_without_video():
+    """yt idle at click time means the click wasn't on a video Cappa knows
+    about: the loopback buffer holds unrelated system audio then, so nothing
+    must be recorded at all — no wav, and the note says why."""
+
+    class SpyRecorder:
+        ready = True
+        error = ""
+
+        def __init__(self):
+            self.calls = []
+
+        def save_wav(self, path, t0, t1):
+            self.calls.append((path, t0, t1))
+            return 1.0
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("apa ini", (0, 0, 10, 10),
+                            [("apa", (0, 0, 5, 5)), ("ini", (6, 0, 10, 10))])
+        src = FakeSource(None, {})
+        src.transcript_ready = False
+        src.status = "idle"
+        rec = SpyRecorder()
+        draft = build_draft(sentence.words[0], None, rec, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src)
+        assert rec.calls == [], "loopback must not be cut without a video"
+        assert draft.audio_path is None
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["audio"] is None, m["audio"]
+        assert any("no YouTube video detected" in n for n in m["notes"]), (
+            m["notes"])
+        assert any("caption track unavailable" in n for n in m["notes"])
+        print("PASS builder: no known video -> no audio recorded at all")
+
+
+def test_builder_max_clip():
+    """A long caption cue must not produce a long clip: the window is cut
+    down so the finished clip (window + pre/postroll) is MAX_CLIP, centred
+    on the click position so the clicked word stays inside."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("some long line", (0, 0, 10, 10),
+                            [("some", (0, 0, 5, 5)), ("line", (6, 0, 10, 10))])
+        match = {"start": 10.0, "end": 20.0, "score": 0.9,
+                 "text": "a ten second monologue cue", "by": "text"}
+        src = FakeSource(match, {"video_id": "vid"})
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src, near_t=17.0)
+        assert src.sliced is not None, "source clip was never cut"
+        start, end, pre, post = src.sliced
+        assert abs((end - start) + pre + post - 3.0) < 1e-6, src.sliced
+        assert abs((start + end) / 2.0 - 17.0) < 1e-6, src.sliced
+        assert start >= 10.0 and end <= 20.0, src.sliced
+        assert draft.audio_window["start"] == start, draft.audio_window
+        print("PASS builder: long cue capped at 3s around the click position")
+
+
+def test_builder_min_clip():
+    """A one-word caption (a fraction of a second in the track) must still cut
+    a clip of at least one second, centred on the caption."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("ok then", (0, 0, 10, 10),
+                            [("ok", (0, 0, 5, 5)), ("then", (6, 0, 10, 10))])
+        match = {"start": 20.0, "end": 20.3, "score": 0.9,
+                 "text": "ok then", "by": "text"}
+        src = FakeSource(match, {"video_id": "vid"})
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src, near_t=20.2)
+        assert src.sliced is not None, "source clip was never cut"
+        start, end, pre, post = src.sliced
+        assert (end - start) + pre + post >= 1.0 - 1e-6, src.sliced
+        assert abs((start + end) / 2.0 - 20.15) < 1e-6, src.sliced
+        assert draft.audio_window["start"] == start, draft.audio_window
+        assert draft.audio_window["end"] == end, draft.audio_window
+        print("PASS builder: sub-second caption widened to a 1s clip")
+
+
 if __name__ == "__main__":
     test_manual()
     test_auto()
@@ -348,4 +522,9 @@ if __name__ == "__main__":
     test_pick_subtitle_orig()
     test_choose_window()
     test_builder_falls_back_when_no_match()
+    test_builder_snaps_ocr_to_track()
+    test_snap_guards()
+    test_builder_max_clip()
+    test_builder_skips_audio_without_video()
+    test_builder_min_clip()
     print("ALL PASS")

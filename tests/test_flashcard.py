@@ -12,8 +12,10 @@ import wave
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa.detection.sentence import Sentence, Word
+from cappa.detection.sentence import Sentence, Word, caption_block
 from cappa.flashcard import build_draft
+from cappa.flashcard.timing import (MAX_CLIP, MIN_CLIP, audio_window,
+                                    shrink_to_max, widen_to_min)
 
 
 def fake_translate(text, sentence=""):
@@ -133,5 +135,186 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "clicked word box is outside the sentence box" in meta3["notes"]
     assert "clicked word text not found in OCR sentence" in meta3["notes"]
     print("PASS: mismatched word/sentence provenance is flagged")
+
+
+class _Ghost:
+    """A sentence with no appear/clear timestamps: the true worst case."""
+    appeared_at = 0.0
+    cleared_at = 0.0
+
+
+t0, t1 = audio_window(_Ghost(), 500.0)
+assert t1 - t0 == MAX_CLIP == 3.0, (t0, t1)
+assert abs((t0 + t1) / 2.0 - 500.0) < 1e-9, (t0, t1)
+print("PASS: no-timestamp fallback is a MAX_CLIP clip centred on the click")
+
+# widen_to_min: short windows grow around their midpoint, the floor clamp
+# pushes what it eats onto the end, long windows pass through untouched.
+t0, t1 = widen_to_min(10.0, 10.2)
+assert abs(t0 - 9.6) < 1e-9 and abs(t1 - 10.6) < 1e-9, (t0, t1)
+t0, t1 = widen_to_min(0.1, 0.3, floor=0.0)
+assert t0 == 0.0 and abs(t1 - 1.0) < 1e-9, (t0, t1)
+assert widen_to_min(5.0, 9.0) == (5.0, 9.0)
+print("PASS: widen_to_min centres, clamps at the floor, keeps long windows")
+
+# shrink_to_max: long windows are cut down around the given center (the click
+# position), clamped inside the original window; short ones pass through.
+assert shrink_to_max(5.0, 7.0) == (5.0, 7.0)                 # under the cap
+t0, t1 = shrink_to_max(10.0, 20.0)                           # no center: middle
+assert abs(t0 - 13.5) < 1e-9 and abs(t1 - 16.5) < 1e-9, (t0, t1)
+t0, t1 = shrink_to_max(10.0, 20.0, center=17.0)              # around the click
+assert abs(t0 - 15.5) < 1e-9 and abs(t1 - 18.5) < 1e-9, (t0, t1)
+t0, t1 = shrink_to_max(10.0, 20.0, center=25.0)              # clamped inside
+assert abs(t0 - 17.0) < 1e-9 and abs(t1 - 20.0) < 1e-9, (t0, t1)
+t0, t1 = shrink_to_max(10.0, 20.0, center=10.5)              # near the start
+assert abs(t0 - 10.0) < 1e-9 and abs(t1 - 13.0) < 1e-9, (t0, t1)
+assert MAX_CLIP == 3.0, MAX_CLIP
+print("PASS: shrink_to_max caps at 3s around the click, inside the window")
+
+
+# The still-on-screen OCR window is capped too: a line that has been sitting
+# for 10 seconds must not yield a 10-second clip.
+class _Lingering:
+    appeared_at = 100.0
+    cleared_at = 0.0
+
+
+t0, t1 = audio_window(_Lingering(), 110.0)
+assert abs((t1 - t0) - MAX_CLIP) < 1e-9, (t0, t1)
+print("PASS: a lingering line's clip is capped at 3s")
+
+# The settings sliders retune the bounds live: the window functions read the
+# module globals at call time, not import-time copies.
+import cappa.flashcard.timing as timing_mod
+
+timing_mod.set_clip_bounds(0.5, 1.5)
+try:
+    t0, t1 = shrink_to_max(10.0, 20.0)
+    assert abs((t1 - t0) - 1.5) < 1e-9, (t0, t1)
+    t0, t1 = widen_to_min(10.0, 10.1)
+    assert abs((t1 - t0) - 0.5) < 1e-9, (t0, t1)
+    t0, t1 = audio_window(_Lingering(), 110.0)
+    assert abs((t1 - t0) - 1.5) < 1e-9, (t0, t1)
+    t0, t1 = audio_window(_Ghost(), 500.0)   # fallback respects a tighter cap
+    assert abs((t1 - t0) - 1.5) < 1e-9, (t0, t1)
+finally:
+    timing_mod.set_clip_bounds(MIN_CLIP, MAX_CLIP)
+print("PASS: set_clip_bounds retunes min/max/fallback windows live")
+
+
+class _Blip:
+    """A caption that flashed on and off in 0.2s."""
+    appeared_at = 100.0
+    cleared_at = 100.2
+
+
+t0, t1 = audio_window(_Blip(), 101.0)
+assert abs((t1 - t0) - MIN_CLIP) < 1e-9, (t0, t1)
+print("PASS: a blip caption still yields the 1s minimum clip")
+
+
+# A capture that ran but heard nothing (muted tab, audio routed to a device
+# the recorder wasn't bound to — card_0027) is DISCARDED: no silent wav on
+# the card, and the note says why. A normal clip is kept untouched.
+class SilentRecorder(FakeRecorder):
+    last_clip_peak = 1
+
+
+class LoudRecorder(FakeRecorder):
+    last_clip_peak = 12000
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    sentence = Sentence(
+        "hello world",
+        (10, 20, 120, 50),
+        [("hello", (10, 20, 55, 50)), ("world", (60, 20, 120, 50))],
+    )
+    sentence.appeared_at = 100.0
+    sentence.cleared_at = 102.0
+    for recorder, expect_kept in ((SilentRecorder(), False),
+                                  (LoudRecorder(), True)):
+        draft = build_draft(
+            sentence.words[0],
+            None,
+            recorder,
+            out_dir=tmp,
+            translator=fake_translate,
+            screenshotter=fake_screenshot,
+            screenshot_png=b"\x89PNG\r\n\x1a\n",
+        )
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            meta = json.load(f)
+        wav = os.path.join(draft.folder_path, "audio.wav")
+        dropped = any("audio discarded" in n for n in meta["notes"])
+        assert os.path.exists(wav) is expect_kept, (recorder.last_clip_peak,
+                                                    meta["notes"])
+        assert (meta["audio"] == "audio.wav") is expect_kept, meta["audio"]
+        assert dropped is (not expect_kept), meta["notes"]
+    print("PASS: a silent loopback clip is discarded with a note, "
+          "a normal one is kept")
+
+# A two-line caption (card_0031: "AKU AKAN MENGHANCURKAN" over "FOKUS NYA
+# MEREKA!") is two Sentences in the ledger, one per OCR line. The card must
+# carry the WHOLE block: joined text top-to-bottom, union box, word index
+# into the joined list — while unrelated live text (a chat line elsewhere,
+# tiny HUD text below) stays out of it.
+line1 = Sentence(
+    "AKU AKAN MENGHANCURKAN", (217, 351, 1061, 412),
+    [("AKU", (217, 351, 340, 412)), ("AKAN", (350, 351, 520, 412)),
+     ("MENGHANCURKAN", (535, 351, 1060, 412))])
+line2 = Sentence(
+    "FOKUS NYA MEREKA!", (350, 420, 930, 480),
+    [("FOKUS", (350, 420, 560, 480)), ("NYA", (570, 420, 680, 480)),
+     ("MEREKA!", (690, 420, 930, 480))])
+chat = Sentence(
+    "jigsaw: Cheer!", (5, 800, 300, 830),
+    [("jigsaw:", (5, 800, 150, 830)), ("Cheer!", (160, 800, 300, 830))])
+hud = Sentence(
+    "100%", (600, 487, 660, 505),   # right under line2 but half the height
+    [("100%", (600, 487, 660, 505))])
+for s in (line1, line2, chat, hud):
+    s.appeared_at = 100.0
+
+block = caption_block(line2.words[1].sentence, [line1, line2, chat, hud])
+assert block == [line1, line2], block
+
+# A block never grows past 3 lines (subtitles don't render more): a taller
+# same-height stack (a chat column that slipped past the classifier) is cut
+# back to the clicked line and its nearest rows.
+stack = []
+for i in range(5):
+    top = 100 + i * 70
+    stack.append(Sentence("row %d" % i, (100, top, 500, top + 60),
+                          [("row", (100, top, 300, top + 60)),
+                           ("%d" % i, (310, top, 500, top + 60))]))
+tall = caption_block(stack[1], stack)
+assert tall == stack[:3], [s.text for s in tall]   # clicked row 1 + neighbours
+print("PASS: caption blocks cap at 3 lines around the clicked one")
+
+with tempfile.TemporaryDirectory() as tmp:
+    draft = build_draft(
+        line2.words[1],                      # "NYA", clicked in the SECOND line
+        None,
+        FakeRecorder(),
+        out_dir=tmp,
+        translator=fake_translate,
+        screenshot_png=b"\x89PNG\r\n\x1a\n",
+        captions=[chat, line2, hud, line1],  # ledger order is arbitrary
+    )
+    with open(os.path.join(draft.folder_path, "metadata.json"),
+              encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["sentence"] == "AKU AKAN MENGHANCURKAN FOKUS NYA MEREKA!", (
+        meta["sentence"])
+    assert meta["word"] == "NYA"
+    assert meta["word_index"] == 4, meta["word_index"]
+    assert meta["sentence_box"] == [217, 351, 1061, 480], meta["sentence_box"]
+    assert meta["sentence_verified"] is True, meta["notes"]
+    assert meta["sentence_translation"] == (
+        "tx:AKU AKAN MENGHANCURKAN FOKUS NYA MEREKA!")
+    print("PASS: a two-line caption joins whole onto the card, "
+          "unrelated text stays out")
 
 print("ALL PASS")

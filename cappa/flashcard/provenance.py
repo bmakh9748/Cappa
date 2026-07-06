@@ -21,9 +21,13 @@ def _box_contains(outer, inner, slack=3):
             and inner[3] <= outer[3] + slack)
 
 
-def attach_sentence_provenance(word, draft):
-    """Record whether the clicked Word belongs to the saved OCR Sentence."""
-    sentence = getattr(word, "sentence", None)
+def attach_sentence_provenance(word, draft, sentence=None):
+    """Record whether the clicked Word belongs to the saved OCR sentence.
+    `sentence` is what the card actually saves — the word's own line, or the
+    joined CaptionBlock when the caption spanned several lines; it defaults
+    to the word's line."""
+    if sentence is None:
+        sentence = getattr(word, "sentence", None)
     draft.word_box = _box_tuple(getattr(word, "box", None))
     draft.sentence_box = _box_tuple(getattr(sentence, "box", None))
     words = list(getattr(sentence, "words", []) or [])
