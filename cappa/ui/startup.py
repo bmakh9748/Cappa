@@ -7,10 +7,11 @@ live. To grow it, add a row here and a field in cappa.settings; the confirmed
 signal already carries the chosen values back on the picked object."""
 
 from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,
-                               QPushButton, QVBoxLayout, QWidget)
+                               QPushButton, QSlider, QVBoxLayout, QWidget)
 from PySide6.QtCore import Qt, Signal
 
-from ..settings import SOURCE_LANGUAGES, TARGET_LANGUAGES
+from ..settings import (MAX_CLIP_RANGE, MIN_CLIP_RANGE, SOURCE_LANGUAGES,
+                        TARGET_LANGUAGES)
 
 _STYLE = """
     #startup {
@@ -57,6 +58,21 @@ _STYLE = """
         font-weight: bold;
     }
     QPushButton#primary:hover { background: #7bddff; }
+    QSlider::groove:horizontal {
+        height: 4px;
+        background: rgba(255, 255, 255, 30);
+        border-radius: 2px;
+    }
+    QSlider::sub-page:horizontal {
+        background: rgba(90, 210, 255, 90);
+        border-radius: 2px;
+    }
+    QSlider::handle:horizontal {
+        width: 14px;
+        margin: -6px 0;
+        border-radius: 7px;
+        background: #5ad2ff;
+    }
 """
 
 
@@ -95,6 +111,25 @@ class StartupWindow(QWidget):
         if i >= 0:
             self._combo.setCurrentIndex(i)
 
+        # Card audio clip length: min slider steps of 0.1s, max of 0.5s.
+        # The row labels double as the live value readout.
+        self._min_label = QLabel("")
+        self._min_label.setObjectName("field")
+        self._min_slider = QSlider(Qt.Horizontal)
+        self._min_slider.setRange(int(MIN_CLIP_RANGE[0] * 10),
+                                  int(MIN_CLIP_RANGE[1] * 10))
+        self._min_slider.setValue(int(round(settings.min_clip_seconds * 10)))
+        self._min_slider.valueChanged.connect(self._update_clip_labels)
+
+        self._max_label = QLabel("")
+        self._max_label.setObjectName("field")
+        self._max_slider = QSlider(Qt.Horizontal)
+        self._max_slider.setRange(int(MAX_CLIP_RANGE[0] * 2),
+                                  int(MAX_CLIP_RANGE[1] * 2))
+        self._max_slider.setValue(int(round(settings.max_clip_seconds * 2)))
+        self._max_slider.valueChanged.connect(self._update_clip_labels)
+        self._update_clip_labels()
+
         self._primary = QPushButton("Start Cappa")
         self._primary.setObjectName("primary")
         self._primary.setCursor(Qt.PointingHandCursor)
@@ -111,6 +146,12 @@ class StartupWindow(QWidget):
         lay.addSpacing(10)
         lay.addWidget(target_field)
         lay.addWidget(self._combo)
+        lay.addSpacing(10)
+        lay.addWidget(self._min_label)
+        lay.addWidget(self._min_slider)
+        lay.addSpacing(10)
+        lay.addWidget(self._max_label)
+        lay.addWidget(self._max_slider)
         lay.addStretch(1)
         lay.addSpacing(16)
         buttons = QHBoxLayout()
@@ -119,7 +160,7 @@ class StartupWindow(QWidget):
         lay.addLayout(buttons)
 
         self.setStyleSheet(_STYLE)
-        self.resize(400, 360)
+        self.resize(400, 470)
         self._center()
 
     def open_settings(self):
@@ -131,9 +172,18 @@ class StartupWindow(QWidget):
         self.activateWindow()
 
     # ------------------------------------------------------------ internals
+    def _update_clip_labels(self, _value=0):
+        self._min_label.setText("Shortest audio clip: %.1f s (one-word blips "
+                                "are widened to this)"
+                                % (self._min_slider.value() / 10.0))
+        self._max_label.setText("Longest audio clip: %.1f s"
+                                % (self._max_slider.value() / 2.0))
+
     def _on_confirm(self):
         self._settings.source_language = self._source_combo.currentData()
         self._settings.target_language = self._combo.currentData()
+        self._settings.min_clip_seconds = self._min_slider.value() / 10.0
+        self._settings.max_clip_seconds = self._max_slider.value() / 2.0
         self.confirmed.emit()
 
     def _center(self):

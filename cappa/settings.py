@@ -42,17 +42,39 @@ DEFAULT_SOURCE = "auto"
 _TARGET_CODES = {code for code, _ in TARGET_LANGUAGES}
 _SOURCE_CODES = {code for code, _ in SOURCE_LANGUAGES}
 
+# Card audio clip length bounds (seconds), user-tunable in the settings
+# panel. The minimum is how much a one-word blip caption is widened to; the
+# maximum caps any clip however long the caption ran.
+MIN_CLIP_RANGE = (0.5, 1.5)
+MAX_CLIP_RANGE = (1.5, 5.0)
+DEFAULT_MIN_CLIP = 1.0
+DEFAULT_MAX_CLIP = 3.0
+
+
+def _bounded(value, lo, hi, default):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(v, lo), hi)
+
 
 class Settings:
     def __init__(self, target_language=DEFAULT_TARGET,
-                 source_language=DEFAULT_SOURCE):
+                 source_language=DEFAULT_SOURCE,
+                 min_clip_seconds=DEFAULT_MIN_CLIP,
+                 max_clip_seconds=DEFAULT_MAX_CLIP):
         self.target_language = target_language
         self.source_language = source_language
+        self.min_clip_seconds = min_clip_seconds
+        self.max_clip_seconds = max_clip_seconds
 
     def to_dict(self):
         return {
             "target_language": self.target_language,
             "source_language": self.source_language,
+            "min_clip_seconds": self.min_clip_seconds,
+            "max_clip_seconds": self.max_clip_seconds,
         }
 
 
@@ -69,7 +91,11 @@ def load():
     source = data.get("source_language", DEFAULT_SOURCE)
     if source not in _SOURCE_CODES:
         source = DEFAULT_SOURCE
-    return Settings(target, source)
+    min_clip = _bounded(data.get("min_clip_seconds"),
+                        *MIN_CLIP_RANGE, default=DEFAULT_MIN_CLIP)
+    max_clip = _bounded(data.get("max_clip_seconds"),
+                        *MAX_CLIP_RANGE, default=DEFAULT_MAX_CLIP)
+    return Settings(target, source, min_clip, max_clip)
 
 
 def save(settings):

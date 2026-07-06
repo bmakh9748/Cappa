@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 
 from . import settings as settings_mod
 from . import translate
+from .flashcard.timing import set_clip_bounds
 from .ui.overlay_window import OverlayWindow
 from .ui.startup import StartupWindow
 
@@ -42,6 +43,8 @@ def main():
     def on_confirmed():
         translate.set_source_language(app_settings.source_language)
         translate.set_target_language(app_settings.target_language)
+        set_clip_bounds(app_settings.min_clip_seconds,
+                        app_settings.max_clip_seconds)
         settings_mod.save(app_settings)
         cap_lang = settings_mod.caption_lang(app_settings.source_language)
         if state["overlay"] is None:

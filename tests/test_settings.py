@@ -36,6 +36,22 @@ def main():
             assert bad.target_language == S.DEFAULT_TARGET
             assert bad.source_language == S.DEFAULT_SOURCE
             print("PASS settings: unknown codes fall back to defaults")
+
+            # Clip bounds roundtrip; out-of-range/garbage values are clamped
+            # to the slider range or fall back to the defaults.
+            S.save(S.Settings(min_clip_seconds=0.7, max_clip_seconds=4.5))
+            got = S.load()
+            assert got.min_clip_seconds == 0.7, got.min_clip_seconds
+            assert got.max_clip_seconds == 4.5, got.max_clip_seconds
+            with open(S._PATH, "w", encoding="utf-8") as f:
+                json.dump({"min_clip_seconds": 99, "max_clip_seconds": "x"}, f)
+            got = S.load()
+            assert got.min_clip_seconds == S.MIN_CLIP_RANGE[1]  # clamped
+            assert got.max_clip_seconds == S.DEFAULT_MAX_CLIP   # garbage
+            # d0 was loaded with no file at all: defaults.
+            assert d0.min_clip_seconds == S.DEFAULT_MIN_CLIP
+            assert d0.max_clip_seconds == S.DEFAULT_MAX_CLIP
+            print("PASS settings: clip bounds roundtrip, clamp and fallback")
         finally:
             S._PATH = original_path
 
