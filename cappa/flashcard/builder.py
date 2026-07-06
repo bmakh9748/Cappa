@@ -174,15 +174,23 @@ def _write_screenshot(draft, region, screenshotter, screenshot_png,
 
 
 def _choose_window(text_match, pos_match, near_t):
-    """Decide which caption window to trust. With a playback position: take a
-    text match only if it's strong and temporally consistent with where we are,
-    else the position window. Without one: the best text match is all we have."""
+    """Decide which caption window to trust. With a playback position: a
+    strong, temporally consistent text match wins outright. A WEAKER text
+    match still wins when it overlaps the position window — the two agree on
+    the moment, and the text match spans the on-screen SENTENCE where the
+    position window is just the speech chunk around the click (card_0044
+    clipped mid-sentence on a garbled auto-caption). A text match that
+    doesn't even overlap where we are is not trusted. Without a position:
+    the best text match is all we have."""
     if near_t is None:
         return text_match
-    if text_match is not None and text_match.get("score", 0.0) >= SOURCE_STRONG_SCORE:
+    if text_match is not None:
         inside = text_match["start"] - SOURCE_POS_TOL <= near_t <= (
             text_match["end"] + SOURCE_POS_TOL)
-        if inside:
+        if inside and text_match.get("score", 0.0) >= SOURCE_STRONG_SCORE:
+            return text_match
+        if pos_match is not None and (text_match["start"] < pos_match["end"]
+                                      and pos_match["start"] < text_match["end"]):
             return text_match
     return pos_match or text_match
 

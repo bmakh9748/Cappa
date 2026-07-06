@@ -301,19 +301,25 @@ def test_pick_subtitle_orig():
 
 
 def test_choose_window():
-    """The decision core: position governs when a text match is far from where
-    we are, or weak; a strong, nearby text match is trusted for its precision."""
+    """The decision core: a strong, nearby text match is trusted for its
+    precision; a WEAK text match still wins when it overlaps the position
+    window (they agree on the moment, and the text match spans the whole
+    on-screen sentence where position is just the speech chunk around the
+    click — card_0044); a text match elsewhere loses to position."""
     from cappa.flashcard.builder import _choose_window
     strong_near = {"start": 30.0, "end": 33.0, "score": 0.90, "by": "text"}
     strong_far = {"start": 60.0, "end": 63.0, "score": 0.90, "by": "text"}
     weak_near = {"start": 30.0, "end": 33.0, "score": 0.66, "by": "text"}
+    weak_off = {"start": 38.0, "end": 41.0, "score": 0.66, "by": "text"}
     pos = {"start": 29.5, "end": 33.5, "score": 0.0, "by": "position"}
     assert _choose_window(strong_far, None, None) is strong_far   # no position
     assert _choose_window(strong_near, pos, 31.0) is strong_near  # strong+near
     assert _choose_window(strong_far, pos, 31.0) is pos           # strong but far
-    assert _choose_window(weak_near, pos, 31.0) is pos            # weak -> position
+    assert _choose_window(weak_near, pos, 31.0) is weak_near      # weak, agrees
+    assert _choose_window(weak_off, pos, 31.0) is pos             # weak, apart
     assert _choose_window(weak_near, None, 31.0) is weak_near     # weak, no pos
-    print("PASS choose_window: position governs unless text is strong AND near")
+    print("PASS choose_window: strong+near wins; weak wins only when it "
+          "overlaps the position window")
 
 
 def test_builder_falls_back_when_no_match():
