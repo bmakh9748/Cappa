@@ -4,6 +4,13 @@
 // this to auto-select the video and to pin a card's moment by position.
 
 (function () {
+  // This file is injected twice into a tab that was open when the extension
+  // was installed or replaced: once by the manifest's content_scripts on page
+  // load, once by the worker's install-time re-injection. Only one copy may
+  // run the posting loop.
+  if (window.__cappaBridgeActive) return;
+  window.__cappaBridgeActive = true;
+
   function videoId() {
     try {
       const u = new URL(location.href);
@@ -15,10 +22,37 @@
     }
   }
 
+  function activeVideo() {
+    // Shorts (and the home-page inline preview) keep SEVERAL <video>
+    // elements alive at once — the feed preloads the neighbouring shorts —
+    // and the first in DOM order is often a paused preload stuck at t=0.
+    // Taking that one told the app the click happened at the START of the
+    // video, so cards got the first caption line's audio. Prefer elements
+    // that are actually playing; break ties (or an all-paused page, e.g.
+    // the user paused) by which shows the most pixels in the viewport.
+    const vids = Array.from(document.querySelectorAll("video"));
+    if (!vids.length) return null;
+    const playing = vids.filter((v) => !v.paused && v.readyState >= 2);
+    const pool = playing.length ? playing : vids;
+    let best = null;
+    let bestArea = -1;
+    for (const v of pool) {
+      const r = v.getBoundingClientRect();
+      const w = Math.min(r.right, innerWidth) - Math.max(r.left, 0);
+      const h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+      const area = w > 0 && h > 0 ? w * h : 0;
+      if (area > bestArea) {
+        bestArea = area;
+        best = v;
+      }
+    }
+    return best;
+  }
+
   function snapshot() {
     const vid = videoId();
     if (!vid) return;
-    const v = document.querySelector("video");
+    const v = activeVideo();
     const payload = {
       videoId: vid,
       url: location.href,
@@ -30,10 +64,14 @@
     try {
       chrome.runtime.sendMessage({ type: "cappa-state", payload });
     } catch (e) {
-      // extension context was invalidated (reloaded); ignore.
+      // Extension replaced/reloaded: this copy can never reach the worker
+      // again. Stop its loop and let go of the guard so the NEW extension's
+      // injected copy takes over.
+      clearInterval(timer);
+      window.__cappaBridgeActive = false;
     }
   }
 
-  setInterval(snapshot, 700);
+  const timer = setInterval(snapshot, 700);
   snapshot();
 })();

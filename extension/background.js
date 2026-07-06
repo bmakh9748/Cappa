@@ -43,3 +43,19 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 pushCookies(); // and once at startup
+
+// Installing or REPLACING the extension kills the content script in every
+// YouTube tab that is already open, and Chrome only injects into new page
+// loads — so a replaced extension used to go silently dead (Cappa stuck on
+// "yt: idle") until the user happened to reload the tab. Re-inject into the
+// open tabs ourselves; content.js guards against running twice.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.tabs.query({ url: "*://www.youtube.com/*" }, (tabs) => {
+    if (chrome.runtime.lastError || !tabs) return;
+    for (const tab of tabs) {
+      chrome.scripting
+        .executeScript({ target: { tabId: tab.id }, files: ["content.js"] })
+        .catch(() => {}); // discarded/errored tab: the next page load injects.
+    }
+  });
+});
