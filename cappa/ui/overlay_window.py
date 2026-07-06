@@ -70,7 +70,8 @@ class OverlayWindow(QMainWindow):
         self.launcher = Launcher(self._start_pick, self._start_select,
                                  self._refresh_words, self._quit,
                                  on_set_video=self._use_clipboard_video,
-                                 on_settings=on_settings)
+                                 on_settings=on_settings,
+                                 on_deselect=self._go_idle)
         # System-audio recorder: buffers continuously (audio plays whether or
         # not we're tracking) so a clicked word's clip is already captured.
         # Fail-soft — no device just means no audio on the card.

@@ -56,7 +56,7 @@ _MENU_STYLE = """
 
 class Launcher(QWidget):
     def __init__(self, on_pick, on_region, on_refresh, on_exit,
-                 on_set_video=None, on_settings=None):
+                 on_set_video=None, on_settings=None, on_deselect=None):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -88,6 +88,13 @@ class Launcher(QWidget):
         self._act_refresh.setEnabled(False)  # nothing to rescan until tracking
         self._act_refresh.setShortcut(QKeySequence("Ctrl+Alt+Shift+R"))
         self._act_refresh.setShortcutVisibleInContextMenu(True)
+        # Stop tracking WITHOUT exiting: back to the idle 'pick a window'
+        # state — capture stops, the overlay hides, the launcher stays.
+        self._act_deselect = None
+        if on_deselect is not None:
+            self._act_deselect = self._menu.addAction("Deselect window",
+                                                      on_deselect)
+            self._act_deselect.setEnabled(False)  # nothing tracked yet
         # Point the app at the YouTube video being watched: copy its URL, then
         # click this. Gives cards exact caption timing + audio. (The browser
         # bridge will set this automatically in a later stage.)
@@ -133,6 +140,8 @@ class Launcher(QWidget):
         self._yt = yt
         self._act_select.setEnabled(tracking)
         self._act_refresh.setEnabled(tracking)
+        if self._act_deselect is not None:
+            self._act_deselect.setEnabled(tracking)
         self.update()
 
     # -------------------------------------------------------------- menu
