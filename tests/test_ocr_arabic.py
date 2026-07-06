@@ -66,6 +66,18 @@ assert sentence is not None and is_arabic(sentence.text), (
 print("PASS arabic-at-construction: %r (%.2f)"
       % (sentence.text, conf))
 
+# The card-15 regression: hotspot words came out mirrored (visual CTC order)
+# while the line text was logical, so a clicked word matched nothing and
+# translated to garbage. Every hotspot's text must appear in the sentence.
+assert len(sentence.words) >= 2, (
+    "expected word-level hotspots, got %d" % len(sentence.words))
+for w in sentence.words:
+    assert w.text in sentence.text, (
+        "hotspot %r is not a substring of sentence %r -- reversed?"
+        % (w.text, sentence.text))
+print("PASS logical-order hotspots: %s"
+      % " | ".join(repr(w.text) for w in sentence.words))
+
 # The same swap Settings performs live: default reader -> Arabic.
 reader2 = TextReader()
 reader2.warm()
