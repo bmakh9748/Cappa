@@ -1,11 +1,15 @@
 """Step 4, second half: READ the text inside boxes the detector accepted.
 
-Recognition runs the multi-script PP-OCR rec model (rapidocr's default,
-PP-OCRv6 small) through onnxruntime — the same stack as detector.py. One
-model reads Japanese, Chinese, English and more, no language setting needed:
-measured against the v5-ch and japan-specific packs on rendered caption
-lines, the default was the most accurate on BOTH Japanese and English and
-the fastest (~20 ms/line).
+Recognition runs a PP-OCR rec model (rapidocr) through onnxruntime — the same
+stack as detector.py. The DEFAULT model (PP-OCRv6 small) is multi-script: it
+reads Japanese, Chinese, English and the Latin languages with no language
+setting, and measured best on all of them — but it cannot read every script.
+Arabic came back empty (the user's report), and Cyrillic/Devanagari/Korean are
+equally out of its charset. For those, rapidocr ships per-script packs, so the
+settings panel's "video language" maps to a rec model here (_SCRIPT_MODELS):
+pick Arabic and the arabic pack loads; anything else keeps the measured-best
+default. set_language() swaps the model live; loading falls back to the
+default pack on any failure.
 
 Cost discipline: the worker calls read() only for boxes that just passed the
 geometric classifier — a few times a minute, never per scan — so the
@@ -24,11 +28,34 @@ from .sentence import Sentence
 
 PAD = 4  # px of context around the crop; rec likes a little breathing room
 
+# settings.source_language code -> rapidocr LangRec value. Only scripts the
+# default multi-script model CANNOT read are listed; Latin/CJK languages stay
+# on the default, which measured more accurate than their per-language packs.
+_SCRIPT_MODELS = {
+    "ar": "arabic",
+    "ru": "cyrillic",
+    "hi": "devanagari",
+    "ko": "korean",
+}
+
 
 class TextReader:
-    def __init__(self):
+    def __init__(self, lang=None):
         self._model = None
         self._failed = False
+        self._script = _SCRIPT_MODELS.get(lang)  # None -> default model
+
+    def set_language(self, lang):
+        """Switch the rec model for a newly picked video language (worker
+        thread, between scans). A no-op unless the language maps to a
+        different model; otherwise the current model is dropped and the next
+        read loads the right one."""
+        script = _SCRIPT_MODELS.get(lang)
+        if script == self._script:
+            return
+        self._script = script
+        self._model = None
+        self._failed = False  # a new model deserves a fresh load attempt
 
     def warm(self):
         """Load the model now (worker calls this at thread start)."""
@@ -114,19 +141,46 @@ class TextReader:
         if self._model is not None or self._failed:
             return
         try:
-            from rapidocr import EngineType, RapidOCR
-            self._model = RapidOCR(params={
-                "Global.use_det": False,
-                "Global.use_cls": False,
-                # Deliberately no Rec.lang_type/ocr_version: the default
-                # multi-script model beat the per-language packs (see module
-                # docstring). Captions are horizontal, so no cls either.
-                "Rec.engine_type": EngineType.ONNXRUNTIME,
-            })
             import logging
             logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+            from rapidocr import EngineType, RapidOCR
+            base = {
+                "Global.use_det": False,
+                "Global.use_cls": False,
+                # Captions are horizontal, so no cls. The default rec model
+                # (no lang_type) is the measured-best multi-script pack; a
+                # _SCRIPT_MODELS language overrides it below.
+                "Rec.engine_type": EngineType.ONNXRUNTIME,
+            }
+            if self._script:
+                self._model = self._load_script_model(base)
+            if self._model is None:
+                self._model = RapidOCR(params=base)
         except Exception as exc:  # missing package / download failure
             self._failed = True
             print("cappa: text reading unavailable (%s: %s) — detection "
                   "runs without text rules" % (type(exc).__name__, exc),
                   file=sys.stderr)
+
+    def _load_script_model(self, base):
+        """The per-script rec pack for self._script, or None to use the
+        default. Script packs don't exist for every OCR version/size (arabic
+        is a v5 mobile model, for one), so try the known-good combinations
+        and fail open to the default pack with a console note."""
+        from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR
+        for version in (OCRVersion.PPOCRV5, OCRVersion.PPOCRV4):
+            for model_type in (ModelType.MOBILE, ModelType.SERVER):
+                params = dict(base)
+                params["Rec.lang_type"] = LangRec(self._script)
+                params["Rec.ocr_version"] = version
+                params["Rec.model_type"] = model_type
+                try:
+                    model = RapidOCR(params=params)
+                except Exception:
+                    continue
+                print("[cappa] reader: %s pack (%s %s)"
+                      % (self._script, version.value, model_type.value))
+                return model
+        print("cappa: no %r rec pack available — using the default reader"
+              % self._script, file=sys.stderr)
+        return None

@@ -62,8 +62,13 @@ class CaptureWorker(QObject):
     detector_ok = Signal(bool)  # emitted once the neural model load resolves
 
     def __init__(self, region_provider, target_fps=30,
-                 user_area_provider=None, accept_all=False):
+                 user_area_provider=None, accept_all=False, ocr_lang=None):
         super().__init__()
+        # The video's language (settings code like "ar"), deciding which rec
+        # model reads caption text. None = the default multi-script model.
+        # set_ocr_language() changes it live; the loop applies it.
+        self._ocr_lang = ocr_lang
+        self._ocr_lang_dirty = False
         # region_provider() -> (left, top, width, height) physical, or None
         # when there's nothing to capture (no target / parked / picking).
         self._region_provider = region_provider
@@ -88,7 +93,7 @@ class CaptureWorker(QObject):
         capture = ScreenCapture()
         diff = FrameDiff()
         detector = TextDetector()
-        reader = TextReader()
+        reader = TextReader(self._ocr_lang)
         classifier = CaptionClassifier()
         watcher = CaptionWatcher(scale=DOWNSCALE)
         ledger = CaptionLedger()
@@ -107,6 +112,14 @@ class CaptureWorker(QObject):
         try:
             while self._running:
                 loop_start = time.perf_counter()
+
+                if self._ocr_lang_dirty:
+                    # New video language from Settings: swap the rec model and
+                    # force a full re-scan so on-screen text is re-read with it.
+                    self._ocr_lang_dirty = False
+                    reader.set_language(self._ocr_lang)
+                    reader.warm()
+                    self._refresh = True
 
                 region = self._region()
                 if region is None:
@@ -284,6 +297,13 @@ class CaptureWorker(QObject):
         the launcher's "Refresh words" / Ctrl+Alt+Shift+R. Just flips an
         attribute; the worker loop does the actual resetting on its side."""
         self._refresh = True
+
+    def set_ocr_language(self, lang):
+        """UI thread: the video language changed in Settings. The loop swaps
+        the rec model and re-scans on its next pass."""
+        if lang != self._ocr_lang:
+            self._ocr_lang = lang
+            self._ocr_lang_dirty = True
 
     def stop(self):
         self._running = False
