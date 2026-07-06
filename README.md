@@ -9,7 +9,9 @@ pip install -r requirements.txt   # into a venv; also needs the ffmpeg binary on
 python run.py                     # or: python -m cappa
 ```
 
-**Controls:** everything is behind the small icon at the bottom-left of the screen — click it for a menu: *Pick window* (click a window to lock onto it) · *Select area* (drag a box over just the video/subtitle region, then resize it any time by dragging its border) · *Exit*. Hover the icon for status (target · fps · captions). Hovering a detected caption word underlines it; **click it** for its popup (✕ closes it — clicking a word never clicks the video underneath). **Ctrl+Alt+Shift+X** quits from anywhere (also shown next to Exit in the menu). Esc only cancels a pending pick/drag.
+On launch a small startup window asks for the language to translate words into (settings will grow here); pick it and click *Start Cappa*.
+
+**Controls:** everything is behind the small icon at the bottom-left of the screen — click it for a menu: *Pick window* (click a window to lock onto it) · *Select area* (drag a box over just the video/subtitle region, then resize it any time by dragging its border) · *Use video from clipboard* (paste a YouTube URL for exact caption timing/audio — or install `extension/` so it's automatic) · *Settings…* (reopens the startup window) · *Exit*. Hover the icon for status (target · fps · captions · yt). Hovering a detected caption word underlines it; **click it** for its popup (✕ closes it — clicking a word never clicks the video underneath). **Ctrl+Alt+Shift+X** quits from anywhere (also shown next to Exit in the menu). Esc only cancels a pending pick/drag.
 
 ## Layout
 
