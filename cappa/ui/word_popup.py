@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
 from .. import flashcard
-from ..detection.sentence import caption_block
+from ..detection.sentence import caption_block, click_pool
 from ..translate import TranslationError, clean_word, translate
 
 MARGIN = 10           # gap between the word and the popup
@@ -108,7 +108,10 @@ class WordPopup(QWidget):
         self._source = source
         # captions_provider() -> the live Sentence list; snapshotted at click
         # time so a two-line caption joins the clicked line on the card even
-        # if the caption clears while the popup sits open.
+        # if the caption clears while the popup sits open, then reconciled
+        # with the list as it stands at card time (click_pool) so a sibling
+        # line detection hadn't finished re-reading at the click makes the
+        # card too.
         self._captions_provider = captions_provider
         self._snapshot_png = None
         self._snapshot_note = ""
@@ -244,7 +247,15 @@ class WordPopup(QWidget):
         screenshot_png = self._snapshot_png
         screenshot_note = self._snapshot_note
         near_t = self._snapshot_play_time
-        captions = self._snapshot_captions
+        # The click snapshot can be a beat too early: a sibling line the
+        # ledger was still re-reading at click time (card_0045 lost its top
+        # line that way) is live by NOW, so reconcile the snapshot with the
+        # current list before the block is assembled.
+        captions = click_pool(
+            self._snapshot_captions,
+            self._captions_provider() if self._captions_provider else None,
+            getattr(word, "sentence", None),
+        )
         self._anki.setEnabled(False)
         self._anki.setText("Saving…")
         self._req += 1

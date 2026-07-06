@@ -111,6 +111,45 @@ def caption_block(sentence, captions):
     return block
 
 
+def click_pool(snapshot, current, clicked):
+    """The candidate lines for a card's caption block, reconciling the two
+    moments we saw them. `snapshot` is the live list frozen at CLICK time —
+    it exists because the caption may clear while the popup sits open.
+    `current` is the live list at CARD time — it exists because detection
+    may still have been churning at the click: card_0045 was clicked in the
+    half-second the ledger spent re-reading the top line of a fresh
+    two-liner, so the snapshot held only the clicked line and the card lost
+    the line above (which was plainly on screen in the click screenshot).
+
+    While the clicked line is still live, `current` is the base — a sibling
+    that finished detection after the click is in there — and snapshot lines
+    keep only rows no live line occupies (a sibling that truly cleared while
+    the popup was open still makes the card). Once the clicked line is gone,
+    the screen has moved on and only the snapshot can be trusted."""
+    snap = list(snapshot or [])
+    cur = list(current or [])
+    if not any(s is clicked for s in cur):
+        return snap
+    for line in snap:
+        if not any(_same_row(line.box, c.box) for c in cur):
+            cur.append(line)
+    return cur
+
+
+def _same_row(a, b):
+    """True when boxes a and b occupy the same text row: vertical centres
+    nearly coincide and they overlap horizontally — one caption line seen
+    twice (before/after a re-read), not two stacked rows."""
+    ah = a[3] - a[1]
+    bh = b[3] - b[1]
+    if ah <= 0 or bh <= 0:
+        return False
+    if abs((a[1] + a[3]) - (b[1] + b[3])) / 2.0 >= 0.8 * min(ah, bh):
+        return False
+    overlap = min(a[2], b[2]) - max(a[0], b[0])
+    return overlap >= 0.5 * min(a[2] - a[0], b[2] - b[0])
+
+
 class CaptionBlock:
     """A multi-line caption as ONE sentence: the lines of a caption_block
     joined top-to-bottom. Quacks like Sentence everywhere the card builder

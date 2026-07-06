@@ -12,7 +12,8 @@ import wave
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa.detection.sentence import Sentence, Word, caption_block
+from cappa.detection.sentence import (Sentence, Word, caption_block,
+                                      click_pool)
 from cappa.flashcard import build_draft
 from cappa.flashcard.timing import (MAX_CLIP, MIN_CLIP, audio_window,
                                     shrink_to_max, widen_to_min)
@@ -316,5 +317,50 @@ with tempfile.TemporaryDirectory() as tmp:
         "tx:AKU AKAN MENGHANCURKAN FOKUS NYA MEREKA!")
     print("PASS: a two-line caption joins whole onto the card, "
           "unrelated text stays out")
+
+# click_pool reconciles the click-time caption snapshot with the live list
+# at card time. Geometry below is card_0045's: a two-line hardsub whose TOP
+# line the ledger was still re-reading when the bottom line was clicked, so
+# the click snapshot held only the clicked line and the card lost the line
+# above — even though the click screenshot plainly shows it, and the two
+# rows pass the stacking test (heights 63/65 px, gap 17 px).
+top = Sentence('KAMU GAK TAU DIA "VIRAL"', (460, 153, 1419, 216),
+               [('KAMU', (460, 153, 640, 216))])
+bot = Sentence("KARENA APA!?", (682, 229, 1201, 304),
+               [("KARENA", (697, 229, 989, 304))])
+for s in (top, bot):
+    s.appeared_at = 100.0
+
+# card_0045: the top line finished detection AFTER the click; by card time
+# it is live, so it must join the pool — and the block.
+pool = click_pool([bot], [top, bot], bot)
+assert top in pool and bot in pool, pool
+assert caption_block(bot, pool) == [top, bot]
+print("PASS: a sibling line detection missed at click time joins the card")
+
+# The caption changed before "Create Anki card" was pressed: the clicked
+# line is no longer live, so only the click-time snapshot can be trusted.
+later = Sentence("SUDAH MALAM", (600, 229, 1100, 304),
+                 [("SUDAH", (600, 229, 800, 304))])
+pool = click_pool([top, bot], [later], bot)
+assert pool == [top, bot], pool
+print("PASS: once the caption moved on, the click snapshot governs")
+
+# A sibling that truly cleared while the popup sat open: its row is empty
+# in the live list, so the snapshot copy fills it.
+pool = click_pool([top, bot], [bot], bot)
+assert top in pool, pool
+print("PASS: a sibling cleared while the popup sat open still makes the card")
+
+# A line that churned while the popup sat open (cleared and re-read, box
+# wobbling a few px) must not join twice: the live re-read supersedes the
+# snapshot's old copy of that row.
+top2 = Sentence('KAMU GAK TAU DIA "VIRAL"', (455, 150, 1415, 214),
+                [('KAMU', (455, 150, 636, 214))])
+top2.appeared_at = 100.4
+pool = click_pool([top, bot], [top2, bot], bot)
+assert top2 in pool and top not in pool, pool
+assert caption_block(bot, pool) == [top2, bot]
+print("PASS: a re-read line joins once, not doubled")
 
 print("ALL PASS")
