@@ -74,17 +74,28 @@ def _friendly(exc):
                    "Cappa Bridge extension)"
         return "YouTube bot check -- install the Cappa Bridge extension so "\
                "your logged-in cookies can be used"
+    if "Requested format is not available" in text or "No video formats" in text:
+        return "YouTube offered no playable formats (extraction broken?) -- "\
+               "try: pip install -U yt-dlp, and install deno (the JS runtime "\
+               "yt-dlp now wants for YouTube)"
     return text
 
 
 # --------------------------------------------------------------- fetching
 def fetch_info(url):
-    """yt-dlp's metadata dict for a video (no download). Lazy-imports yt-dlp."""
+    """yt-dlp's metadata dict for a video (no download). Lazy-imports yt-dlp.
+
+    ignore_no_formats_error is essential: extract_info runs video-format
+    selection even for a metadata-only fetch, and a video yt-dlp can't get
+    playable formats for (bot check, extraction breakage, no JS runtime)
+    raises 'Requested format is not available' — which would wrongly kill
+    the CAPTION fetch, though the subtitle lists are right there in the
+    metadata and don't need formats at all (card_0038)."""
     try:
         import yt_dlp
     except ImportError as exc:
         raise SourceError("yt-dlp not installed") from exc
-    opts = _ydl_opts(skip_download=True)
+    opts = _ydl_opts(skip_download=True, ignore_no_formats_error=True)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
