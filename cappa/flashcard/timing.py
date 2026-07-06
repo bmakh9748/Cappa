@@ -10,6 +10,12 @@ POSTROLL = 0.40
 MAX_CLIP = 12.0      # cap when the line is still on screen
 FALLBACK_CLIP = 6.0  # window ending "now" when no appear timestamp exists
 
+# Padding for the caption-track path. Timestamps there are exact, so this is
+# small; a touch of pre/postroll only guards word onsets (auto captions can tag
+# a word slightly late) and lets the last word's tail ring out.
+SOURCE_PREROLL = 0.15
+SOURCE_POSTROLL = 0.35
+
 
 def audio_window(sentence, now):
     """Return the monotonic window to cut from the loopback buffer."""

@@ -12,7 +12,7 @@ class CardDraft:
         "folder_path", "metadata_path", "image_path", "audio_path",
         "audio_seconds", "audio_window", "screenshot_source", "word_box",
         "sentence_box", "word_index", "sentence_verified", "appeared_at",
-        "cleared_at", "created_at", "notes",
+        "cleared_at", "created_at", "notes", "source_meta",
     )
 
     def __init__(self, word, sentence):
@@ -35,6 +35,8 @@ class CardDraft:
         self.cleared_at = 0.0
         self.created_at = time.time()
         self.notes = []
+        self.source_meta = None   # video provenance when audio came from a
+                                  # YouTube caption track (else None)
 
     def summary(self):
         parts = [

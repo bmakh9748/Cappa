@@ -70,5 +70,6 @@ def _metadata(draft, folder):
         "audio": _relpath(draft.audio_path, folder),
         "audio_seconds": draft.audio_seconds,
         "audio_window": draft.audio_window,
+        "video_source": draft.source_meta,
         "notes": list(draft.notes),
     }
