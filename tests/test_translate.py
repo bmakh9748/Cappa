@@ -43,6 +43,11 @@ MARK_CASES = [
     ("the theory holds", "theory", 'the "theory" holds'),  # 'the' untouched
     ("vi ser dig, ses.", "ses", 'vi ser dig, "ses".'),     # not inside 'ser'
     ("食べたことがある", "食べた", '"食べた"ことがある'),   # CJK: plain find
+    ("KAMU GAK TAU DIA “VIRAL” KARENA APA!?", "KARENA",
+     'KAMU GAK TAU DIA VIRAL "KARENA" APA!?'),      # the sentence's own
+                                                    # quotes are blanked so
+                                                    # only OUR mark survives
+                                                    # (card_0044)
     ("hello world", "missing", None),               # not in the sentence
     ("", "word", None),
     ("sentence", "", None),

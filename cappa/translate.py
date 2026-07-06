@@ -85,6 +85,12 @@ def _mark(sentence, word):
     is the fallback for scripts without word boundaries (CJK)."""
     if not word or not sentence or not word.strip():
         return None
+    # The sentence's OWN quote marks collide with ours: the span reader
+    # would hand back the sentence's quoted word instead of the marked one
+    # (card_0044: KARENA came back as the sentence's “VIRAL”). Blank them
+    # out of the copy that goes to the translator.
+    sentence = re.sub("[%s]" % re.escape(_QUOTES), " ", sentence)
+    sentence = re.sub(r"\s{2,}", " ", sentence).strip()
     m = re.search(r"(?<!\w)%s(?!\w)" % re.escape(word), sentence,
                   re.IGNORECASE)
     if m is not None:
