@@ -43,22 +43,31 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 
 ---
 
-## On Word Click
+## On Word Click (as built)
 
-1. Freeze the hotspots (don't update overlay while popup is open)
-2. Capture current frame as PNG screenshot
-3. Extract ±2s audio clip around current timestamp using ffmpeg → save as MP3
-4. Translate the clicked word — deep-translator (free Google endpoint). **NO LLM in the
-   translation path — hard user rule.**
-5. Small popup appears near the clicked word: word (edge punctuation stripped), divider,
-   translation
-7. User sees known/unknown toggle + "Save Flashcard" button
-8. If saved → card added to session queue silently in background
+1. The click freezes the moment: a PNG of the tracked region, the video's playback
+   position (from the browser bridge), and a snapshot of the live caption list.
+2. A small popup appears near the clicked word: word (edge punctuation stripped), divider,
+   translation — deep-translator (free Google endpoint), the word translated IN its
+   sentence for context. **NO LLM in the translation path — hard user rule.**
+3. "Create Anki card" gathers the rest off the UI thread. The card's sentence is the whole
+   stacked caption BLOCK (a two-line subtitle is ONE sentence, card_0031), assembled from
+   the click-time snapshot reconciled with the live list at card time (`click_pool`,
+   card_0045 — a sibling line detection was still re-reading at the click still joins).
+4. Audio, best source first: the caption track's exact [start, end] cut from the
+   downloaded source audio (works paused and on any past line) → the same caption window
+   cut from the loopback ring buffer via the bridge's video-time→clock mapping → OCR-timed
+   loopback. Silent clips are discarded (card_0027); every degradation leaves a note.
+5. The draft saves to `cards/card_NNNN/` — word, sentence, translations, screenshot,
+   audio, and `metadata.json` with full provenance (boxes, timing windows, match scores,
+   video source, notes). `.apkg` export is the remaining step.
 
 ---
 
 ## Flashcard Export
 
+- **Today:** every saved card is a complete draft folder under `cards/card_NNNN/`
+  (all pieces + metadata); the export step below is not built yet.
 - User opens the control panel and clicks Export
 - `genanki` bundles all saved cards + media (screenshots + audio clips) into a single `.apkg` file
 - User drags `.apkg` into Anki — all media imports automatically
@@ -96,9 +105,11 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 | Screen capture | **mss** | Fastest Python screen capture library, low CPU |
 | Frame diffing | **numpy** | Array subtraction for pixel change detection, ~5ms |
 | Text detection | **PP-OCRv5 mobile** via `rapidocr` + `onnxruntime` | Same weights PaddleOCR uses, ~6x faster than Paddle's runtime on Windows CPU |
-| OCR (reading text) | **PP-OCRv6 small (multi-script)** via `rapidocr` + `onnxruntime` | One model reads Japanese/Chinese/English/…, ~20 ms/line; paddlepaddle no longer needed at all |
+| OCR (reading text) | **PP-OCRv6 small (multi-script)** via `rapidocr` + `onnxruntime` | One model reads Japanese/Chinese/English/…, ~20 ms/line; per-script packs (Arabic, …) swap in via the video-language setting |
 | Overlay | **pywin32 / win32gui** | Transparent always-on-top window on Windows |
-| Audio extraction | **ffmpeg** via `ffmpeg-python` | Slice audio clips by timestamp |
+| Audio (cards) | **PyAudioWPatch** WASAPI loopback | Rolling ring buffer of what you HEAR — the only way to clip audio retroactively |
+| Video source | **yt-dlp** + **ffmpeg** | Caption track (the timing oracle) + source audio download/slicing |
+| Playback bridge | Chrome/Edge extension → localhost `http.server` | Which video is playing + exact position, ~1/s, never leaves the machine |
 | Translation | **deep-translator** (free Google endpoint) | Word translation on click only — free, no key. **NO LLM (hard user rule)** |
 | Flashcard export | **genanki** | Generates Anki `.apkg` files with embedded media |
 | OS | **Windows only** (for now) | Overlay behaviour uses Win32 APIs |
@@ -106,12 +117,17 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 
 ### Install commands
 ```bash
-pip install PySide6 qt-material mss numpy rapidocr onnxruntime pywin32 ffmpeg-python genanki deep-translator
+pip install -r requirements.txt
+# PySide6 pywin32 mss numpy rapidocr onnxruntime ffmpeg-python genanki
+# deep-translator PyAudioWPatch yt-dlp
 ```
 
 Also requires:
 - **ffmpeg binary** on PATH: https://ffmpeg.org/download.html
-- PaddleOCR downloads its own models on first run (~8MB, automatic)
+- rapidocr downloads its ONNX models on first run (~5-15 MB per pack, automatic)
+- the browser extension in `extension/` (optional): load unpacked in Chrome/Edge for
+  automatic video selection + position; without it the launcher's
+  "Use video from clipboard" does the same manually
 
 ---
 
@@ -130,17 +146,17 @@ Also requires:
 
 ## Build Order
 
-1. **Overlay window** — transparent, always-on-top PySide6 window that covers the browser
-2. **Screen capture loop** — mss capturing the locked browser window at 30fps
-3. **Frame diff engine** — numpy change detection, only flag meaningful pixel clusters
-4. **PaddleOCR integration** — OCR on changed regions, return word bounding boxes
-5. **Subtitle classifier** — rule-based scorer to filter subtitle text from UI text
-6. **Word hotspots** — clickable transparent regions on the overlay mapped to word positions
-7. **Word click popup** — Claude API call on click, show definition/translation near word
-8. **Control panel UI** — language picker, session stats, export button
-9. **Audio extraction** — ffmpeg clip on word click
-10. **Screenshot capture** — frame capture on word click
-11. **Flashcard export** — genanki .apkg generation
+1. **Overlay window** — transparent, always-on-top PySide6 window that covers the browser **[done]**
+2. **Screen capture loop** — mss capturing the locked browser window at 30fps **[done]**
+3. **Frame diff engine** — numpy change detection, only flag meaningful pixel clusters **[done]**
+4. **OCR integration** — neural detection + recognition on changed regions, word boxes **[done]**
+5. **Subtitle classifier** — rule-based scorer to filter subtitle text from UI text **[done]**
+6. **Word hotspots** — clickable transparent regions on the overlay mapped to word positions **[done]**
+7. **Word click popup** — translation shown near the word (deep-translator, never an LLM) **[done]**
+8. **Control panel UI** — became the corner launcher + startup/settings window **[done]**
+9. **Audio extraction** — caption-track windows from source audio, loopback fallbacks **[done]**
+10. **Screenshot capture** — frame frozen at word click **[done]**
+11. **Flashcard export** — genanki .apkg generation **[next]**
 
 ---
 
@@ -148,31 +164,61 @@ Also requires:
 
 ```
 run.py                  # launcher — `python run.py` (or `python -m cappa`)
+settings.json           # persisted user settings (gitignored)
 cappa/
   __init__.py           # version / package marker
   __main__.py           # `python -m cappa`
-  app.py                # Qt setup + main(): builds and runs the app
+  app.py                # Qt setup + main(): startup window -> overlay + launcher
   winapi.py             # ALL Win32/ctypes/DWM — no Qt (input, windows, click-through)
-  translate.py          # word -> translation (deep-translator/Google; no Qt; cached)
+  translate.py          # word -> translation (deep-translator/Google; no Qt; cached;
+                        #   the word is translated IN its sentence via a marked span)
+  settings.py           # tiny persisted settings holder (settings.json; no Qt)
+  audio.py              # LoopbackRecorder: WASAPI loopback ring buffer (90s, monotonic-
+                        #   stamped, follows the default output device; fail-soft; no Qt)
   ui/                   # everything the user SEES
     overlay_window.py   # OverlayWindow: paint, pick/select modes, follow loop, worker wiring
-    launcher.py         # corner icon + pop-up menu (all controls live here)
+    launcher.py         # corner icon + menu: pick/select/deselect · clipboard video ·
+                        #   settings · exit; status tooltip (target · fps · captions · yt)
+    startup.py          # startup window = the settings home (languages, clip sliders);
+                        #   reopened live via the launcher's Settings… item
     word_popup.py       # the box a clicked word opens: word · divider · translation · Anki btn
   detection/            # everything that FINDS captions (see its __init__ for the map)
     capture.py          # screen grab (mss -> numpy BGRA)     every frame  ~10ms   [done]
     diff.py             # what changed since last frame       every frame  <1ms    [done]
     stability.py        # watch live captions for vanishing   every frame  <1ms    [done]
     detector.py         # NEURAL text detection (PP-OCRv5 ONNX) on change  ~60ms   [done]
-    tracking.py         # ledger: live captions, judged junk                       [done]
+    tracking.py         # ledger: live captions, judged junk, drift/blip machinery  [done]
     classifier.py       # caption or not-caption (geometry + text rules)           [done]
     worker.py           # background QThread chaining the stages, emits results
-    ocr.py              # read text in accepted boxes (PP-OCRv6 ONNX)  ~20ms       [done]
-    sentence.py         # Sentence/Word model: what a read caption line becomes    [done]
+    ocr.py              # read text in accepted boxes (PP-OCRv6 ONNX + per-script
+                        #   packs picked by the video-language setting)  ~20ms      [done]
+    sentence.py         # Sentence/Word model, caption BLOCKS (stacked lines), and
+                        #   click_pool (click-time vs card-time caption reconcile)  [done]
+  flashcard/            # gathers one card's pieces into cards/card_NNNN (no .apkg yet)
+    builder.py          # build_draft: block sentence, audio source choice, snap-to-track
+    model.py            # CardDraft
+    provenance.py       # verify the clicked word really belongs to its sentence
+    screenshot.py       # click-time PNG capture/write
+    timing.py           # audio window maths (detection lags, pre/postroll, min/max clip)
+    writer.py           # card_NNNN folders + metadata.json
+  source/               # YouTube caption-track source: exact timing + source audio
+    vtt.py              # WebVTT parser (manual + auto rolling formats) -> timed tokens
+    transcript.py       # Transcript model + OCR-line -> caption-window aligner
+    youtube.py          # yt-dlp fetch of metadata/captions/audio + ffmpeg slicing
+    session.py          # SourceSession: the active video, fetched on a daemon thread
+    bridge.py           # localhost http server the browser extension reports to
+extension/              # "Cappa Bridge" Chrome/Edge extension (load unpacked): which
+                        #   YouTube video + position, POSTed to 127.0.0.1:8765 only
+cards/                  # saved card drafts (gitignored)
 tests/
   run_all.py            # the whole suite; units first, then live tests
-  test_diff/classifier/tracking/watcher.py     # unit tests, instant, windowless
-  test_overlay_*.py, test_captions_live.py     # live overlay behaviour
-  test_browser_sim.py, test_realistic_video.py # end-to-end sims (draw what they detect)
+  test_diff/classifier/tracking/watcher/merge.py   # detection units, instant, windowless
+  test_ocr_read.py, test_ocr_arabic.py             # recognition through the real models
+  test_flashcard.py, test_audio.py                 # card drafts, timing, loopback recorder
+  test_youtube_source.py, test_bridge.py           # VTT/alignment/session, browser bridge
+  test_settings.py, test_translate.py              # settings roundtrip, word cleanup
+  test_overlay_*.py, test_captions_live.py         # live overlay behaviour
+  test_browser_sim.py, test_realistic_video.py     # end-to-end sims (draw what they detect)
   bench_*.py            # detector speed benchmarks (run individually)
 ```
 
@@ -544,15 +590,133 @@ Boundary rules:
 > 4th leg in test_area_rescan: baseline memorises the small window-mode line, then a
 > refresh boxes it (verified live — `read small pre-existing line of text (0.99)`).
 >
-> **Next step:** the Anki card flow behind the popup button, in slow steps (card
-> fields -> screenshot -> audio clip -> genanki export), plus the Japanese
-> word-unit decision (local tokeniser vs resolving the clicked segment).
+> **Flashcard drafts — the card pipeline behind the button (#9 + #10, done).**
+> `cappa/flashcard/` + `cappa/audio.py`. Audio can't be captured after the fact, so
+> `LoopbackRecorder` (PyAudioWPatch) records the default output device's WASAPI
+> *loopback* — what you hear — into a rolling 90 s ring buffer, every chunk stamped
+> with `time.monotonic()`, the SAME clock the worker stamps caption appear/clear times
+> with; a sentence's timestamps index straight into the buffer. It follows the default
+> output device (the originally-bound endpoint dying when the user switches outputs
+> produced silent clips) and is fail-soft: no library / no device just leaves
+> `ready=False` and cards without audio. `build_draft` gathers everything into
+> `cards/card_NNNN/`: cleaned word, the caption-block sentence, both translations,
+> the click-time PNG, the audio clip, and `metadata.json` with full provenance —
+> word/sentence boxes, `sentence_verified` (provenance.py flags a clicked word that
+> isn't really in its sentence), the audio window with its source and match score, the
+> video source, and `notes`: every degradation (no recorder, no match, silent clip,
+> failed translation) is recorded on the card instead of raised. Timing model in
+> `timing.py`: appear/clear detection lags, pre/postroll, and MIN/MAX_CLIP (a card
+> studies ONE word — 3 s cap however long the line sat on screen; 1 s floor so a blip
+> is still audible), user-tunable live. A clip whose int16 peak is ≤100 is silence
+> (muted tab / wrong output device — card_0027): discarded with a note, because a
+> silent wav on a card is worse than no audio.
 >
-> _Deferred / known limits:_ settings panel (needs its own planning pass); multi-DPI across
+> **YouTube caption-track source — the timing oracle (done).** Live-capture timing was
+> the flaky part (detection latency, lags, the line already half-spoken); the fix is
+> staged, and stage 1+2 are in. The on-screen OCR stays the source of a line's *text*
+> (works even when a video has no captions at all); `cappa/source/` supplies the
+> *timing*: `vtt.py` parses WebVTT (manual + auto rolling formats) into timed tokens,
+> `transcript.py` aligns an OCR line to the track by similarity, `youtube.py` fetches
+> metadata/captions/audio with yt-dlp (lazy import; manual track preferred over auto)
+> and slices with ffmpeg, `session.py`'s `SourceSession` holds the active video —
+> fetched on a daemon thread, fail-soft (`status`/`error`), transcript published as
+> soon as it parses so a card made before the audio download lands still gets exact
+> timing provenance. Card audio priority: the matched caption window cut from the
+> DOWNLOADED source audio (works paused and on any past line) → the same window cut
+> from the loopback buffer via the bridge's video-time→clock mapping → OCR-timed
+> loopback as before. Window choice (`builder._choose_window`): the playback position
+> is the boss — a text match is trusted outright only when strong (≥0.75) AND near the
+> position; a WEAKER text match still wins when it overlaps the position window,
+> because it spans the on-screen SENTENCE where the position window is just the speech
+> chunk around the click (card_0044 clipped mid-sentence on a garbled auto-caption);
+> a text match that doesn't overlap where we are is not trusted. A strong match
+> against a HUMAN-made track also corrects OCR misreads word-for-word
+> (`_snap_to_track`, card_0018: a punctuation glyph read as an alif poisoned the
+> translation) — never from auto captions, never for dissimilar words.
+>
+> **Browser bridge + "Cappa Bridge" extension (done).** `source/bridge.py`: a tiny
+> threaded `http.server` on 127.0.0.1:8765. The extension (`extension/`, manifest v3,
+> load-unpacked) snapshots `{videoId, currentTime, paused, title}` ~once a second on
+> youtube.com and POSTs it there — nothing leaves the machine. The bridge keeps the
+> latest (monotonic-stamped; position extrapolates between updates) plus a short
+> HISTORY: `mono_at(video_t)` maps a video timestamp to the monotonic moment it played
+> through the speakers — what lets a card cut caption-exact audio from the LOOPBACK
+> buffer when the source download isn't ready. It also receives the user's youtube.com
+> cookies (→ Netscape file for yt-dlp, whose anonymous fetches trip YouTube's bot
+> check). Extension hardening: v1.1 survives its service worker being replaced, v1.3
+> only the VISIBLE tab reports (two open videos used to fight over the bridge). With
+> the extension the video auto-selects; without it the launcher's **Use video from
+> clipboard** (paste a YouTube URL) is the manual path. Fail-soft: port taken = bridge
+> stays down with an `error`, app runs as before.
+>
+> **Settings + startup window (done).** `cappa/settings.py` persists `settings.json`
+> (missing/corrupt file = defaults; no Qt); `ui/startup.py` is a normal titled window
+> shown at launch and reopened LIVE via the launcher's **Settings…** item — it is the
+> settings home going forward: add a field in settings.py + a row in startup.py.
+> Fields today: **target language** (what clicked words translate INTO, default en) and
+> **video language** (what the user is learning; "auto" keeps per-word auto-detect,
+> naming it fixes lone-word detection) — the video language also picks the OCR rec
+> model (`ocr._SCRIPT_MODELS`): the default multi-script pack cannot read Arabic/
+> Cyrillic/Devanagari/Korean, so per-script rapidocr packs swap in live (Arabic
+> verified end-to-end; RTL hotspot words un-mirrored; spaces the rec model drops
+> between words rebuilt from word geometry). Plus **clip length sliders** (min/max)
+> wired to `timing.set_clip_bounds` — module globals read at call time, so a change
+> applies to the very next card.
+>
+> **Word-in-sentence translation (done).** `translate.py` translates the clicked word
+> INSIDE its sentence (the word marked with guillemet-style quotes, translated, the
+> marked span extracted from the result) so polysemous words resolve by context; fix
+> on top: a sentence containing the marker characters itself must not hijack the
+> marked span. The popup shows this contextual translation; both card translations go
+> through the same path. Still deep-translator/Google only — **no LLM, hard user
+> rule.**
+>
+> **Detection: caption blocks + drift + click_pool (done, card-driven).** The cards
+> folder doubles as the bug tracker — each fix cites the card that exposed it.
+> (1) card_0031: a two-line subtitle is two ledger Sentences, so a card carried half
+> the caption. `sentence.caption_block()` groups stacked rows (same glyph height,
+> adjacent, aligned — transitive, capped at 3 lines) and `CaptionBlock` quacks like
+> one Sentence for the builder; the popup translates with the whole block as context.
+> (2) The popup freezes the moment at CLICK time: screenshot, playback position, and
+> the live caption list — so a caption clearing while the popup sits open can't
+> hollow out the card. (3) c5bb718: a live caption REPLACED IN PLACE (next line, same
+> spot, no clean vanish) sat stale and unclickable until a manual refresh — the ledger
+> now fingerprint-watches live boxes (`drifted()`, 0.30 s confirm so control-bar
+> gradients don't retire real captions) and the same scan re-reads the new text;
+> FP_TOLERANCE tightened 14→8 (a new line over a remembered spot must never read as
+> "unchanged"). (4) card_0045: clicked in the half-second the ledger spent re-reading
+> the TOP line of a fresh two-liner — the click snapshot held only the clicked line,
+> and the card lost the line above even though it was plainly in the click screenshot
+> and passed stacking geometry (measured: heights 63/65 px, gap 17 px vs the 56.7 px
+> limit). NOT an audio-length issue (the audio window is derived FROM the sentence
+> text, never the reverse) and NOT the merge geometry: the line simply wasn't in the
+> ledger at the click instant. Fix: `sentence.click_pool()` — the card is built
+> seconds after the click, so while the clicked line is still live the CURRENT list
+> is the base (late siblings join) and snapshot lines only fill rows no live line
+> occupies; once the clicked line is gone, the screen has moved on and the snapshot
+> governs alone. Residual gap, known: click during the churn AND the caption clears
+> before "Create" is pressed → the snapshot alone still misses the sibling; the fix
+> would be fingerprint-checking pending clears in the ledger before surfacing them.
+>
+> **UI rounds (done).** Launcher menu grew **Use video from clipboard**, **Settings…**
+> and **Deselect window** (stop tracking without exiting — back to idle); the tooltip
+> status line shows the caption source (`yt: <state>`), so whether cards will get
+> caption-track timing is visible at a glance. The popup reports degraded saves on the
+> button itself ("Saved card_0046 · 2 notes") instead of a silent thumbs-up.
+>
+> **Next step:** the genanki `.apkg` export (the last build-order item — the drafts
+> in `cards/` already contain every field and media file a card needs), plus the
+> Japanese word-unit decision (local tokeniser vs resolving the clicked segment).
+>
+> _Deferred / known limits:_ multi-DPI across
 > mixed-scaling monitors may be slightly off (uses primary-screen DPR); tracking a
 > **non-maximized** window on Win11 includes its rounded corners, so a few desktop pixels
 > behind it bleed into the region — background activity there (cursor blink etc.) adds
-> occasional noise triggers (region clustering should reject these; revisit then).
+> occasional noise triggers (region clustering should reject these; revisit then);
+> a live box whose OCR read comes back empty has ZERO word hotspots and is never
+> re-read while it lives (retry-the-read lever, not built); loopback history is 90 s —
+> a word clicked later than that has no fallback audio (the caption-track path doesn't
+> care); the card_0045 residual gap above (churn + clear before "Create").
 
 ## Detection — the hard part (Steps 2–5)
 
