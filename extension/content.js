@@ -50,6 +50,10 @@
   }
 
   function snapshot() {
+    // Every YouTube tab runs this script and the app keeps the LATEST
+    // report — a background tab with a different video must stay silent,
+    // or the two tabs fight over which video Cappa aligns cards to.
+    if (document.hidden) return;
     const vid = videoId();
     if (!vid) return;
     const v = activeVideo();
@@ -59,7 +63,10 @@
       title: document.title.replace(/ - YouTube$/, ""),
       currentTime: v ? v.currentTime : null,
       paused: v ? v.paused : true,
-      duration: v && isFinite(v.duration) ? v.duration : null
+      duration: v && isFinite(v.duration) ? v.duration : null,
+      // Surfaced in the app's tooltip: proves which extension version is
+      // actually running (edited files do nothing until Chrome reloads it).
+      ext: chrome.runtime.getManifest ? chrome.runtime.getManifest().version : "?"
     };
     try {
       chrome.runtime.sendMessage({ type: "cappa-state", payload });
@@ -73,5 +80,8 @@
   }
 
   const timer = setInterval(snapshot, 700);
+  // Returning to this tab updates the app immediately instead of waiting
+  // out the interval (background timers are throttled, so it could lag).
+  document.addEventListener("visibilitychange", snapshot);
   snapshot();
 })();
