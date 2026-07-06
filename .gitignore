@@ -11,3 +11,5 @@ screenshots/
 *.png
 .env
 AGENTS.md
+cappa/source/.cache/
+settings.json
