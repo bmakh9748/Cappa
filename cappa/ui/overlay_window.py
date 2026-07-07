@@ -21,6 +21,11 @@ from .word_popup import WordPopup
 
 OFFSCREEN = -32000   # park the window here to hide it without destroying it
 TICK_MS = 30
+RECORDER_LINGER = 5.0   # bridge silent this long -> pause the audio recorder.
+                        # The extension posts only from a VISIBLE YouTube tab
+                        # (content.js skips document.hidden) and the bridge
+                        # already holds reports for 5s, so the recorder stops
+                        # ~10s after the user leaves the tab.
 MIN_SELECTION = 20   # ignore accidental micro-drags (logical px)
 EDGE_GRIP = 8        # grabbable band inside a locked region's border (logical px)
 
@@ -72,11 +77,19 @@ class OverlayWindow(QMainWindow):
                                  on_set_video=self._use_clipboard_video,
                                  on_settings=on_settings,
                                  on_deselect=self._go_idle)
-        # System-audio recorder: buffers continuously (audio plays whether or
-        # not we're tracking) so a clicked word's clip is already captured.
-        # Fail-soft — no device just means no audio on the card.
+        # System-audio recorder: rolling buffer so a clicked word's clip is
+        # already captured when they click. NOT unconditional (user call:
+        # recording their system audio while they're off the YouTube tab is
+        # not okay): once the extension has reported a visible YouTube tab,
+        # _gate_recorder pauses capture whenever those reports stop, and
+        # resumes when they're back. Sessions where the extension never
+        # speaks keep the old always-on recorder — it's the only audio their
+        # cards can get. Fail-soft — no device just means no audio.
         self._recorder = LoopbackRecorder()
         self._recorder.start()
+        self._bridge_ever = False     # extension reported at least once
+        self._bridge_lost_at = None   # when reports stopped (for the linger)
+        self._recorder_paused = False # paused by the gate (not by errors)
         # The video language from Settings: caption-track preference AND which
         # rec model OCR reads captions with (Arabic needs its own pack).
         self._video_language = video_language
@@ -738,10 +751,13 @@ class OverlayWindow(QMainWindow):
 
     # ------------------------------------------------------------ yt source
     def _poll_browser(self):
-        """Auto-select the video the browser extension reports. A no-op when the
-        extension isn't installed / the bridge is down (current() -> None) or the
-        video hasn't changed, so the manual clipboard path still works."""
+        """Auto-select the video the browser extension reports, and gate the
+        audio recorder on those reports arriving at all (_gate_recorder). A
+        no-op when the extension isn't installed / the bridge is down
+        (current() -> None) or the video hasn't changed, so the manual
+        clipboard path still works."""
         state = self._bridge.current()
+        self._gate_recorder(alive=state is not None)
         if not state:
             return
         self._ext_version = state.get("ext") or self._ext_version
@@ -751,6 +767,32 @@ class OverlayWindow(QMainWindow):
             self._source.set_video(state.get("url") or vid)
             print("[cappa] source: browser video %s (%s)"
                   % (vid, (state.get("title") or "?")[:50]))
+
+    def _gate_recorder(self, alive):
+        """Record system audio only while the extension is reporting a
+        visible YouTube tab. `alive` is this tick's bridge freshness. Only
+        ever arms itself once the extension has spoken (_bridge_ever), so a
+        session without the extension records continuously as before; after
+        that, reports stopping for RECORDER_LINGER means the user left the
+        tab — stop capturing until they're back. Cards built while paused
+        note the recorder's `error` instead of getting someone-else's-audio
+        clips."""
+        if alive:
+            self._bridge_ever = True
+            self._bridge_lost_at = None
+            if self._recorder_paused:
+                self._recorder_paused = False
+                self._recorder.start()
+            return
+        if not self._bridge_ever or self._recorder_paused:
+            return
+        now = time.monotonic()
+        if self._bridge_lost_at is None:
+            self._bridge_lost_at = now
+        elif now - self._bridge_lost_at >= RECORDER_LINGER:
+            self._recorder_paused = True
+            self._recorder.stop()
+            self._recorder.error = "recording paused — no YouTube tab in sight"
 
     def set_video_language(self, lang):
         """Apply a new video language from Settings: caption tracks fetched
