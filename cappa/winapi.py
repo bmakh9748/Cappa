@@ -5,6 +5,7 @@ the app talk about windows and input in plain terms (``root_window_at``,
 ``key_down``, ``set_click_through``) instead of raw handles and bit flags."""
 
 import ctypes
+import os
 from ctypes import wintypes
 
 import win32api
@@ -130,6 +131,49 @@ def raise_to_top(hwnd):
 
 def window_title(hwnd):
     return win32gui.GetWindowText(hwnd) or "window"
+
+
+def set_app_id(app_id):
+    """Give the process its own AppUserModelID BEFORE any window exists,
+    so the taskbar groups our windows as their own app instead of under
+    python.exe."""
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except OSError:
+        pass  # ancient Windows — taskbar just groups us with the interpreter
+
+
+def install_start_menu_shortcut(app_id, name, target, args, workdir, icon):
+    """Write (or refresh) a Start Menu shortcut carrying our AppUserModelID
+    and icon. This is where the Windows 11 taskbar takes a group's icon
+    from — it never asks the window (measured on build 26200: a window
+    icon alone always leaves python.exe's icon on the button). Side
+    benefit: Cappa becomes searchable and pinnable in Start."""
+    # COM machinery, imported only here: nothing else in the app needs it.
+    import pythoncom
+    from win32com.propsys import propsys, pscon
+    from win32com.shell import shell, shellcon
+
+    programs = shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0)
+    link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None,
+                                      pythoncom.CLSCTX_INPROC_SERVER,
+                                      shell.IID_IShellLink)
+    link.SetPath(target)
+    link.SetArguments(args)
+    link.SetWorkingDirectory(workdir)
+    link.SetIconLocation(icon, 0)
+    store = link.QueryInterface(propsys.IID_IPropertyStore)
+    store.SetValue(pscon.PKEY_AppUserModel_ID,
+                   propsys.PROPVARIANTType(app_id))
+    store.Commit()
+    file = link.QueryInterface(pythoncom.IID_IPersistFile)
+    lnk_path = os.path.join(programs, name + ".lnk")
+    file.Save(lnk_path, 0)
+    # Explorer caches shortcut icons hard; without this nudge a fresh or
+    # re-rendered icon can keep showing the stale one until the next logon.
+    # SHCNF_PATHW (missing from shellcon) is the str-path flavour.
+    shell.SHChangeNotify(shellcon.SHCNE_UPDATEITEM,
+                         0x0005 | shellcon.SHCNF_FLUSH, lnk_path, None)
 
 
 def exclude_from_capture(hwnd):

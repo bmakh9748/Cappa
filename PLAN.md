@@ -393,9 +393,19 @@ Boundary rules:
 > requirements.txt for now as the planned rec path).
 >
 > **UI: corner launcher replaces the control bar (done).** The wide in-overlay bar is
-> gone. `ui/launcher.py`: a 46px translucent rounded icon (placeholder "C" glyph until
-> the real logo is designed — swap `_draw_glyph()` then) parked bottom-left of the
-> primary screen, always on top, Parsec-style. Clicking it pops a dark menu with exactly
+> gone. `ui/launcher.py`: a 46px translucent rounded icon (the Cappa logo — 1b "Caption
+> tile" from the logo explorations: red #D0433B tile, two caption bars, painted by
+> `ui/logo.py` from the 128px design geometry; the state dots sit on small dark
+> discs so red dots survive the red tile) parked bottom-left of the primary screen.
+> The same logo is the app icon: `logo.app_icon()` on the QApplication covers the
+> startup/settings title bar and alt-tab, and for the TASKBAR (this Win11 build
+> ignores window icons — python.exe's icon showed no matter what) `app.py` renders
+> `%LOCALAPPDATA%\Cappa\Cappa.ico` and installs a Start Menu "Cappa" shortcut
+> carrying our AppUserModelID (`winapi.install_start_menu_shortcut`), which is
+> where the taskbar takes a group's icon from; side benefit, Cappa is searchable/
+> pinnable in Start. Fail-soft, and note the icon may only appear from the second
+> launch (the shell indexes the shortcut after the first button is created).
+> The launcher icon sits always on top, Parsec-style. Clicking it pops a dark menu with exactly
 > the available actions — Pick window / Select area (disabled until a window is tracked)
 > / Full screen / Exit (replaces the old ✕) — and a dot on the icon mirrors state (green
 > tracking · grey idle · red detector failed). The status line the old bar displayed

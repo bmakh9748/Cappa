@@ -18,12 +18,15 @@ roots() in its foreground check for the menu's sake. Both windows are
 excluded from screen capture, so they never pollute captured frames even
 when the tracked region covers this corner of the screen.
 
-The icon glyph is a placeholder until the real logo is designed — swap
-_draw_glyph() for an image/SVG then."""
+The icon is the Cappa logo (ui/logo.py — the 1b "Caption tile"), painted
+live so hover can fade the tile. The state dots sit on small dark discs
+because two of their colours are red-on-red against the tile."""
 
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter
+from PySide6.QtCore import QPoint, QRectF, Qt
+from PySide6.QtGui import QColor, QKeySequence, QPainter
+
+from . import logo
 
 from .. import winapi
 
@@ -163,19 +166,14 @@ class Launcher(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = self.rect().adjusted(1, 1, -1, -1)
-        p.setPen(QColor(255, 255, 255, 40))
-        p.setBrush(QColor(18, 20, 28, 235 if self._hover else 200))
-        p.drawRoundedRect(r, 13, 13)
-        self._draw_glyph(p, r)
+        self._draw_logo(p, r)
         if self._detector_ok is False:
             dot = QColor(226, 76, 76)     # detection offline
         elif self._tracking:
             dot = QColor(92, 200, 132)    # tracking a window
         else:
             dot = QColor(150, 154, 170)   # idle, nothing tracked
-        p.setPen(Qt.NoPen)
-        p.setBrush(dot)
-        p.drawEllipse(QPoint(r.right() - 8, r.bottom() - 8), 3, 3)
+        self._draw_dot(p, QPoint(r.right() - 8, r.bottom() - 8), dot)
         # Bottom-LEFT dot: the YouTube caption source. Green = caption track
         # ready (cards get exact audio), amber = fetching, red = this video
         # has no usable track. No dot until a video is known.
@@ -183,17 +181,20 @@ class Launcher(QWidget):
               "loading": QColor(226, 179, 76),
               "error": QColor(226, 76, 76)}.get(self._yt)
         if yt is not None:
-            p.setBrush(yt)
-            p.drawEllipse(QPoint(r.left() + 8, r.bottom() - 8), 3, 3)
+            self._draw_dot(p, QPoint(r.left() + 8, r.bottom() - 8), yt)
 
-    def _draw_glyph(self, p, r):
-        """Placeholder logo: a bold C. Swap for the real logo when it's
-        designed (drawPixmap over r, or a QSvgRenderer)."""
-        f = QFont("Segoe UI", 16)
-        f.setBold(True)
-        p.setFont(f)
-        p.setPen(QColor(234, 234, 240, 235))
-        p.drawText(r, Qt.AlignCenter, "C")
+    def _draw_logo(self, p, r):
+        """The tile from ui/logo.py, dimmed slightly until hovered."""
+        logo.paint_tile(p, QRectF(r), 235 if self._hover else 200)
+
+    def _draw_dot(self, p, center, color):
+        """A state dot on a dark disc — red dots are invisible straight on
+        the red tile."""
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(18, 20, 28, 220))
+        p.drawEllipse(center, 5, 5)
+        p.setBrush(color)
+        p.drawEllipse(center, 3, 3)
 
     def enterEvent(self, event):
         self._hover = True
