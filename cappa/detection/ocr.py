@@ -161,7 +161,9 @@ class TextReader:
             text = _respace(text, spans)
         elif text:
             spans = [(text, box)]  # no geometry: the line is one hotspot
-        return Sentence(text, box, spans), score
+        sentence = Sentence(text, box, spans)
+        sentence.ocr_conf = score  # cards warn when a shaky read got through
+        return sentence, score
 
     def _read_once(self, frame, box, pad):
         """One rec pass over `box` padded by `pad`: (text, score, spans),

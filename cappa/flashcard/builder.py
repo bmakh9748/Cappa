@@ -32,6 +32,12 @@ TRACK_SNAP_SIM = 0.66
 # no audio — and the note says what happened.
 SILENT_CLIP_PEAK = 100
 
+# Below this recognition confidence the card says its text is probably
+# misread. Caption reads run 0.9+; card_0060 (a fully-vocalized Arabic
+# poetry page, beyond the rec model) read at 0.45-0.52 and still produced a
+# confident-looking garbage card.
+OCR_SHAKY_CONF = 0.8
+
 
 def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
                 screenshotter=write_region_png, screenshot_png=None,
@@ -62,6 +68,11 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
     draft.cleared_at = getattr(sentence, "cleared_at", 0.0)
     draft.folder_path = next_card_dir(out_dir)
     attach_sentence_provenance(word, draft, sentence)
+    conf = getattr(sentence, "ocr_conf", None)
+    if conf is not None and conf < OCR_SHAKY_CONF:
+        draft.notes.append(
+            "OCR was unsure of this text (confidence %.2f) — the word and "
+            "sentence are probably misread" % conf)
 
     _write_screenshot(draft, region, screenshotter, screenshot_png,
                       screenshot_note)

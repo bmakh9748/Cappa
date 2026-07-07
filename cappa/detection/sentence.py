@@ -25,13 +25,19 @@ class Word:
 
 
 class Sentence:
-    __slots__ = ("text", "box", "words", "appeared_at", "cleared_at")
+    __slots__ = ("text", "box", "words", "appeared_at", "cleared_at",
+                 "ocr_conf")
 
     def __init__(self, text, box, word_spans):
         """word_spans: [(word_text, word_box), ...] left to right."""
         self.text = text
         self.box = box
         self.words = [Word(t, b, self) for t, b in word_spans]
+        # Recognition confidence of the read that produced this line (0-1),
+        # or None when unknown. A card built from a shaky read says so
+        # (card_0060: an unsupported page read at conf 0.45 made a
+        # confident-looking garbage card).
+        self.ocr_conf = None
         # Wall-clock (time.monotonic) when detection first accepted this line
         # and when its clear was noticed — the anchors the flashcard's audio
         # clip is cut from. 0.0 until set by the ledger. cleared_at stays 0.0
@@ -188,6 +194,14 @@ class CaptionBlock:
         self.box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
                     max(b[2] for b in boxes), max(b[3] for b in boxes))
         self.words = [w for s in self.lines for w in s.words]
+
+    @property
+    def ocr_conf(self):
+        """The block reads as its LEAST confident line: one garbled row
+        poisons the joined sentence just as much as all of them."""
+        confs = [s.ocr_conf for s in self.lines
+                 if getattr(s, "ocr_conf", None) is not None]
+        return min(confs) if confs else None
 
     @property
     def appeared_at(self):
