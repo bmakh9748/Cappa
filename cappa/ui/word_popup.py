@@ -26,7 +26,8 @@ from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
 from .. import flashcard
 from ..detection.sentence import caption_block, click_pool
-from ..translate import TranslationError, clean_word, translate
+from ..dictionary import meaning
+from ..translate import TranslationError, clean_word
 
 MARGIN = 10           # gap between the word and the popup
 MAX_TEXT_WIDTH = 300  # translation wraps instead of growing off-screen
@@ -176,9 +177,12 @@ class WordPopup(QWidget):
         self._req += 1
         # Translate with the WHOLE visible caption as context: a two-line
         # subtitle is one sentence split for layout, not two sentences.
+        # Rows join with commas — they usually break at clause boundaries,
+        # and Google parses comma'd clauses where it garbles the flat join
+        # (card_0074); a mid-clause wrap tolerates the stray comma.
         if word.sentence:
             lines = caption_block(word.sentence, self._snapshot_captions)
-            sentence = " ".join(s.text for s in lines if s.text)
+            sentence = ", ".join(s.text for s in lines if s.text)
         else:
             sentence = ""
         threading.Thread(
@@ -192,6 +196,8 @@ class WordPopup(QWidget):
     # ------------------------------------------------------------ internals
     def _capture_click_image(self):
         """Freeze the tracked video region at the word-click moment."""
+        if not flashcard.prefs.include("screenshot"):
+            return None, ""   # screenshots are off in the card settings
         try:
             region = (
                 self._region_provider() if self._region_provider else None
@@ -220,11 +226,11 @@ class WordPopup(QWidget):
             return None
 
     def _fetch(self, req, word_text, sentence_text):
-        """Helper thread: the blocking translation call. Never touches
-        widgets; the result crosses back through the queued _translated
-        signal."""
+        """Helper thread: the blocking meaning lookup (dictionary first,
+        contextual translation as fallback). Never touches widgets; the
+        result crosses back through the queued _translated signal."""
         try:
-            text, err = translate(word_text, sentence_text), ""
+            text, err = meaning(word_text, sentence_text), ""
         except TranslationError as exc:
             text, err = "", str(exc)
         except Exception:

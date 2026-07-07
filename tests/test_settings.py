@@ -52,6 +52,67 @@ def main():
             assert d0.min_clip_seconds == S.DEFAULT_MIN_CLIP
             assert d0.max_clip_seconds == S.DEFAULT_MAX_CLIP
             print("PASS settings: clip bounds roundtrip, clamp and fallback")
+
+            # Auto clip length: on by default, roundtrips off.
+            assert d0.auto_clip is True
+            S.save(S.Settings(auto_clip=False))
+            assert S.load().auto_clip is False
+            S.save(S.Settings(auto_clip=True))
+            assert S.load().auto_clip is True
+            print("PASS settings: auto clip length defaults on, roundtrips")
+
+            # Card field placements roundtrip; junk is sanitized: unknown
+            # keys dropped, bad placements defaulted. Any field may be off,
+            # the clicked word included.
+            fields = dict(S.DEFAULT_CARD_FIELDS)
+            fields["screenshot"] = S.CARD_OFF
+            fields["word"] = S.CARD_OFF
+            fields["word_translation"] = S.CARD_FRONT
+            S.save(S.Settings(card_fields=fields))
+            assert S.load().card_fields == fields
+            with open(S._PATH, "w", encoding="utf-8") as f:
+                json.dump({"card_fields": {"word": "off", "audio": "left",
+                                           "bogus": "front"}}, f)
+            got = S.load()
+            want = dict(S.DEFAULT_CARD_FIELDS)
+            want["word"] = S.CARD_OFF
+            assert got.card_fields == want, got.card_fields
+            with open(S._PATH, "w", encoding="utf-8") as f:
+                json.dump({"card_fields": "nonsense"}, f)
+            assert S.load().card_fields == S.DEFAULT_CARD_FIELDS
+            assert d0.card_fields == S.DEFAULT_CARD_FIELDS
+            print("PASS settings: card fields roundtrip and sanitize")
+
+            # Custom card template roundtrip; malformed or all-blank means
+            # auto (None), and the default is no template at all.
+            custom = {"front": "<b>{{Word}}</b>", "back": "{{FrontSide}}",
+                      "css": ""}
+            S.save(S.Settings(card_template=custom))
+            assert S.load().card_template == custom
+            with open(S._PATH, "w", encoding="utf-8") as f:
+                json.dump({"card_template": {"front": 5}}, f)
+            assert S.load().card_template is None
+            assert S.Settings(card_template={"front": "", "back": " ",
+                                             "css": ""}).card_template is None
+            assert d0.card_template is None
+            print("PASS settings: card template roundtrip and sanitize")
+
+            # The Default <-> Custom switch: a stored design can sit unused
+            # (flag off) and be switched back on; the flag means nothing
+            # without a design to use.
+            S.save(S.Settings(card_template=custom, use_custom_template=True))
+            got = S.load()
+            assert got.use_custom_template is True and got.card_template == (
+                custom)
+            S.save(S.Settings(card_template=custom, use_custom_template=False))
+            got = S.load()
+            assert got.use_custom_template is False
+            assert got.card_template == custom   # kept while unused
+            assert S.Settings(use_custom_template=True
+                              ).use_custom_template is False
+            assert d0.use_custom_template is False
+            print("PASS settings: custom-design switch persists, needs a "
+                  "design")
         finally:
             S._PATH = original_path
 

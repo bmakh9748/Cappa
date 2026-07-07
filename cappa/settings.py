@@ -1,7 +1,7 @@
 """App settings: a tiny persisted holder.
 
-Basic for now -- just the language clicked words are translated into. This is
-the home for future settings: add a field here (with a default and validation in
+Languages, card audio clip bounds, and what goes on a flashcard. This is the
+home for future settings: add a field here (with a default and validation in
 load()) and a row in cappa.ui.startup. Persists to settings.json in the project
 root; a missing/corrupt file just yields defaults. No Qt."""
 
@@ -44,11 +44,65 @@ _SOURCE_CODES = {code for code, _ in SOURCE_LANGUAGES}
 
 # Card audio clip length bounds (seconds), user-tunable in the settings
 # panel. The minimum is how much a one-word blip caption is widened to; the
-# maximum caps any clip however long the caption ran.
+# maximum caps any clip however long the caption ran. Auto (the default —
+# no length knowledge needed) ignores the maximum and lets the clip fit
+# the whole sentence, up to timing.AUTO_MAX_CLIP.
 MIN_CLIP_RANGE = (0.5, 1.5)
 MAX_CLIP_RANGE = (1.5, 5.0)
 DEFAULT_MIN_CLIP = 1.0
 DEFAULT_MAX_CLIP = 3.0
+DEFAULT_AUTO_CLIP = True
+
+# What goes on a flashcard, and on which side. Each field is placed on the
+# card's front, its back, or turned off; "off" means the piece is not
+# gathered at all (no screenshot capture, no audio cut, no translation
+# call). (key, label, default placement) in the order the settings rows and
+# a future card render use. cappa.flashcard.prefs holds the live copy the
+# card builder reads.
+CARD_FRONT = "front"
+CARD_BACK = "back"
+CARD_OFF = "off"
+CARD_PLACEMENTS = (CARD_FRONT, CARD_BACK, CARD_OFF)
+
+CARD_FIELDS = [
+    ("word", "Word", CARD_FRONT),
+    ("word_translation", "Word translation", CARD_BACK),
+    ("sentence", "Sentence", CARD_FRONT),
+    ("sentence_translation", "Sentence translation", CARD_BACK),
+    ("screenshot", "Screenshot", CARD_FRONT),
+    ("audio", "Audio", CARD_FRONT),
+]
+DEFAULT_CARD_FIELDS = {key: default for key, _, default in CARD_FIELDS}
+
+
+def valid_card_fields(value):
+    """Sanitize a card-field mapping: unknown keys are dropped, missing or
+    invalid placements get their defaults. Any field may be off -- even the
+    clicked word (e.g. a listening card that shows only audio + sentence)."""
+    fields = dict(DEFAULT_CARD_FIELDS)
+    if isinstance(value, dict):
+        for key in fields:
+            v = value.get(key)
+            if v in CARD_PLACEMENTS:
+                fields[key] = v
+    return fields
+
+
+def valid_card_template(value):
+    """A custom card template is a {"front", "back", "css"} dict of strings
+    (Anki-style HTML + CSS); None for anything malformed or entirely blank.
+    A stored template is only USED while use_custom_template is on --
+    otherwise the default design is regenerated from the field placements
+    whenever they change (cappa.flashcard.template) and the custom one just
+    stays saved, ready to switch back to."""
+    if not isinstance(value, dict):
+        return None
+    parts = {k: value.get(k) for k in ("front", "back", "css")}
+    if not all(isinstance(v, str) for v in parts.values()):
+        return None
+    if not any(v.strip() for v in parts.values()):
+        return None
+    return parts
 
 
 def _bounded(value, lo, hi, default):
@@ -63,11 +117,19 @@ class Settings:
     def __init__(self, target_language=DEFAULT_TARGET,
                  source_language=DEFAULT_SOURCE,
                  min_clip_seconds=DEFAULT_MIN_CLIP,
-                 max_clip_seconds=DEFAULT_MAX_CLIP):
+                 max_clip_seconds=DEFAULT_MAX_CLIP,
+                 card_fields=None, card_template=None,
+                 use_custom_template=False, auto_clip=DEFAULT_AUTO_CLIP):
         self.target_language = target_language
         self.source_language = source_language
         self.min_clip_seconds = min_clip_seconds
         self.max_clip_seconds = max_clip_seconds
+        self.auto_clip = bool(auto_clip)
+        self.card_fields = valid_card_fields(card_fields)
+        self.card_template = valid_card_template(card_template)
+        # Only meaningful with a design to use.
+        self.use_custom_template = (bool(use_custom_template)
+                                    and self.card_template is not None)
 
     def to_dict(self):
         return {
@@ -75,6 +137,10 @@ class Settings:
             "source_language": self.source_language,
             "min_clip_seconds": self.min_clip_seconds,
             "max_clip_seconds": self.max_clip_seconds,
+            "auto_clip": self.auto_clip,
+            "card_fields": self.card_fields,
+            "card_template": self.card_template,
+            "use_custom_template": self.use_custom_template,
         }
 
 
@@ -95,7 +161,10 @@ def load():
                         *MIN_CLIP_RANGE, default=DEFAULT_MIN_CLIP)
     max_clip = _bounded(data.get("max_clip_seconds"),
                         *MAX_CLIP_RANGE, default=DEFAULT_MAX_CLIP)
-    return Settings(target, source, min_clip, max_clip)
+    return Settings(target, source, min_clip, max_clip,
+                    data.get("card_fields"), data.get("card_template"),
+                    data.get("use_custom_template", False),
+                    data.get("auto_clip", DEFAULT_AUTO_CLIP))
 
 
 def save(settings):

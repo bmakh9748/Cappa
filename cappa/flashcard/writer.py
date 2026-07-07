@@ -3,6 +3,8 @@
 import json
 import os
 
+from . import prefs
+
 CARDS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "cards",
@@ -71,5 +73,10 @@ def _metadata(draft, folder):
         "audio_seconds": draft.audio_seconds,
         "audio_window": draft.audio_window,
         "video_source": draft.source_meta,
+        # The front/back layout and Anki-style template configured when this
+        # card was made, so the future .apkg export renders it the way the
+        # user had it set then.
+        "card_layout": prefs.layout(),
+        "card_template": prefs.template(),
         "notes": list(draft.notes),
     }

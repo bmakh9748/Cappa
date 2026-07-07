@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from . import settings as settings_mod
 from . import translate
 from . import winapi
+from .flashcard.prefs import set_card_fields, set_card_template
 from .flashcard.timing import set_clip_bounds
 from .ui import logo
 from .ui.overlay_window import OverlayWindow
@@ -63,30 +64,56 @@ def main():
     app.setWindowIcon(logo.app_icon())  # startup/settings title bar, alt-tab
     _install_taskbar_icon()
 
-    # Show the startup window first: pick the translation target, then start.
-    # The overlay (and its launcher icon) is created only once the user
-    # confirms; afterwards the same window reopens as a live settings panel
-    # from the launcher's Settings item. `state` keeps the references alive.
+    # Show the startup window first: pick the settings, then start. The
+    # overlay (and its launcher icon) is created only when the user presses
+    # Start Cappa; afterwards the same window reopens as a live settings
+    # panel from the launcher's Settings item, where Save applies + persists
+    # and Cancel just closes it. `state` keeps the references alive.
     app_settings = settings_mod.load()
     translate.set_source_language(app_settings.source_language)
     translate.set_target_language(app_settings.target_language)
     state = {"overlay": None}
     startup = StartupWindow(app_settings)
 
-    def on_confirmed():
+    def apply_settings():
+        """Persist and push the confirmed settings into the live modules."""
         translate.set_source_language(app_settings.source_language)
         translate.set_target_language(app_settings.target_language)
         set_clip_bounds(app_settings.min_clip_seconds,
-                        app_settings.max_clip_seconds)
+                        app_settings.max_clip_seconds,
+                        auto=app_settings.auto_clip)
+        set_card_fields(app_settings.card_fields)
+        # A stored custom design only drives cards while it's switched on;
+        # otherwise the default design follows the field placements.
+        set_card_template(app_settings.card_template
+                          if app_settings.use_custom_template else None)
         settings_mod.save(app_settings)
-        cap_lang = settings_mod.caption_lang(app_settings.source_language)
+        return settings_mod.caption_lang(app_settings.source_language)
+
+    def on_started():
+        cap_lang = apply_settings()
         if state["overlay"] is None:
             state["overlay"] = OverlayWindow(on_settings=startup.open_settings,
                                              video_language=cap_lang)
-        else:
-            state["overlay"].set_video_language(cap_lang)
         startup.hide()
 
-    startup.confirmed.connect(on_confirmed)
+    def on_saved():
+        cap_lang = apply_settings()
+        if state["overlay"] is not None:
+            # Settings panel over a running overlay: apply live and close.
+            # On first run (no overlay yet) the window stays open -- it is
+            # still the app's front door.
+            state["overlay"].set_video_language(cap_lang)
+            startup.hide()
+
+    def on_cancelled():
+        # Edits are already reverted; a running overlay means the panel is
+        # a dialog that should close. First run keeps the window up.
+        if state["overlay"] is not None:
+            startup.hide()
+
+    startup.started.connect(on_started)
+    startup.saved.connect(on_saved)
+    startup.cancelled.connect(on_cancelled)
     startup.show()
     return app.exec()
