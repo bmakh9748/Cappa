@@ -12,6 +12,8 @@ similarity, and cut the card's audio from the downloaded track at the matched
   youtube.py     yt-dlp fetch of metadata/captions/audio + ffmpeg slicing
   session.py     SourceSession: the active video, fetched on a daemon thread
   bridge.py      localhost server the browser extension reports position to
+  ocr_transcript.py  Cappa's own transcript: every caption row it watched,
+                 appended to transcripts/<video>.jsonl as rows leave the screen
 
 vtt/transcript are pure and import-cheap; youtube.py lazy-imports yt-dlp, so
 importing this package never requires the network or yt-dlp."""

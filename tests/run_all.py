@@ -30,6 +30,7 @@ UNIT = [
     "test_audio.py",         # loopback ring buffer: clip math, device rebind
     "test_flashcard.py",     # draft folders: text, provenance, media paths
     "test_youtube_source.py",  # VTT parse + OCR->caption alignment (fixtures)
+    "test_ocr_transcript.py",  # per-video ledger of watched caption rows
     "test_bridge.py",        # localhost browser bridge: POST/GET + play_time
     "test_ocr_read.py",      # rec reads Japanese + English (loads the model)
     "test_ocr_arabic.py",    # video language -> rec model: Arabic pack works

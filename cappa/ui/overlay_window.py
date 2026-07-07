@@ -16,6 +16,7 @@ from ..audio import LoopbackRecorder
 from ..detection.worker import CaptureWorker
 from ..flashcard import prefs as card_prefs
 from ..source.bridge import BrowserBridge
+from ..source.ocr_transcript import OcrTranscriptLog
 from ..source.session import SourceSession
 from .launcher import Launcher
 from .word_popup import WordPopup
@@ -132,6 +133,10 @@ class OverlayWindow(QMainWindow):
         self._source.set_video_mapper(self._bridge.video_at)
         self._bridge_video_id = None      # last video the bridge auto-selected
         self._caption_retry = (None, 0, 0.0)  # (video, attempts, last try)
+        # Cappa's own transcript of the captions it watches: rows that leave
+        # the screen are appended to transcripts/<video>.jsonl with their
+        # on-screen life mapped to video time.
+        self._ocr_log = OcrTranscriptLog()
         if self._bridge.error:
             print("[cappa] browser bridge: " + self._bridge.error)
         self._popup = WordPopup(self, region_provider=self._card_region,
@@ -740,6 +745,10 @@ class OverlayWindow(QMainWindow):
         live_captions is [(box, words)] — it fully replaces what we had."""
         events, captions = payload
         self._captions = captions
+        # Cappa's own transcript: rows that just left the screen get written
+        # down with their on-screen life — the durable record cards cite.
+        self._ocr_log.observe(self._bridge_video_id, captions,
+                              self._bridge.video_at)
         self._render_status()
         self.update()
 
