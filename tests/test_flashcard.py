@@ -294,6 +294,21 @@ tall = caption_block(stack[1], stack)
 assert tall == stack[:3], [s.text for s in tall]   # clicked row 1 + neighbours
 print("PASS: caption blocks cap at 3 lines around the clicked one")
 
+# Rows whose boxes BLEED into each other are still one block. Geometry is
+# card_0052's: an outline/glow hardsub whose detector boxes overlap 18px
+# vertically (82px-tall rows), which the old strict no-overlap rule read as
+# "not stacked" — the card kept only the clicked bottom line. A same-row
+# re-read (near-identical box) must still refuse to stack.
+glow_top = Sentence('“GENE" DI KILLER SHACK', (414, 653, 1305, 735),
+                    [('“GENE"', (414, 653, 640, 735))])
+glow_bot = Sentence("UDAH MAU KELAR, GUYS!", (400, 717, 1314, 799),
+                    [("KELAR,", (818, 717, 1104, 799))])
+reread = Sentence("UDAH MAU KELAR, GUYS!", (402, 719, 1310, 797), [])
+bled = caption_block(glow_bot, [glow_top, chat])
+assert bled == [glow_top, glow_bot], [s.text for s in bled]
+assert caption_block(glow_bot, [reread, chat]) == [glow_bot]
+print("PASS: bleeding glow-font rows stack, a same-row re-read never does")
+
 with tempfile.TemporaryDirectory() as tmp:
     draft = build_draft(
         line2.words[1],                      # "NYA", clicked in the SECOND line

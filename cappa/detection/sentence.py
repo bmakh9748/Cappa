@@ -61,6 +61,14 @@ BLOCK_X_OVERLAP = 0.5      # min horizontal overlap, × the narrower row
 BLOCK_MAX_LINES = 3        # subtitles never render more rows than this; a
                            # taller stack means something else (a chat
                            # column) chained in and must be cut back
+BLOCK_ROW_BLEED = 0.45     # max vertical OVERLAP between rows, × min row
+                           # height: outline/glow fonts pad the detector's
+                           # boxes past the glyphs, so adjacent rows of one
+                           # block genuinely overlap (card_0052: 18px on
+                           # 82px-tall rows)
+BLOCK_ROW_APART = 0.5      # min centre-to-centre distance, × min row height:
+                           # centres closer than this are one row seen twice,
+                           # never two stacked rows
 
 
 def _stacked(a, b):
@@ -80,7 +88,20 @@ def _stacked(a, b):
     elif a.box[1] >= b.box[3]:      # b above a
         gap = a.box[1] - b.box[3]
     else:
-        return False                # vertically overlapping: not stacked rows
+        # Overlapping boxes are still stacked rows when the overlap is the
+        # font's outline/glow bleeding one row's box into the next
+        # (card_0052: the top line's box ended 18px below the bottom line's
+        # start, the block was refused, and the card kept half its
+        # caption). Shallow bleed with the centres a clear row apart is a
+        # stack; anything deeper is one row seen twice, or text drawn over
+        # text — not a block.
+        bleed = min(a.box[3], b.box[3]) - max(a.box[1], b.box[1])
+        if bleed > BLOCK_ROW_BLEED * min(ah, bh):
+            return False
+        apart = abs((a.box[1] + a.box[3]) - (b.box[1] + b.box[3])) / 2.0
+        if apart < BLOCK_ROW_APART * min(ah, bh):
+            return False
+        gap = 0
     return gap <= BLOCK_ROW_GAP * min(ah, bh)
 
 
