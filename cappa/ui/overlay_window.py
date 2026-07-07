@@ -14,6 +14,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QCursor, QFont
 from .. import winapi
 from ..audio import LoopbackRecorder
 from ..detection.worker import CaptureWorker
+from ..flashcard import prefs as card_prefs
 from ..source.bridge import BrowserBridge
 from ..source.session import SourceSession
 from .launcher import Launcher
@@ -26,6 +27,12 @@ RECORDER_LINGER = 5.0   # bridge silent this long -> pause the audio recorder.
                         # (content.js skips document.hidden) and the bridge
                         # already holds reports for 5s, so the recorder stops
                         # ~10s after the user leaves the tab.
+DOT_STALE = 2.0      # extension silent this long -> the yt dot goes dark.
+                     # The content script posts ~700ms ticks from a VISIBLE
+                     # tab, so three missed ticks means the tab was closed
+                     # or hidden. The dot reacts here, near-instantly; the
+                     # RECORDER keeps its longer linger below — stop/start
+                     # churn on every tab flick is costly, a dark dot isn't.
 MIN_SELECTION = 20   # ignore accidental micro-drags (logical px)
 EDGE_GRIP = 8        # grabbable band inside a locked region's border (logical px)
 
@@ -86,7 +93,17 @@ class OverlayWindow(QMainWindow):
         # speaks keep the old always-on recorder — it's the only audio their
         # cards can get. Fail-soft — no device just means no audio.
         self._recorder = LoopbackRecorder()
-        self._recorder.start()
+        # Card audio OFF in settings leaves the whole video machinery
+        # without a customer: don't record, don't auto-select videos, no
+        # caption/audio downloads (the user's call: "if i'm not using audio
+        # i really don't need you to track the video"). _poll_browser
+        # re-reads the setting each tick, so the panel retunes it live.
+        self._audio_off = not card_prefs.include("audio")
+        if self._audio_off:
+            self._recorder.error = ("recording off — card audio is "
+                                    "disabled in settings")
+        else:
+            self._recorder.start()
         self._bridge_ever = False     # extension reported at least once
         self._bridge_lost_at = None   # when reports stopped (for the linger)
         self._recorder_paused = False # paused by the gate (not by errors)
@@ -608,8 +625,14 @@ class OverlayWindow(QMainWindow):
                 text += f"   ·   {n} caption" + ("" if n == 1 else "s")
         else:
             text = self._base_status
-        if self._source.status != "idle":
+        if self._audio_off:
+            text += "   ·   card audio off"
+        elif self._source.status != "idle":
             text += "   ·   yt: " + self._source.status
+        elif self._bridge.error:
+            # A dead bridge otherwise looks exactly like "no YouTube open"
+            # (the port collision with AnkiConnect hid behind that for days).
+            text += "   ·   ⚠ yt bridge down: port in use?"
         if self._ext_version:
             text += "   ·   ext " + self._ext_version
         self.launcher.set_status(text)
@@ -619,7 +642,15 @@ class OverlayWindow(QMainWindow):
     def _yt_light(self):
         """The launcher's caption-source dot: 'ready' (green) = caption track
         usable for cards, 'loading' (amber) = fetch in flight, 'error' (red)
-        = this video has no usable track, None = no video yet."""
+        = this video has no usable track, None (dark) = no video yet — or
+        nothing is WATCHING one: the YouTube tab closed (the recorder gate's
+        signal) or card audio is off. A green dot must mean "the next card
+        gets caption-exact audio", which is a lie once the tab is gone."""
+        if self._audio_off or self._recorder_paused:
+            return None
+        age = self._bridge.age()
+        if age is not None and age > DOT_STALE:
+            return None   # tab just closed/hidden: dark within ~2s
         if self._source.transcript_ready:
             return "ready"
         status = self._source.status
@@ -758,7 +789,21 @@ class OverlayWindow(QMainWindow):
         audio recorder on those reports arriving at all (_gate_recorder). A
         no-op when the extension isn't installed / the bridge is down
         (current() -> None) or the video hasn't changed, so the manual
-        clipboard path still works."""
+        clipboard path still works. All of it stands down while card audio
+        is off in the settings — nothing would use what it gathers."""
+        off = not card_prefs.include("audio")
+        if off != self._audio_off:
+            self._audio_off = off
+            if off:
+                self._bridge_video_id = None   # re-select on re-enable
+                self._bridge_lost_at = None
+                self._recorder.stop()
+                self._recorder.error = ("recording off — card audio is "
+                                        "disabled in settings")
+            elif not self._recorder_paused:
+                self._recorder.start()
+        if self._audio_off:
+            return
         state = self._bridge.current()
         self._gate_recorder(alive=state is not None)
         if not state:
