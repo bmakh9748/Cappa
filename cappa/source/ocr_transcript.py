@@ -32,6 +32,9 @@ REPEAT_GAP = 10.0   # the same text clearing again within this many seconds
                     # re-watch: log it once. Deliberate re-reads — a rewind —
                     # clear well apart and are all welcome (user call: every
                     # read is an observation, duplicates always match).
+HINT_RADIUS = 120.0  # window_hint only trusts sightings this close to the
+                     # click: a stock phrase repeated elsewhere in the video
+                     # must not lend its timing to this row
 
 
 class OcrTranscriptLog:
@@ -44,6 +47,7 @@ class OcrTranscriptLog:
         self._live = {}    # id(sentence) -> (sentence, video_id)
         self._done = set() # ids written but still listed: never write twice
         self._recent = {}  # video_id -> deque of (text, cleared_monotonic)
+        self._read = {}    # video_id -> records read back for window_hint
 
     def observe(self, video_id, sentences, video_at=lambda m: None):
         current = set()
@@ -79,10 +83,7 @@ class OcrTranscriptLog:
             "appeared_monotonic": round(appeared, 3),
             "cleared_monotonic": round(cleared, 3),
         }
-        # The id names a file but arrives from the browser: keep only the
-        # characters a real YouTube id can hold.
-        vid = "".join(ch for ch in str(video_id)
-                      if ch.isalnum() or ch in "-_")[:32]
+        vid = _safe_vid(video_id)
         if not vid:
             return
         recent = self._recent.setdefault(vid, deque(maxlen=8))
@@ -90,6 +91,8 @@ class OcrTranscriptLog:
                for txt, at in recent):
             return                          # blip loop, not a re-watch
         recent.append((s.text, cleared))
+        if vid in self._read:
+            self._read[vid].append(rec)     # keep the hint cache current
         try:
             os.makedirs(self._root, exist_ok=True)
             path = os.path.join(self._root, "%s.jsonl" % vid)
@@ -97,6 +100,69 @@ class OcrTranscriptLog:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except OSError:
             pass
+
+    # ------------------------------------------------------------- read-back
+    def window_hint(self, video_id, text, near_t=None, radius=HINT_RADIUS):
+        """The video-time window of a previous SIGHTING of `text` on this
+        video — {'start': appeared, 'end': cleared-or-None} — or None. This
+        is the payoff of keeping our own transcript ('you should have saved
+        where the caption popped up' — card_0009: watch, rewind, pause,
+        click): when the row's LIVE appearance is worthless because it was
+        born of a seek or a pause, an earlier watch already wrote down its
+        real pop. The EARLIEST mapped sighting near the click wins — a seek
+        landing mid-row logs a later appearance, never an earlier one, so
+        the minimum is the closest thing to the row's true start the log
+        holds."""
+        vid = _safe_vid(video_id)
+        key = _norm_hint(text)
+        if not vid or not key:
+            return None
+        best = None
+        for rec in self._records(vid):
+            start = rec.get("appeared_video")
+            if start is None or _norm_hint(rec.get("text")) != key:
+                continue
+            if near_t is not None and abs(start - near_t) > radius:
+                continue
+            if best is None or start < best.get("appeared_video"):
+                best = rec
+        if best is None:
+            return None
+        return {"start": best["appeared_video"],
+                "end": best.get("cleared_video")}
+
+    def _records(self, vid):
+        """All records logged for `vid`, read back once and kept current as
+        new rows are written. Disk trouble just means no hints."""
+        if vid in self._read:
+            return self._read[vid]
+        recs = []
+        try:
+            with open(os.path.join(self._root, "%s.jsonl" % vid),
+                      encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        recs.append(json.loads(line))
+                    except ValueError:
+                        continue
+        except OSError:
+            pass
+        self._read[vid] = recs
+        return recs
+
+
+def _safe_vid(video_id):
+    """The id names a file but arrives from the browser: keep only the
+    characters a real YouTube id can hold."""
+    return "".join(ch for ch in str(video_id or "")
+                   if ch.isalnum() or ch in "-_")[:32]
+
+
+def _norm_hint(text):
+    """Sightings of one row must match across watches even when OCR jitters
+    the punctuation/spacing ('KAN, YO?' vs 'KAN,YO?' — cards 2/3 were the
+    same line): compare on letters and digits alone, casefolded."""
+    return "".join(ch for ch in (text or "").casefold() if ch.isalnum())
 
 
 def _mapped(video_at, mono):

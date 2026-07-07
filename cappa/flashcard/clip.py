@@ -185,7 +185,7 @@ def _appearance(sentence, source, near_t, draft=None):
     return t
 
 
-def _onscreen_match(sentence, source, near_t, t_appear):
+def _onscreen_match(sentence, source, near_t, t_appear, recalled=None):
     """A window built purely from the clicked row's on-screen life, for when
     the caption track offers NOTHING trustworthy near the click. card_0080:
     the track was ready (green dot) but its ASR had a hole wider than
@@ -193,8 +193,9 @@ def _onscreen_match(sentence, source, near_t, t_appear):
     came up empty — and the card lost its audio to a silent loopback even
     though the source audio and the bridge's time mapping were both sitting
     right there. Requires a click position (the stamp was sanity-checked
-    against it in _appearance). Same dict shape as the Transcript windows,
-    by='onscreen'."""
+    against it in _appearance). `recalled` is the row's previous logged
+    sighting, whose clear bounds the end when no live clear exists. Same
+    dict shape as the Transcript windows, by='onscreen'."""
     if near_t is None or t_appear is None:
         return None
     cleared = getattr(sentence, "cleared_at", 0.0) or 0.0
@@ -202,6 +203,8 @@ def _onscreen_match(sentence, source, near_t, t_appear):
     if cleared > 0.0:
         t_end = getattr(source, "video_time_at", lambda m: None)(
             cleared - timing.CLEAR_LAG)
+    if t_end is None and recalled is not None:
+        t_end = recalled.get("end")
     if t_end is None:
         t_end = _live_end(source, near_t)
     start = max(0.0, t_appear - APPEAR_BACKSHIFT)
@@ -282,11 +285,27 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
     except Exception:
         pass
     t_appear = _appearance(sentence, source, near_t, draft)
+    # No live anchor (the row appeared off a seek, or on a paused frame)?
+    # The OCR transcript log may have seen this exact row pop during an
+    # EARLIER steady watch — 'you should have saved where the caption
+    # popped up' (card_0009: watch, rewind, pause, click). It did; this
+    # reads it back.
+    recalled = None
+    if t_appear is None and text:
+        recalled = getattr(source, "sighting_window",
+                           lambda t, near_t=None: None)(text, near_t)
+        if recalled and recalled.get("start") is not None:
+            t_appear = recalled["start"]
+            draft.notes.append(
+                "clip anchored at the row's previous sighting (its live "
+                "appearance was off a pause/seek)")
+        else:
+            recalled = None
     match = choose_window(text_match, pos_match, near_t,
                           auto=bool(meta.get("caption_auto")),
                           has_life=t_appear is not None)
     if not match:
-        match = _onscreen_match(sentence, source, near_t, t_appear)
+        match = _onscreen_match(sentence, source, near_t, t_appear, recalled)
     if not match:
         draft.notes.append(
             "caption track: no match for this line"
@@ -305,6 +324,10 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         "match_score": round(match.get("score", 0.0), 3),
         "caption_text": match.get("text", ""),
     }
+    if recalled is not None:
+        draft.source_meta["anchored_at_sighting"] = round(t_appear, 3)
+        if recalled.get("end") is not None:
+            draft.source_meta["sighting_cleared"] = round(recalled["end"], 3)
 
     # A one-word caption can be a fraction of a second: widen the window so
     # the finished clip (window + pre/postroll) is never under MIN_CLIP. And
@@ -356,6 +379,8 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
                 cleared - timing.CLEAR_LAG)
             if t_end is not None:
                 draft.source_meta["onscreen_cleared"] = round(t_end, 3)
+        if t_end is None and recalled is not None:
+            t_end = recalled.get("end")   # the previous sighting's clear
         if t_end is None and near_t is not None:
             t_end = _live_end(source, near_t)
         # _appearance already rejected stamps mapping past the click; the

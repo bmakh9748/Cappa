@@ -33,6 +33,7 @@ class SourceSession:
         self._mono_mapper = None         # video_t -> monotonic seconds, or None
         self._video_mapper = None        # monotonic seconds -> video_t, or None
         self._steady_prober = None       # mono -> True/False/None (bridge)
+        self._sighting_lookup = None     # (text, near_t) -> logged window
         self._audio_retry = threading.Lock()  # one download retry at a time
         self.transcript_ready = False   # captions fetched + aligned-ready
         self.audio_ready = False        # audio downloaded, clips can be cut
@@ -140,6 +141,23 @@ class SourceSession:
         monotonic moment?' (the bridge's steady_at). Lets the card path
         refuse an appearance stamp born of a pause or a seek."""
         self._steady_prober = prober
+
+    def set_sighting_lookup(self, lookup):
+        """Supply a callable (text, near_t) -> previous-sighting window from
+        the OCR transcript log. Lets a card whose row appeared off a
+        seek/pause anchor at the moment an earlier watch SAW it pop."""
+        self._sighting_lookup = lookup
+
+    def sighting_window(self, text, near_t=None):
+        """A previous logged sighting's {'start','end'} for this text, or
+        None. See flashcard.clip for the caller."""
+        lookup = self._sighting_lookup
+        if lookup is None or not text:
+            return None
+        try:
+            return lookup(text, near_t)
+        except Exception:
+            return None
 
     def steady_at(self, mono):
         """Was playback continuous around monotonic `mono`? True/False, or

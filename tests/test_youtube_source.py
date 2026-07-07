@@ -91,7 +91,8 @@ class FakeSource:
     transcript_ready = True
 
     def __init__(self, match, meta, pos=None, mono=None, clip_fails=False,
-                 appear_t=None, clear_t=None, paused=None, steady=None):
+                 appear_t=None, clear_t=None, paused=None, steady=None,
+                 sighting=None):
         self._match = match
         self._meta = meta
         self._pos = pos
@@ -101,6 +102,7 @@ class FakeSource:
         self._clear_t = clear_t    # canned clear video-time, or None
         self._paused = paused      # canned bridge paused state (None=unknown)
         self._steady = steady      # canned steady-playback answer (None=unknown)
+        self._sighting = sighting  # canned previous-sighting window, or None
         self.sliced = None
 
     def is_paused(self):
@@ -108,6 +110,9 @@ class FakeSource:
 
     def steady_at(self, mono):
         return self._steady
+
+    def sighting_window(self, text, near_t=None):
+        return self._sighting
 
     def video_time_at(self, mono):
         # Tests stamp appearances near mono 100 and clears well after:
@@ -364,6 +369,48 @@ def test_unsteady_appearance_cannot_anchor():
     assert abs(sliced2[0] - (201.313 - 1.0)) < 1e-6, sliced2
     print("PASS builder: a seek-landing appearance is refused — the "
           "position window survives; a steady one still rebuilds")
+
+
+def test_recalled_sighting_anchors_rewatch():
+    """card_0009: watch the caption fully, rewind, rewind again, pause,
+    click. The live appearance is a seek landing (worthless), but the FIRST
+    watch logged where the row really popped — 'you should have saved where
+    the caption popped up'. The recalled sighting must anchor the clip's
+    start and, with no live clear, bound its end."""
+    from cappa.flashcard import timing as timing_mod
+    from cappa.flashcard.clip import APPEAR_BACKSHIFT, APPEAR_TRIM_GRACE
+    old_min, old_max = timing_mod.MIN_CLIP, timing_mod.MAX_CLIP
+    timing_mod.set_clip_bounds(max_clip=5.0)   # room to see the true window
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            sentence = Sentence("Muraji BIAR DIA DAPAT KILL!", (0, 0, 10, 10),
+                                [("DAPAT", (0, 0, 5, 5))])
+            sentence.appeared_at = 100.0    # live stamp: the rewind landing
+            pos = {"start": 240.149, "end": 244.649, "score": 0.0,
+                   "text": "so he gets the kill", "by": "position"}
+            src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                    "caption_auto": True}, pos=pos,
+                             appear_t=244.507, steady=False,
+                             sighting={"start": 243.4, "end": 244.5})
+            draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                                translator=lambda t, s="": "tx:" + t,
+                                screenshot_note="no shot", source=src,
+                                near_t=244.249)
+            start, end, _, _ = src.sliced
+            lead = APPEAR_BACKSHIFT + APPEAR_TRIM_GRACE
+            assert abs(start - (243.4 - lead)) < 1e-6, src.sliced  # not 240.1
+            assert abs(end - 244.5) < 1e-6, src.sliced  # the sighting's clear
+            with open(os.path.join(draft.folder_path, "metadata.json"),
+                      encoding="utf-8") as f:
+                m = json.load(f)
+            assert m["video_source"]["anchored_at_sighting"] == 243.4, (
+                m["video_source"])
+            assert m["video_source"]["sighting_cleared"] == 244.5
+            assert any("previous sighting" in n for n in m["notes"]), m["notes"]
+    finally:
+        timing_mod.set_clip_bounds(min_clip=old_min, max_clip=old_max)
+    print("PASS builder: a rewatched row anchors at its logged first "
+          "sighting")
 
 
 def test_anchor_trims_runon_start():
@@ -1015,6 +1062,7 @@ if __name__ == "__main__":
     test_builder_onscreen_when_track_has_hole()
     test_builder_rebuilds_from_onscreen_life()
     test_unsteady_appearance_cannot_anchor()
+    test_recalled_sighting_anchors_rewatch()
     test_anchor_trims_runon_start()
     test_builder_appearance_anchor()
     test_builder_backshift_covers_late_stamp()

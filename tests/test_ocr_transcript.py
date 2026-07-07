@@ -105,9 +105,45 @@ def test_blip_loop_logs_once_rewatch_logs_again():
         print("PASS ledger: blip loops log once, a re-watch logs again")
 
 
+def test_window_hint_recalls_first_sighting():
+    """card_0009 (watch -> rewind -> pause -> click): the log holds every
+    sighting of the row; window_hint hands back the EARLIEST mapped one
+    near the click — the closest thing to the row's true pop — matching
+    across OCR spacing/punctuation jitter, and never from a stock phrase
+    minutes away."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        video_at = lambda m: m + 143.4       # mono 100 -> video 243.4
+        s = _row("Muraji BIAR DIA DAPAT KILL!", 100.0)
+        s.cleared_at = 101.45                # -> video ~244.5
+        log.observe("vidX", [s], video_at)
+        log.observe("vidX", [], video_at)
+        # A rewind sighting of the same row logs a LATER appearance.
+        s2 = _row("Muraji BIAR DIA DAPAT  KILL !", 120.0)   # OCR jitter
+        s2.cleared_at = 121.0
+        log.observe("vidX", [s2], lambda m: m + 124.0)      # -> ~243.7
+        log.observe("vidX", [], lambda m: m + 124.0)
+        hint = log.window_hint("vidX", "Muraji BIAR DIA DAPAT KILL!",
+                               near_t=244.2)
+        assert hint and abs(hint["start"] - (99.7 + 143.4)) < 1e-6, hint
+        assert abs(hint["end"] - (101.1 + 143.4)) < 1e-6, hint
+        # Too far from the click: a repeated line elsewhere can't lend time.
+        assert log.window_hint("vidX", "Muraji BIAR DIA DAPAT KILL!",
+                               near_t=500.0) is None
+        assert log.window_hint("vidX", "never seen text") is None
+        # And a fresh log object reads the file back from disk.
+        log2 = OcrTranscriptLog(root=tmp)
+        hint2 = log2.window_hint("vidX", "muraji biar dia dapat kill",
+                                 near_t=244.2)
+        assert hint2 and abs(hint2["start"] - (99.7 + 143.4)) < 1e-6, hint2
+        print("PASS ledger: window_hint recalls the earliest sighting, "
+              "fuzzy on punctuation, bounded near the click")
+
+
 if __name__ == "__main__":
     test_row_logged_on_clear()
     test_row_still_up_logged_from_stamp()
     test_silent_vanish_and_junk_not_logged()
     test_blip_loop_logs_once_rewatch_logs_again()
+    test_window_hint_recalls_first_sighting()
     print("ALL PASS")

@@ -84,6 +84,12 @@ class SourceWiring:
         # pause/seek rather than during continuous playback (user rule:
         # a row must be SEEN appearing for its stamp to mean anything).
         self.session.set_steady_prober(self.bridge.steady_at)
+        # ...and when the live anchor is refused, let the card recall where
+        # an EARLIER steady watch saw this exact row pop (the OCR transcript
+        # log below writes those down — card_0009's watch-rewind-click).
+        self.session.set_sighting_lookup(
+            lambda text, near_t=None: self.ocr_log.window_hint(
+                self._bridge_video_id, text, near_t))
         self._bridge_video_id = None      # last video the bridge auto-selected
         self._caption_retry = (None, 0, 0.0)  # (video, attempts, last try)
         # Cappa's own transcript of the captions it watches: rows that leave
