@@ -1,6 +1,11 @@
 # Video Flashcard Tool — Project Plan
 
-Paste this file at the start of every new Claude session to restore full context.
+This file is the project's BUILD LOG and idea history: what was built, what
+was measured, and what was tried or weighed and set aside — so nothing gets
+re-attempted blind. Read it for the story; for the current rules read
+[AGENTS.md](AGENTS.md) (the structural contract) and each package's
+`__init__.py` docstring (the authoritative file maps). Where this file and
+the code disagree, the code wins.
 
 ---
 
@@ -48,16 +53,24 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 1. The click freezes the moment: a PNG of the tracked region, the video's playback
    position (from the browser bridge), and a snapshot of the live caption list.
 2. A small popup appears near the clicked word: word (edge punctuation stripped), divider,
-   translation — deep-translator (free Google endpoint), the word translated IN its
-   sentence for context. **NO LLM in the translation path — hard user rule.**
+   then the word's MEANING — Wiktionary definitions first (`cappa/dictionary.py`,
+   free REST API, senses ordered so the one agreeing with the in-context
+   translation comes first; cards 65/66: Google's contextual trick mistranslates
+   grammatical glue), falling back to deep-translator's free Google endpoint with
+   the word translated IN its sentence. **NO LLM in the translation/dictionary
+   path — hard user rule.**
 3. "Create Anki card" gathers the rest off the UI thread. The card's sentence is the whole
    stacked caption BLOCK (a two-line subtitle is ONE sentence, card_0031), assembled from
    the click-time snapshot reconciled with the live list at card time (`click_pool`,
    card_0045 — a sibling line detection was still re-reading at the click still joins).
-4. Audio, best source first: the caption track's exact [start, end] cut from the
-   downloaded source audio (works paused and on any past line) → the same caption window
-   cut from the loopback ring buffer via the bridge's video-time→clock mapping → OCR-timed
-   loopback. Silent clips are discarded (card_0027); every degradation leaves a note.
+4. Audio: the row's OBSERVED on-screen life is the timing backbone (inverted
+   2026-07-07 — the YouTube track is only a precision bonus when strong, near and
+   human-made; auto-ASR kept picking neighbour lines and had 20s holes). Anchors
+   must be honest: an appearance seen during steady playback, or the row's logged
+   first sighting from an earlier watch (`transcripts/`), or the track's position
+   window near the click. The clip is cut from the downloaded source audio → the
+   loopback ring buffer via the bridge's time mapping → OCR-timed loopback.
+   Silent clips are discarded (card_0027); every degradation leaves a note.
 5. The draft saves to `cards/card_NNNN/` — word, sentence, translations, screenshot,
    audio, and `metadata.json` with full provenance (boxes, timing windows, match scores,
    video source, notes). `.apkg` export is the remaining step.
@@ -108,9 +121,9 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 | OCR (reading text) | **PP-OCRv6 small (multi-script)** via `rapidocr` + `onnxruntime` | One model reads Japanese/Chinese/English/…, ~20 ms/line; per-script packs (Arabic, …) swap in via the video-language setting |
 | Overlay | **pywin32 / win32gui** | Transparent always-on-top window on Windows |
 | Audio (cards) | **PyAudioWPatch** WASAPI loopback | Rolling ring buffer of what you HEAR — the only way to clip audio retroactively |
-| Video source | **yt-dlp** + **ffmpeg** | Caption track (the timing oracle) + source audio download/slicing |
+| Video source | **yt-dlp** + **ffmpeg** | Caption track (timing precision bonus — the SCREEN is the backbone since 2026-07-07) + source audio download/slicing |
 | Playback bridge | Chrome/Edge extension → localhost `http.server` | Which video is playing + exact position, ~1/s, never leaves the machine |
-| Translation | **deep-translator** (free Google endpoint) | Word translation on click only — free, no key. **NO LLM (hard user rule)** |
+| Word meanings | **Wiktionary REST** (`dictionary.py`) + **deep-translator** (free Google endpoint) | Definitions first, contextual translation as hint/fallback — free, no key. **NO LLM** |
 | Flashcard export | **genanki** | Generates Anki `.apkg` files with embedded media |
 | OS | **Windows only** (for now) | Overlay behaviour uses Win32 APIs |
 | Language | **Python 3.11+** | |
@@ -165,6 +178,7 @@ Also requires:
 ```
 run.py                  # launcher — `python run.py` (or `python -m cappa`)
 settings.json           # persisted user settings (gitignored)
+AGENTS.md               # the structural contract (read it before changing code)
 cappa/
   __init__.py           # version / package marker
   __main__.py           # `python -m cappa`
@@ -172,16 +186,22 @@ cappa/
   winapi.py             # ALL Win32/ctypes/DWM — no Qt (input, windows, click-through)
   translate.py          # word -> translation (deep-translator/Google; no Qt; cached;
                         #   the word is translated IN its sentence via a marked span)
+  dictionary.py         # word -> MEANING: Wiktionary definitions, contextual
+                        #   translation as hint + fallback (no Qt, no LLM)
   settings.py           # tiny persisted settings holder (settings.json; no Qt)
   audio.py              # LoopbackRecorder: WASAPI loopback ring buffer (90s, monotonic-
                         #   stamped, follows the default output device; fail-soft; no Qt)
   ui/                   # everything the user SEES
     overlay_window.py   # OverlayWindow: paint, pick/select modes, follow loop, worker wiring
+    source_wiring.py    # the video-source machinery behind the overlay: bridge +
+                        #   session + recorder + OCR transcript log (Qt-free; ticked)
     launcher.py         # corner icon + menu: pick/select/deselect · clipboard video ·
                         #   settings · exit; status tooltip (target · fps · captions · yt)
-    startup.py          # startup window = the settings home (languages, clip sliders);
-                        #   reopened live via the launcher's Settings… item
-    word_popup.py       # the box a clicked word opens: word · divider · translation · Anki btn
+    startup.py          # startup window = the settings home, two tabs: Languages
+                        #   and Flashcards (what a card holds, front/back/off, design)
+    template_dialog.py  # advanced card-design editor (front/back HTML + CSS)
+    logo.py             # the Cappa logo as paint code; window/taskbar icons
+    word_popup.py       # the box a clicked word opens: word · divider · meaning · Anki btn
   detection/            # everything that FINDS captions (see its __init__ for the map)
     capture.py          # screen grab (mss -> numpy BGRA)     every frame  ~10ms   [done]
     diff.py             # what changed since last frame       every frame  <1ms    [done]
@@ -194,22 +214,32 @@ cappa/
                         #   packs picked by the video-language setting)  ~20ms      [done]
     sentence.py         # Sentence/Word model, caption BLOCKS (stacked lines), and
                         #   click_pool (click-time vs card-time caption reconcile)  [done]
+    latency.py          # the pipeline's measured reaction times (appear/clear lags)
   flashcard/            # gathers one card's pieces into cards/card_NNNN (no .apkg yet)
-    builder.py          # build_draft: block sentence, audio source choice, snap-to-track
+    builder.py          # build_draft: block sentence, provenance, translations,
+                        #   snap-to-track correction — what the CARD says
+    clip.py             # the audio: window choice (seen life vs track) + cutting
     model.py            # CardDraft
+    prefs.py            # which fields a card collects and on which side (live copy)
+    template.py         # Anki-style card template: HTML faces + CSS, default design
     provenance.py       # verify the clicked word really belongs to its sentence
     screenshot.py       # click-time PNG capture/write
-    timing.py           # audio window maths (detection lags, pre/postroll, min/max clip)
+    timing.py           # audio window maths (pre/postroll, min/max clip)
     writer.py           # card_NNNN folders + metadata.json
-  source/               # YouTube caption-track source: exact timing + source audio
+  source/               # video-source truth: timing, audio, and Cappa's own transcript
     vtt.py              # WebVTT parser (manual + auto rolling formats) -> timed tokens
     transcript.py       # Transcript model + OCR-line -> caption-window aligner
-    youtube.py          # yt-dlp fetch of metadata/captions/audio + ffmpeg slicing
+    youtube.py          # yt-dlp fetch of metadata/captions/audio + ffmpeg slicing;
+                        #   media cache, self-pruned to 500 MB at startup
     session.py          # SourceSession: the active video, fetched on a daemon thread
-    bridge.py           # localhost http server the browser extension reports to
+    bridge.py           # localhost http server the browser extension reports to;
+                        #   honest mono<->video time mapping + steadiness probe
+    ocr_transcript.py   # Cappa's OWN transcript: every caption row it watched,
+                        #   appended to transcripts/<video>.jsonl; sighting recall
 extension/              # "Cappa Bridge" Chrome/Edge extension (load unpacked): which
-                        #   YouTube video + position, POSTed to 127.0.0.1:8765 only
-cards/                  # saved card drafts (gitignored)
+                        #   YouTube video + position, POSTed to 127.0.0.1:18765 only
+cards/                  # saved card drafts (gitignored) — ALSO the bug tracker
+transcripts/            # per-video JSONL of every caption row watched (gitignored)
 tests/
   run_all.py            # the whole suite; units first, then live tests
   test_diff/classifier/tracking/watcher/merge.py   # detection units, instant, windowless
@@ -715,8 +745,10 @@ Boundary rules:
 > button itself ("Saved card_0046 · 2 notes") instead of a silent thumbs-up.
 >
 > **Next step:** the genanki `.apkg` export (the last build-order item — the drafts
-> in `cards/` already contain every field and media file a card needs), plus the
-> Japanese word-unit decision (local tokeniser vs resolving the clicked segment).
+> in `cards/` already contain every field and media file a card needs, and the
+> Flashcards tab already decides layout/design), then the Japanese word-unit
+> decision (local tokeniser vs resolving the clicked segment), then VAD
+> clip-edge snapping (polish item 4).
 >
 > _Deferred / known limits:_ multi-DPI across
 > mixed-scaling monitors may be slightly off (uses primary-screen DPR); tracking a
@@ -726,7 +758,12 @@ Boundary rules:
 > a live box whose OCR read comes back empty has ZERO word hotspots and is never
 > re-read while it lives (retry-the-read lever, not built); loopback history is 90 s —
 > a word clicked later than that has no fallback audio (the caption-track path doesn't
-> care); the card_0045 residual gap above (churn + clear before "Create").
+> care); the card_0045 residual gap above (churn + clear before "Create");
+> skipping to a caption NEVER watched appearing has no knowable start — the
+> clip is an honest window around the click with a note (user-accepted,
+> card_0007), and recall takes over once the line has been seen once;
+> extension-less sessions have no mono→video mapping, so their transcript-log
+> rows carry null video times and can't feed recall.
 >
 > **Card-quality fixes (done, from the cards 47–62 debugging night).** Audio downloads:
 > YouTube format URLs now carry a JS challenge — `_ydl_opts` enables the deno/node
@@ -748,10 +785,125 @@ Boundary rules:
 > wherever playback sat when clicked. Honesty: a card built from a shaky OCR read
 > (conf < 0.8) says so in its notes (card_0060's unreadable page produced a
 > confident-looking garbage card).
+>
+> **Flashcards settings tab + card design (done).** The startup window grew a
+> second tab: each card field (word, word translation, sentence, sentence
+> translation, screenshot, audio) is placed on the card's FRONT, BACK, or OFF —
+> off means the piece isn't even gathered (no screenshot, no audio cut, no
+> translation call). `flashcard/prefs.py` holds the live copy the builder
+> reads; `template.py` regenerates a default Anki-style design (HTML faces +
+> CSS) from the placements, and `ui/template_dialog.py` is the advanced editor
+> for a custom template (kept saved, used only while "custom design" is on).
+> Audio OFF also stands the whole video machinery down — no recorder, no
+> auto-select, no downloads ("if i'm not using audio i really don't need you
+> to track the video") — and the launcher's yt dot goes dark instead of lying:
+> a green dot must mean "the next card gets caption-exact audio".
+>
+> **Word meanings: Wiktionary first (done, cards 0065/0066).** Google's
+> in-context trick answers "what does this word do in THIS sentence's English
+> rendering," which reads wrong for grammatical glue (YANG → "sees") and fused
+> phrases (Ngupil → "picking her nose" — the whole predicate). `dictionary.py`
+> asks English Wiktionary's REST API for per-language definitions (free,
+> key-less, same no-LLM rule), orders senses so the one agreeing with the
+> contextual translation comes first, and falls back to that translation when
+> no entry exists. Needs the video language NAMED in settings + an English
+> target; otherwise it's a pass-through to translate().
+>
+> **Bridge off port 8765; caption track by language (done).** 8765 is
+> AnkiConnect's port — and Anki is exactly the app a Cappa user has open.
+> Windows lets two reuse-flagged sockets share a port, so whichever app
+> launched first silently ate the extension's reports (the failure came and
+> went with reboots). The bridge is on 18765 now and binds EXCLUSIVE, so a
+> taken port fails loudly into the tooltip instead of silently sharing. Also:
+> the caption track is picked by LANGUAGE first, manual-ness as tiebreak.
+>
+> **2026-07-07 — the timing inversion: the screen is the backbone (done,
+> cards 0075-0082; user decision, don't re-litigate).** The YouTube track
+> stopped being the timing oracle: auto-ASR kept matching neighbour lines and
+> had holes 20s+ wide at the exact clicks. New priority: the caption's
+> OBSERVED on-screen life anchors the clip; a track text match is trusted
+> only when strong, near the click, AND from a human-made track; auto matches
+> yield to the position/on-screen machinery. Same push: matched windows cap
+> the phantom silence tail (card_0075); a click in an ASR silence belongs to
+> the line that already PLAYED, measured from its capped end (card_0077); a
+> mid-life click on a PLAYING video waits ~2s for the row's clear — the clear
+> is the sentence's true end where the click is just where the mouse got
+> there first (cards 0077/0082); a row the track never heard is clipped from
+> its on-screen life alone (card_0080); failed caption fetches retry with a
+> cooldown instead of staying red for the whole watch. `flashcard/clip.py`
+> split out of builder.py (the audio half: window choice + cutting). And
+> Cappa now writes its OWN transcript: `source/ocr_transcript.py` appends
+> every caption row that leaves the screen to `transcripts/<video>.jsonl`
+> with its life in both clocks — the durable record cards cite, and the base
+> the recall feature (below) reads back.
+>
+> **AGENTS.md + structure round (done, same day).** AGENTS.md became the
+> structural contract (read order, package maps, Qt boundaries, the no-LLM
+> and no-self-credit rules, cards-as-bug-tracker, commit style); every
+> package `__init__` docstring holds its file map. Refactors:
+> `detection/latency.py` now owns APPEAR_LAG/CLEAR_LAG (they measure the
+> pipeline, and `source/` no longer imports `flashcard/`);
+> `detection/__init__` stopped importing the worker, so no-Qt packages reach
+> sentence/latency without dragging PySide6 in; `ui/source_wiring.py` took
+> the ~200 lines of bridge/recorder/session/log orchestration out of
+> overlay_window.py (966 → 770 lines) — Qt-free on purpose, so a future
+> reading mode without a tracked screen region (the page-text plan) can
+> reuse it whole.
+>
+> **The nine-card field test (done, 2026-07-07 evening — the fresh cards/
+> numbering).** Cards made deliberately under every playback condition: play
+> through, pause mid-life, seek to a caption, click a paused frame, rewind
+> and re-click. Every wrong clip traced to ONE root cause: trusting "when
+> the row popped onto the screen" as "when the sentence started" after a
+> pause or a seek. Fixes, each with a regression test named for its card:
+> (1) `bridge.video_at` anchors on the samples BRACKETING the moment and
+> never extrapolates — a stamp 0.8s into a pause used to map 1.1s past where
+> the video sat (card_0005), a paused seek mapped 34s into the abandoned
+> stretch (card_0007); paused stretches map to their frozen position, a seek
+> hidden between brackets returns None. (2) `bridge.steady_at`: an
+> appearance anchors a clip only if the video REACHED that moment without a
+> jump — a pause beginning moments later is fine (pausing to click IS the
+> card-making motion), seeks and deep-pause pops are refused with a note on
+> the card. (3) A trusted appearance now BOUNDS the position window's start
+> (backshift 1.0s + grace 0.8s): ASR run-ons dragged 4s of the previous
+> sentences into cap-length windows that ignored the centre ("started too
+> early by a lot", cards 3/5). (4) RECALL: when the live stamp is refused,
+> `window_hint` reads the transcript log back and anchors at the row's
+> EARLIEST mapped sighting near the click — "you should have saved where the
+> caption popped up": it did, and watch → rewind → pause → click now works
+> from memory, across sessions. Stacked-caption rows match by containment (a
+> block IS its rows, which live and die together — card_0016 logged 'AKU
+> CUMA' + 'BSie DITONTON, LHO!' as two rows), with a 6-char floor so junk
+> rows ('C') can't lend timing, and a sighting whose life spans a seek keeps
+> its start but surrenders its end. A garbage ASR token with a CORRECT
+> timestamp is still a good position anchor (card_0016's track text was
+> literally "C" — timing right, text worthless — and the clip was perfect).
+> Also that day: the media cache (downloaded audio, 10-54 MB/video — 176 MB
+> had piled up) prunes itself to 500 MB at startup, oldest first; cards/ and
+> transcripts/ are records, never pruned.
+>
+> **Ideas weighed and set aside — so they aren't re-tried blind.**
+> (1) *Word→all-timestamps map + small ML model to pick sentence spans* —
+> declined 2026-07-07: the map is the Transcript re-keyed (identical
+> information, sorted by word instead of time), the clustering search IS what
+> `window_for` already computes, a learned scorer has no training data, and
+> the videos that actually hurt have cross-language or holey tracks — the
+> sentence's words aren't in the map at all, so no model on top can recover
+> them. The AUDIO-side version is queued instead (VAD, polish item 4): the
+> missing information lives in the waveform, not the text.
+> (2) *Webpage reading modes* (manga/image OCR "hard mode"; HTML right-click
+> "make sentence") — deferred until the Anki export ships; HTML mode first
+> when resumed (the bridge extension already exists, and it is the true fix
+> for card_0060-type pages).
+> (3) *Custom caption-detection model* — still declined; crop-classifier
+> first if precision ever demands ML.
+> (4) *Glyph-exact hue tint on hover* — built and rejected (ragged masks on
+> compressed video); don't retry without morphological cleanup tested on
+> real H.264.
 
 ## The polish stage — better reading and translation (planned, user call)
 
-Three upgrades queued from real failures, all opt-in and none breaking the free/local
+Upgrades queued from real failures, all opt-in and none breaking the free/local
 default path:
 
 1. **DeepL as the primary translator** (free tier 500k chars/month; Indonesian and
@@ -770,6 +922,15 @@ default path:
    youtube.com so a normal webpage POSTs its visible text + word geometry, and pages
    like the poetry site never need OCR at all. This is the correct fix for card_0060,
    not a better model.
+4. **VAD clip-edge snapping**: a tiny local voice-activity model (silero-vad,
+   ~2 MB ONNX on the already-present onnxruntime — free, offline, no keys)
+   snapping a chosen audio window to real speech boundaries in the downloaded
+   source audio. Language-agnostic, so it works exactly where text matching is
+   hopeless (cross-language auto-dub tracks, ASR holes): trims run-on starts
+   to the speech onset, closes unknown ends at the silence. This is the
+   accepted half of the ML idea weighed on 2026-07-07 (see "Ideas weighed and
+   set aside") — the model reads the waveform, where the missing information
+   actually lives.
 
 ## Detection — the hard part (Steps 2–5)
 
