@@ -91,16 +91,21 @@ class FakeSource:
     transcript_ready = True
 
     def __init__(self, match, meta, pos=None, mono=None, clip_fails=False,
-                 appear_t=None):
+                 appear_t=None, clear_t=None):
         self._match = match
         self._meta = meta
         self._pos = pos
         self._mono = mono          # canned (t0, t1) monotonic window, or None
         self._clip_fails = clip_fails
         self._appear_t = appear_t  # canned appearance video-time, or None
+        self._clear_t = clear_t    # canned clear video-time, or None
         self.sliced = None
 
     def video_time_at(self, mono):
+        # Tests stamp appearances near mono 100 and clears well after:
+        # a mono past 101 is the clear stamp's mapping.
+        if self._clear_t is not None and mono > 101.0:
+            return self._clear_t
         return self._appear_t
 
     def window_for(self, text, near_t=None):
@@ -250,11 +255,13 @@ def test_builder_position_fallback():
 
 
 def test_builder_appearance_anchor():
-    """A position-matched clip opens where the caption APPEARED, not around
-    the playback position at card time: card_0061 was paused past the line,
-    and the old near_t-centred cap kept the sentence's tail and cut its
-    start. The fake's position window spans the whole speech run; the
-    appearance mapping places the line's start early inside it."""
+    """A position-matched clip centres BEHIND the caption's appearance
+    stamp, not around the playback position at card time: card_0061 was
+    paused past the line and the old near_t-centred cap cut the sentence's
+    start; cards 0069/0071 showed the stamp itself trails the speech by a
+    variable ~0.7-1.7s, so a window opened forward from it misses the
+    word. The window must reach the utterance's start and still contain
+    the stamped moment."""
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence("korban pisang lagi kah", (0, 0, 10, 10),
                             [("korban", (0, 0, 5, 5))])
@@ -269,14 +276,110 @@ def test_builder_appearance_anchor():
                             screenshot_note="no shot", source=src,
                             near_t=227.0)
         start, end, _, _ = src.sliced
-        assert start <= 225.4 + 1e-6 and 225.4 - start < 0.6, src.sliced
+        # centre = 225.4 - 1.0 backshift; the run starts at 223.2 and the
+        # cap is 2.5s, so the window hugs [223.2, 225.7]: it reaches the
+        # utterance's start AND keeps the stamped moment inside.
+        assert start <= 225.2 and end >= 225.4, src.sliced
         assert end <= 227.6 + 1e-6, src.sliced
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
         assert m["video_source"]["anchored_at_appearance"] == 225.4, (
             m["video_source"])
-        print("PASS builder: position clip anchored at caption appearance")
+        assert m["video_source"]["click_position"] == 227.0
+        print("PASS builder: position clip centres behind the appearance")
+
+
+def test_builder_backshift_covers_late_stamp():
+    """cards 0069/0071 (VTT ground truth): the clicked row's cue ran
+    822.6-823.5 but its appearance stamped 823.3 on one watch and 824.3 on
+    the next. A forward window from the stamp held only the NEXT rows'
+    audio both times; the backshifted centre must keep the row's cue in
+    the clip even on the 824.3 (worst) stamp."""
+    with tempfile.TemporaryDirectory() as tmp:
+        text = "KALO PAGI PILIH KOBO KALO MALAM PILIH MIKU"
+        toks = text.split()
+        sentence = Sentence(text, (0, 0, 800, 10),
+                            [(w, (i * 100, 0, i * 100 + 90, 10))
+                             for i, w in enumerate(toks)])
+        sentence.appeared_at = 100.0    # monotonic; fake maps it to 824.28
+        pos = {"start": 818.0, "end": 860.0, "score": 0.0,
+               "text": "giant blob cue", "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                "caption_auto": False}, pos=pos,
+                         appear_t=824.28)
+        draft = build_draft(sentence.words[1], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=825.0)
+        start, end, _, _ = src.sliced
+        # centre = 824.28 - 1.0 -> window [822.03, 824.53]: PAGI's real cue
+        # (822.6-823.5) sits wholly inside. The old forward window
+        # [824.28, 826.78] contained none of it.
+        assert start <= 822.6 and end >= 823.5, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["video_source"]["anchored_at_appearance"] == 824.28
+        assert m["video_source"]["click_position"] == 825.0
+        print("PASS builder: backshifted centre survives a late row stamp")
+
+
+def test_builder_seen_clear_ends_clip():
+    """A SEEN clear ends the clip exactly there — no buffer: the clear
+    stamp already trails the real vanish, so padding it just invites the
+    next line's audio (user call). Only the pause path, where the end is
+    unknown, keeps a small tail (the backshift test covers it)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("KALO PAGI PILIH KOBO", (0, 0, 10, 10),
+                            [("PAGI", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # -> video 822.5 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 823.4
+        pos = {"start": 821.0, "end": 860.0, "score": 0.0,
+               "text": "giant blob cue", "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                "caption_auto": False}, pos=pos,
+                         appear_t=822.5, clear_t=823.4)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=828.0)
+        start, end, _, _ = src.sliced
+        assert abs(end - 823.4) < 1e-6, src.sliced   # exactly the clear
+        assert start <= 822.5, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["video_source"]["onscreen_end"] == 823.4, m["video_source"]
+        print("PASS builder: a seen clear ends the clip with no buffer")
+
+
+def test_builder_distrusts_impossible_stamp():
+    """An appearance mapped LATER than where the user paused is impossible
+    for a row they were reading (a re-read's stamp or a paused-seek mapping
+    artifact): the click position anchors the cap instead."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("KALO PAGI PILIH KOBO", (0, 0, 10, 10),
+                            [("PAGI", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # monotonic; fake maps it to 830.0
+        pos = {"start": 818.0, "end": 860.0, "score": 0.0,
+               "text": "giant blob cue", "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                "caption_auto": False}, pos=pos,
+                         appear_t=830.0)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=824.0)
+        start, end, _, _ = src.sliced
+        assert abs((start + end) / 2.0 - 824.0) < 1e-6, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert "anchored_at_appearance" not in m["video_source"], (
+            m["video_source"])
+        assert m["video_source"]["click_position"] == 824.0
+        print("PASS builder: a stamp after the pause is distrusted")
 
 
 def test_builder_loopback_rescue():
@@ -352,7 +455,28 @@ def test_pick_subtitle_orig():
         raise AssertionError("translated-only pool should raise")
     except SourceError:
         pass
-    print("PASS pick_subtitle: spoken language / -orig only, 'ab' never wins")
+
+    # cards 0069/0071's video: a manual ENGLISH track next to Indonesian
+    # auto captions, video language Indonesian. Language beats source —
+    # the id auto track (text-matchable against the hardsubs) must win
+    # over the human track in the wrong language.
+    info4 = {"language": "id", "subtitles": {"en": fmts("EN-MAN")},
+             "automatic_captions": {"id": fmts("ID-AUTO"),
+                                    "ab": fmts("AB")}}
+    code4, auto4, url4 = _pick_subtitle(info4, "id", True)
+    assert (code4, auto4, url4) == ("id", True, "ID-AUTO"), (code4, url4)
+    # A manual track in the REQUESTED language still beats the auto one.
+    info5 = {"language": "id", "subtitles": {"id": fmts("ID-MAN"),
+                                             "en": fmts("EN-MAN")},
+             "automatic_captions": {"id": fmts("ID-AUTO")}}
+    code5, auto5, url5 = _pick_subtitle(info5, "id", True)
+    assert (code5, auto5, url5) == ("id", False, "ID-MAN"), (code5, url5)
+    # Wrong-language manual is still the LAST resort when nothing matches.
+    info6 = {"language": None, "subtitles": {"en": fmts("EN-MAN")},
+             "automatic_captions": {"ab": fmts("AB")}}
+    code6, auto6, url6 = _pick_subtitle(info6, "id", True)
+    assert (code6, auto6, url6) == ("en", False, "EN-MAN"), (code6, url6)
+    print("PASS pick_subtitle: language beats source; 'ab' never wins")
 
 
 def test_choose_window():
@@ -581,6 +705,9 @@ if __name__ == "__main__":
     test_builder_prefers_caption_track()
     test_builder_position_fallback()
     test_builder_appearance_anchor()
+    test_builder_backshift_covers_late_stamp()
+    test_builder_seen_clear_ends_clip()
+    test_builder_distrusts_impossible_stamp()
     test_builder_loopback_rescue()
     test_pick_subtitle_orig()
     test_choose_window()

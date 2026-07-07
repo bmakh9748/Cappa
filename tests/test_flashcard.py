@@ -14,9 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cappa.detection.sentence import (Sentence, Word, caption_block,
                                       click_pool)
-from cappa.flashcard import build_draft
+from cappa.flashcard import build_draft, prefs
+from cappa.flashcard.template import default_template, infer_placements
 from cappa.flashcard.timing import (MAX_CLIP, MIN_CLIP, audio_window,
                                     shrink_to_max, widen_to_min)
+from cappa.settings import DEFAULT_CARD_FIELDS
 
 
 def fake_translate(text, sentence=""):
@@ -202,6 +204,19 @@ finally:
     timing_mod.set_clip_bounds(MIN_CLIP, MAX_CLIP)
 print("PASS: set_clip_bounds retunes min/max/fallback windows live")
 
+# Auto length: the user's cap steps aside so the clip fits the sentence,
+# bounded only by the 5s safety ceiling.
+timing_mod.set_clip_bounds(auto=True)
+try:
+    assert timing_mod.max_clip() == timing_mod.AUTO_MAX_CLIP == 5.0
+    t0, t1 = shrink_to_max(10.0, 20.0)
+    assert abs((t1 - t0) - 5.0) < 1e-9, (t0, t1)
+    assert shrink_to_max(10.0, 14.0) == (10.0, 14.0)   # 4s sentence fits
+finally:
+    timing_mod.set_clip_bounds(auto=False)
+assert timing_mod.max_clip() == MAX_CLIP
+print("PASS: auto clip length fits the sentence up to the 5s ceiling")
+
 
 class _Blip:
     """A caption that flashed on and off in 0.2s."""
@@ -328,8 +343,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert meta["word_index"] == 4, meta["word_index"]
     assert meta["sentence_box"] == [217, 351, 1061, 480], meta["sentence_box"]
     assert meta["sentence_verified"] is True, meta["notes"]
+    # The DISPLAYED sentence is the plain join; the string sent to the
+    # translator joins rows with commas (they usually break at clause
+    # boundaries, and Google garbles the flat join — card_0074).
     assert meta["sentence_translation"] == (
-        "tx:AKU AKAN MENGHANCURKAN FOKUS NYA MEREKA!")
+        "tx:AKU AKAN MENGHANCURKAN, FOKUS NYA MEREKA!")
     print("PASS: a two-line caption joins whole onto the card, "
           "unrelated text stays out")
 
@@ -377,5 +395,117 @@ pool = click_pool([top, bot], [top2, bot], bot)
 assert top2 in pool and top not in pool, pool
 assert caption_block(bot, pool) == [top2, bot]
 print("PASS: a re-read line joins once, not doubled")
+
+# The card settings can turn pieces OFF: off means not gathered at all — no
+# screenshot write, no audio cut, no translation call — and no "missing
+# piece" note either, because the absence is intentional. The front/back
+# layout each card was made under is stamped into its metadata.
+
+
+def exploding_translate(text, sentence=""):
+    raise AssertionError("translation was called for an OFF field")
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    sentence = Sentence(
+        "hello world", (10, 20, 120, 50),
+        [("hello", (10, 20, 55, 50)), ("world", (60, 20, 120, 50))])
+    sentence.appeared_at = 100.0
+    sentence.cleared_at = 102.0
+    rec = FakeRecorder()
+    prefs.set_card_fields({"screenshot": "off", "audio": "off",
+                           "word_translation": "off",
+                           "sentence_translation": "off",
+                           "sentence": "back"})
+    try:
+        draft = build_draft(
+            sentence.words[1], None, rec, out_dir=tmp,
+            translator=exploding_translate,
+            screenshot_png=b"\x89PNG\r\n\x1a\n")
+        folder = draft.folder_path
+        assert not os.path.exists(os.path.join(folder, "screenshot.png"))
+        assert not os.path.exists(os.path.join(folder, "audio.wav"))
+        assert rec.calls == [], rec.calls
+        with open(os.path.join(folder, "metadata.json"),
+                  encoding="utf-8") as f:
+            meta = json.load(f)
+        assert meta["word_translation"] == ""
+        assert meta["sentence_translation"] == ""
+        assert meta["notes"] == [], meta["notes"]
+        assert meta["card_layout"] == {"front": ["word"],
+                                       "back": ["sentence"]}, (
+            meta["card_layout"])
+        # Even the word may be off (a pure listening card): it leaves the
+        # layout, though word.txt is still written -- it IS the click.
+        prefs.set_card_fields({"word": "off"})
+        assert not prefs.include("word")
+        faces = prefs.layout()
+        assert "word" not in faces["front"] + faces["back"], faces
+    finally:
+        prefs.set_card_fields(None)   # back to defaults for later tests
+
+    # Defaults restored: everything gathered, classic recognition layout.
+    draft = build_draft(
+        sentence.words[0], None, FakeRecorder(), out_dir=tmp,
+        translator=fake_translate, screenshot_png=b"\x89PNG\r\n\x1a\n")
+    with open(os.path.join(draft.folder_path, "metadata.json"),
+              encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["card_layout"] == {
+        "front": ["word", "sentence", "screenshot", "audio"],
+        "back": ["word_translation", "sentence_translation"]}, (
+        meta["card_layout"])
+    assert meta["audio"] == "audio.wav" and meta["screenshot"] is not None
+    # The Anki-style template rides along in metadata, ready for export.
+    assert "{{Word}}" in meta["card_template"]["front"]
+    assert "{{FrontSide}}" in meta["card_template"]["back"]
+    assert ".card" in meta["card_template"]["css"]
+print("PASS: off fields skip gathering without notes; layout is stamped")
+
+# The card template: auto by default -- generated from the placements, so
+# moving a field to the other side (or off) redesigns the default -- and
+# replaced verbatim by a saved custom design until it's cleared.
+try:
+    t = prefs.template()
+    assert "{{Word}}" in t["front"], t["front"]
+    assert "{{Word Translation}}" in t["back"], t["back"]
+    prefs.set_card_fields({"word_translation": "front"})
+    t = prefs.template()
+    assert "{{Word Translation}}" in t["front"]
+    assert "{{Word Translation}}" not in t["back"]
+    prefs.set_card_fields({"screenshot": "off"})
+    t = prefs.template()
+    assert "{{Screenshot}}" not in t["front"] + t["back"]
+    custom = {"front": "F", "back": "B", "css": "C"}
+    prefs.set_card_template(custom)
+    assert prefs.template() == custom
+    prefs.set_card_template(None)
+    assert "{{Word}}" in prefs.template()["front"]   # back to auto
+finally:
+    prefs.set_card_fields(None)
+    prefs.set_card_template(None)
+print("PASS: the template follows the placements until a custom design lands")
+
+# infer_placements reads a design back into the simple settings: whichever
+# face mentions a field is its side, mentioned nowhere means off. This is
+# what syncs the Front/Back/Off rows after the advanced editor saves.
+assert infer_placements(default_template(DEFAULT_CARD_FIELDS)) == (
+    DEFAULT_CARD_FIELDS)
+mixed = dict(DEFAULT_CARD_FIELDS, word="back", screenshot="off")
+assert infer_placements(default_template(mixed)) == mixed
+got = infer_placements({"front": "{{Audio}} <i>{{Sentence}}</i>",
+                        "back": "{{FrontSide}}<hr>{{Sentence Translation}}",
+                        "css": ""})
+assert got["audio"] == "front" and got["sentence"] == "front", got
+assert got["sentence_translation"] == "back", got
+assert got["word"] == got["word_translation"] == got["screenshot"] == "off"
+# "Word Translation" is not a mention of "Word"; conditional and filtered
+# tags still count as mentions.
+got = infer_placements({"front": "{{Word Translation}}",
+                        "back": "{{#Audio}}{{type:Audio}}{{/Audio}}",
+                        "css": ""})
+assert got["word"] == "off" and got["word_translation"] == "front", got
+assert got["audio"] == "back", got
+print("PASS: a saved design reads back into Front/Back/Off placements")
 
 print("ALL PASS")

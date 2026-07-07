@@ -5,8 +5,9 @@ import time
 from difflib import SequenceMatcher
 
 from ..detection.sentence import CaptionBlock, caption_block
+from ..dictionary import meaning
 from ..translate import TranslationError, clean_word, translate
-from . import timing
+from . import prefs, timing
 from .model import CardDraft
 from .provenance import attach_sentence_provenance
 from .screenshot import write_png_bytes, write_region_png
@@ -53,7 +54,9 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
     and provides a language-neutral position window fallback. captions is the
     live Sentence list at click time: lines visibly stacked with the clicked
     one join it, so a two-line subtitle lands whole on the card. Missing
-    pieces are recorded in draft.notes instead of raising.
+    pieces are recorded in draft.notes instead of raising; pieces the user
+    turned OFF in the card settings (prefs) are skipped without a note --
+    that absence is intentional, not a degradation.
     """
     now = time.monotonic()
     sentence = getattr(word, "sentence", None)
@@ -74,14 +77,17 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
             "OCR was unsure of this text (confidence %.2f) — the word and "
             "sentence are probably misread" % conf)
 
-    _write_screenshot(draft, region, screenshotter, screenshot_png,
-                      screenshot_note)
+    if prefs.include("screenshot"):
+        _write_screenshot(draft, region, screenshotter, screenshot_png,
+                          screenshot_note)
     # Audio first: a strong caption-track text match doubles as ground truth
     # for what the caption really SAID, so the OCR text is corrected from it
-    # before anything gets translated.
-    _write_audio(draft, sentence, recorder, now, source, near_t)
-    _snap_to_track(draft)
-    _translate_fields(draft, translator)
+    # before anything gets translated. (Audio off skips the caption match
+    # too, so those cards keep their raw OCR text.)
+    if prefs.include("audio"):
+        _write_audio(draft, sentence, recorder, now, source, near_t)
+        _snap_to_track(draft)
+    _translate_fields(draft, translator, sentence)
     write_artifacts(draft)
     return draft
 
@@ -142,15 +148,28 @@ def _snap_to_track(draft):
         draft.notes.append("caption track correction: %s -> %s" % (old, new))
 
 
-def _translate_fields(draft, translator):
-    try:
-        draft.word_translation = translator(draft.word, draft.sentence)
-    except TranslationError as exc:
-        draft.notes.append("word translation: %s" % exc)
-
-    if draft.sentence:
+def _translate_fields(draft, translator, sentence=None):
+    if prefs.include("word_translation"):
         try:
-            draft.sentence_translation = translator(draft.sentence)
+            # Dictionary definitions when Wiktionary knows the word; the
+            # contextual translation (this `translator`) as hint + fallback.
+            draft.word_translation = meaning(draft.word, draft.sentence,
+                                             translate_fn=translator)
+        except TranslationError as exc:
+            draft.notes.append("word translation: %s" % exc)
+
+    if draft.sentence and prefs.include("sentence_translation"):
+        # Screen rows usually break at clause boundaries: joined with
+        # commas Google parses them as clauses, where the flat space-join
+        # fused them into one garbled parse (card_0074: "kalo pagi pilih
+        # kobo" became "If you choose Kobo in the morning"). A mid-clause
+        # wrap tolerates the stray comma (card_0031's block translates
+        # identically). The card still DISPLAYS the plain-joined sentence.
+        lines = getattr(sentence, "lines", None)
+        to_translate = (", ".join(s.text for s in lines if s.text)
+                        if lines else draft.sentence)
+        try:
+            draft.sentence_translation = translator(to_translate)
         except TranslationError as exc:
             draft.notes.append("sentence translation: %s" % exc)
 
@@ -182,6 +201,26 @@ def _write_screenshot(draft, region, screenshotter, screenshot_png,
         draft.screenshot_source = "create_card"
     except Exception as exc:
         draft.notes.append("screenshot failed: %s" % exc)
+
+
+# A position-matched clip CENTERS this far before the clicked row's
+# appearance stamp. The stamp trails the row's actual speech by a variable
+# lag — settle debounce, scan interval, clock-mapping slack — measured on
+# the same row watched twice: card_0069 stamped 823.3 and card_0071 stamped
+# 824.3 for a row whose cue ran 822.6-823.5. So the clicked word's audio
+# lies BEFORE the stamp far more often than after; a window centred a
+# second behind it covers both watches, where a forward window missed the
+# word entirely both times.
+APPEAR_BACKSHIFT = 1.0
+# An appearance mapped LATER than where the user paused is impossible for a
+# row they were reading — it's a re-read's stamp or a paused-seek mapping
+# artifact; past this slack the click position anchors the clip instead.
+APPEAR_PAST_CLICK_TOL = 1.0
+# Hardsubs leave with their speech: nothing past the sentence's on-screen
+# END belongs on the card. A SEEN clear needs no buffer — its stamp already
+# trails the real vanish (user call); only the pause path, where the line
+# is still up and the true end unknown, gets this small tail past the click.
+PAUSE_TAIL = 0.4
 
 
 def _choose_window(text_match, pos_match, near_t):
@@ -267,23 +306,47 @@ def _write_audio_from_source(draft, sentence, source, near_t=None,
     start, end = widen_to_min(
         match["start"], match["end"],
         timing.MIN_CLIP - SOURCE_PREROLL - SOURCE_POSTROLL, floor=0.0)
-    cap = timing.MAX_CLIP - SOURCE_PREROLL - SOURCE_POSTROLL
+    cap = timing.max_clip() - SOURCE_PREROLL - SOURCE_POSTROLL
     # A POSITION match knows the surrounding speech run but not the word's
     # moment inside it, and near_t is wherever playback sits at card time —
     # often paused PAST the line, which anchored the cap at the sentence's
-    # tail and cut its start off (card_0061). The moment the caption
-    # APPEARED on screen is where the utterance begins (hardsubs are synced
-    # to speech), so when the bridge can place that appear-time in video
-    # seconds and it lands in (or just before) the window, open the cap
-    # there instead.
+    # tail and cut its start off (card_0061). The clicked ROW's on-screen
+    # appearance is the best anchor there is: hardsub rows stack in sync
+    # with speech, so the row carrying the clicked word appeared just as
+    # its words were being spoken. That stamp marks a moment to open the
+    # window AROUND (with APPEAR_LEAD behind it — stamps run late, and the
+    # row's speech begins just before), never a moment to open a forward
+    # window FROM: card_0069's clip did that and held only the NEXT rows'
+    # audio, the clicked word already over. A stamp mapped later than the
+    # user's pause is an artifact (see APPEAR_PAST_CLICK_TOL) and the
+    # click position anchors instead.
     center = near_t
     if matched_by == "position":
         appeared = getattr(sentence, "appeared_at", 0.0) or 0.0
         t_appear = getattr(source, "video_time_at", lambda m: None)(
             appeared - timing.APPEAR_LAG)
-        if t_appear is not None and start - 3.0 <= t_appear <= end:
-            center = max(t_appear, start) + cap / 2.0
+        if (t_appear is not None and start - 3.0 <= t_appear <= end
+                and (near_t is None
+                     or t_appear <= near_t + APPEAR_PAST_CLICK_TOL)):
+            center = t_appear - APPEAR_BACKSHIFT
             draft.source_meta["anchored_at_appearance"] = round(t_appear, 3)
+            # The sentence's on-screen life bounds the clip's END: cut at
+            # the clear (mapped to video time) or, for a line still up at
+            # click time, just past the pause — the words spoken SO FAR are
+            # the sentence; what follows is the next line's audio
+            # (card_0069/0071 clips were full of it).
+            cleared = getattr(sentence, "cleared_at", 0.0) or 0.0
+            t_end = None
+            if cleared > 0.0:
+                t_end = getattr(source, "video_time_at", lambda m: None)(
+                    cleared - timing.CLEAR_LAG)
+            if t_end is None and near_t is not None:
+                t_end = near_t + PAUSE_TAIL
+            if t_end is not None and start + 0.8 < t_end < end:
+                end = t_end
+                draft.source_meta["onscreen_end"] = round(t_end, 3)
+    if near_t is not None:
+        draft.source_meta["click_position"] = round(near_t, 3)
     start, end = shrink_to_max(start, end, cap, center=center)
 
     wav_path = os.path.join(draft.folder_path, "audio.wav")
