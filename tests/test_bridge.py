@@ -117,5 +117,67 @@ def main():
     print("ALL PASS")
 
 
+def _fill(bridge, samples):
+    for s in samples:
+        bridge._history.append(s)
+
+
+def test_video_at_honest():
+    """video_at anchors on the BRACKETING samples and never extrapolates
+    through a pause or a seek (card_0005: a stamp 0.8s into the pause
+    mapped 1.1s past where the video sat; card_0007: 34s off through a
+    paused seek)."""
+    b = BrowserBridge(port=0)   # never started: history fed directly
+    _fill(b, [(100.0, 50.0, False), (100.7, 50.7, False),
+              (101.4, 51.0, True), (102.1, 51.0, True),
+              (110.0, 51.0, True)])
+    # Inside the playing stretch: interpolates.
+    assert abs(b.video_at(100.35) - 50.35) < 1e-6
+    # Straddling play -> pause (video froze at 51.0): advances but clamps
+    # at the frozen position instead of extrapolating past it.
+    assert abs(b.video_at(101.2) - 51.0) < 1e-6, b.video_at(101.2)
+    # Deep inside the pause: frozen, no matter how much clock passes.
+    assert abs(b.video_at(105.0) - 51.0) < 1e-6, b.video_at(105.0)
+    # A seek between playing samples: that moment was never reported.
+    b2 = BrowserBridge(port=0)
+    _fill(b2, [(100.0, 50.0, False), (100.7, 90.0, False)])
+    assert b2.video_at(100.35) is None, b2.video_at(100.35)
+    print("PASS bridge: video_at clamps at pauses and refuses hidden seeks")
+
+
+def test_steady_at():
+    """steady_at: did the video REACH this moment without a jump? The
+    appearance anchor's witness (cards 2-9, 2026-07-07)."""
+    play = [(100.0 + 0.7 * k, 50.0 + 0.7 * k, False) for k in range(8)]
+    b = BrowserBridge(port=0)
+    _fill(b, play)
+    assert b.steady_at(102.0) is True
+    # A pause beginning right after the stamp is FINE (pausing to click is
+    # the card-making motion), and a stamp that lags slightly into the
+    # pause still counts — play was seen moments before (card_0005).
+    b2 = BrowserBridge(port=0)
+    _fill(b2, [(100.0, 50.0, False), (100.7, 50.7, False),
+               (101.4, 51.0, True), (102.1, 51.0, True)])
+    assert b2.steady_at(101.2) is True, "straddle must stay trusted"
+    # Deep inside the pause: the row popped on a frozen frame.
+    assert b2.steady_at(104.0) is False
+    # A seek between samples poisons the stamp (the landing row was
+    # already mid-life).
+    b3 = BrowserBridge(port=0)
+    _fill(b3, [(100.0, 50.0, False), (100.7, 50.7, False),
+               (101.4, 90.0, False), (102.1, 90.7, False)])
+    assert b3.steady_at(101.8) is False
+    # ...but once playback has run steadily past it, later rows are fine.
+    _fill(b3, [(102.8 + 0.7 * k, 91.4 + 0.7 * k, False) for k in range(4)])
+    assert b3.steady_at(105.0) is True
+    # Silence: nothing can vouch either way.
+    b4 = BrowserBridge(port=0)
+    assert b4.steady_at(100.0) is None
+    print("PASS bridge: steady_at trusts play, refuses seeks and dead "
+          "pauses, shrugs at silence")
+
+
 if __name__ == "__main__":
     main()
+    test_video_at_honest()
+    test_steady_at()

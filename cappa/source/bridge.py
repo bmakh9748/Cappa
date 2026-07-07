@@ -35,6 +35,21 @@ STALE_AFTER = 5.0    # no update within this many seconds -> position unknown
 HISTORY = 200        # ~2.3 min of samples at the extension's ~700ms cadence
 MAX_ANCHOR_GAP = 90.0  # a mapping farther than the loopback buffer is useless
 
+# steady_at(): how much playback around a moment must be seen continuous for
+# a caption's appearance stamp to mean "the sentence starts here".
+STEADY_BEFORE = 2.0  # this far BACK — a seek landing takes detection under
+                     # ~1s to notice, so the jump sits within this window
+STEADY_GAP = 4.0     # nearest samples farther than this can't vouch (the
+                     # extension posts ~700ms apart; a hole this big means
+                     # the tab was hidden or reports stopped)
+SEEK_SLACK = 0.75    # |video-time step − clock step| beyond this is a seek,
+                     # not report jitter (real seeks jump by seconds)
+STRADDLE_MAX = 1.5   # a stamp may trail the last playing sample by this much
+                     # and still count as "appeared during play": detection
+                     # lag plus one report gap lands appear stamps just past
+                     # the pause line (card_0005 stamped 0.8s into the pause
+                     # for a row that plainly popped before it)
+
 
 class _ExclusiveHTTPServer(ThreadingHTTPServer):
     """Never share the port. http.server's default reuse flag is what let
@@ -160,26 +175,98 @@ class BrowserBridge:
         return mono + (video_t - ct)
 
     def video_at(self, mono):
-        """The video time that was playing at monotonic moment `mono`, or
-        None — mono_at's inverse, same nearest-playing-sample anchoring.
-        Lets the flashcard turn 'the caption appeared at clock time T' into
-        'the caption appeared at video time V' (card_0061: the clip must
-        anchor where the LINE began, not where playback sat at click)."""
+        """The video time SHOWING at monotonic moment `mono`, or None —
+        anchored on the samples BRACKETING the moment, never extrapolated
+        through a pause or a seek. The old nearest-playing-sample anchoring
+        assumed playback kept running: a caption stamp landing 0.8s into a
+        pause mapped 1.1s PAST where the video actually sat (card_0005),
+        and one landing near a paused seek mapped 34s into the abandoned
+        stretch (card_0007). A paused stretch maps to its frozen position;
+        a seek hidden between the brackets returns None — that moment's
+        true position was never reported."""
         if mono is None:
             return None
         with self._lock:
             samples = list(self._history)
-        best = None  # (|m - mono|, m, ct)
-        for m, ct, paused in samples:
-            if paused:
-                continue
-            d = abs(m - mono)
-            if best is None or d < best[0]:
-                best = (d, m, ct)
-        if best is None or best[0] > MAX_ANCHOR_GAP:
+        before = after = None
+        for s in samples:
+            if s[0] <= mono:
+                before = s
+            else:
+                after = s
+                break
+        if before is None and after is None:
             return None
-        _, m, ct = best
-        return ct + (mono - m)
+        if before is None:
+            m, ct, paused = after
+            if m - mono > MAX_ANCHOR_GAP:
+                return None
+            return ct if paused else max(0.0, ct - (m - mono))
+        if after is None:
+            m, ct, paused = before
+            if mono - m > MAX_ANCHOR_GAP:
+                return None
+            return ct if paused else ct + (mono - m)
+        (bm, bct, bp), (am, act, ap) = before, after
+        if bp and ap:
+            return bct       # paused stretch: the screen held bct (a seek
+                             # while paused only shows from `after` onward)
+        if bp:               # pause -> play: resumed somewhere in between
+            return max(bct, act - (am - mono))
+        est = bct + (mono - bm)
+        if ap:               # play -> pause: video froze somewhere between
+            if act < bct - SEEK_SLACK or act > bct + (am - bm) + SEEK_SLACK:
+                return None  # ...and a seek hid in the same gap
+            return min(est, act)
+        if abs((act - bct) - (am - bm)) > SEEK_SLACK:
+            return None      # seek between the brackets: never reported
+        return est
+
+    def steady_at(self, mono):
+        """Did the video REACH monotonic moment `mono` without a jump — no
+        seek, no popping in deep inside a pause? True/False, or None when
+        the history can't say (no extension, reports too sparse). The
+        flashcard's appearance anchor asks this before trusting a stamp:
+        a row seen appearing during normal playback carries its sentence's
+        start (a pause beginning moments later is fine — pausing to click
+        IS the card-making motion, and pausing never skips video time);
+        a row that appeared because of a seek, or while long paused, was
+        already mid-life and its true start was never on screen (user rule;
+        every wrong clip of cards 2-9, 2026-07-07, traced to a trusted
+        landing stamp)."""
+        if mono is None:
+            return None
+        with self._lock:
+            samples = list(self._history)
+        before = [s for s in samples if s[0] <= mono]
+        if not before:
+            return None
+        if mono - before[-1][0] > STEADY_GAP:
+            return None                    # reports hole right at the stamp
+        last_play = next((s for s in reversed(before) if not s[2]), None)
+        if last_play is None or mono - last_play[0] > STRADDLE_MAX:
+            # Never seen playing near the stamp: the row popped deep inside
+            # a pause (a paused seek, a re-rendered frame) — that is not a
+            # real appearance, its sentence was never heard starting.
+            return False
+        after = [s for s in samples if s[0] > mono]
+        lo = mono - STEADY_BEFORE
+        window = [s for s in samples if lo <= s[0] <= mono]
+        prev = [s for s in samples if s[0] < lo]
+        if prev:
+            window.insert(0, prev[-1])
+        if after:
+            window.append(after[0])
+        for (m1, c1, p1), (m2, c2, p2) in zip(window, window[1:]):
+            dm, dc = m2 - m1, c2 - c1
+            if p1 or p2:
+                # Across a pause, video time may hold still or advance up
+                # to the elapsed clock — anything else is a seek.
+                if dc < -SEEK_SLACK or dc > dm + SEEK_SLACK:
+                    return False
+            elif abs(dc - dm) > SEEK_SLACK:
+                return False
+        return True
 
     # ------------------------------------------------------------- cookies
     def _write_cookies(self, cookies):

@@ -47,6 +47,11 @@ SILENT_CLIP_PEAK = 100
 # second behind it covers both watches, where a forward window missed the
 # word entirely both times.
 APPEAR_BACKSHIFT = 1.0
+# When a trusted appearance exists, the position window's START is cut back
+# to backshift + this grace behind it: speech begins just before the row
+# pops and stamps run late, but everything earlier belongs to the PREVIOUS
+# sentences the ASR run-on dragged in (cards 3/5, 2026-07-07).
+APPEAR_TRIM_GRACE = 0.8
 # An appearance mapped LATER than where the user paused is impossible for a
 # row they were reading — it's a re-read's stamp or a paused-seek mapping
 # artifact; past this slack the click position anchors the clip instead.
@@ -146,14 +151,31 @@ def _live_end(source, near_t):
     return t + PAUSE_TAIL
 
 
-def _appearance(sentence, source, near_t):
+def _appearance(sentence, source, near_t, draft=None):
     """The clicked row's appearance stamp mapped to video time, or None when
     the bridge can't say — or when the stamp maps AFTER the click plus
     tolerance (a re-read's stamp or a paused-seek mapping artifact, not the
     row the user was reading: APPEAR_PAST_CLICK_TOL). This is the priority
-    signal: when it exists, the row's SEEN life outranks the auto track."""
+    signal: when it exists, the row's SEEN life outranks the auto track.
+
+    A stamp only means "the sentence starts here" if the row popped in
+    during CONTINUOUS playback. A row that appeared because the user paused
+    or seeked was already mid-life — its true start was never seen, and
+    nothing may be assumed about it (user rule; cards 2-3 of 2026-07-07
+    clicked one re-watched line twice: the seek-landing stamp hijacked a
+    good position window into a tail-only clip on one card and anchored the
+    cap on the other). The bridge's playback history is the witness; when
+    it can't vouch either way (no extension), the stamp keeps its old
+    trust."""
     appeared = getattr(sentence, "appeared_at", 0.0) or 0.0
     if appeared <= 0.0:
+        return None
+    if getattr(source, "steady_at", lambda m: None)(
+            appeared - timing.APPEAR_LAG) is False:
+        if draft is not None:
+            draft.notes.append(
+                "the row was already on screen after a pause/seek — its "
+                "appearance can't anchor the clip")
         return None
     t = getattr(source, "video_time_at", lambda m: None)(
         appeared - timing.APPEAR_LAG)
@@ -259,7 +281,7 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         meta = source.meta()
     except Exception:
         pass
-    t_appear = _appearance(sentence, source, near_t)
+    t_appear = _appearance(sentence, source, near_t, draft)
     match = choose_window(text_match, pos_match, near_t,
                           auto=bool(meta.get("caption_auto")),
                           has_life=t_appear is not None)
@@ -365,6 +387,12 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         elif plausible:
             center = t_appear - APPEAR_BACKSHIFT
             draft.source_meta["anchored_at_appearance"] = round(t_appear, 3)
+            # The seen start BOUNDS the window, not just centres the cap:
+            # an ASR run-on walks the position window back into the
+            # PREVIOUS sentences, and a window already at cap length
+            # ignores the centre entirely (cards 3/5: 'started too early
+            # by a lot' — 4s of the neighbours' speech on the card).
+            start = max(start, t_appear - APPEAR_BACKSHIFT - APPEAR_TRIM_GRACE)
             if t_end is not None and start + 0.8 < t_end < end:
                 end = t_end
                 draft.source_meta["onscreen_end"] = round(t_end, 3)

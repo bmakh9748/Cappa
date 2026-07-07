@@ -32,6 +32,7 @@ class SourceSession:
         self._position_provider = None   # () -> browser state dict, or None
         self._mono_mapper = None         # video_t -> monotonic seconds, or None
         self._video_mapper = None        # monotonic seconds -> video_t, or None
+        self._steady_prober = None       # mono -> True/False/None (bridge)
         self._audio_retry = threading.Lock()  # one download retry at a time
         self.transcript_ready = False   # captions fetched + aligned-ready
         self.audio_ready = False        # audio downloaded, clips can be cut
@@ -131,6 +132,24 @@ class SourceSession:
             return None
         try:
             return mapper(mono)
+        except Exception:
+            return None
+
+    def set_steady_prober(self, prober):
+        """Supply a callable answering 'was playback continuous around this
+        monotonic moment?' (the bridge's steady_at). Lets the card path
+        refuse an appearance stamp born of a pause or a seek."""
+        self._steady_prober = prober
+
+    def steady_at(self, mono):
+        """Was playback continuous around monotonic `mono`? True/False, or
+        None when nothing can vouch (no extension, no mono). See
+        flashcard.clip._appearance for why the card path asks."""
+        prober = self._steady_prober
+        if prober is None or not mono or mono <= 0.0:
+            return None
+        try:
+            return prober(mono)
         except Exception:
             return None
 

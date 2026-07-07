@@ -91,7 +91,7 @@ class FakeSource:
     transcript_ready = True
 
     def __init__(self, match, meta, pos=None, mono=None, clip_fails=False,
-                 appear_t=None, clear_t=None, paused=None):
+                 appear_t=None, clear_t=None, paused=None, steady=None):
         self._match = match
         self._meta = meta
         self._pos = pos
@@ -100,10 +100,14 @@ class FakeSource:
         self._appear_t = appear_t  # canned appearance video-time, or None
         self._clear_t = clear_t    # canned clear video-time, or None
         self._paused = paused      # canned bridge paused state (None=unknown)
+        self._steady = steady      # canned steady-playback answer (None=unknown)
         self.sliced = None
 
     def is_paused(self):
         return self._paused
+
+    def steady_at(self, mono):
+        return self._steady
 
     def video_time_at(self, mono):
         # Tests stamp appearances near mono 100 and clears well after:
@@ -315,6 +319,82 @@ def test_builder_rebuilds_from_onscreen_life():
         assert any("on-screen timing" in n for n in m["notes"]), m["notes"]
         print("PASS builder: a line the track never heard is clipped from "
               "its on-screen life")
+
+
+def test_unsteady_appearance_cannot_anchor():
+    """Cards 2-3 of 2026-07-07: one re-watched line, clicked twice, produced
+    two DIFFERENT wrong clips — the user had seeked back, the row 'appeared'
+    at the seek landing, and that stamp was trusted. On card 2 the landing
+    mapped past the position window's end, so the card_0077 rebuild threw
+    the good window away and kept only the sentence's tail; on card 3 it
+    anchored the cap. With the bridge witnessing the seek (steady_at ->
+    False) the stamp must be ignored: the position window survives, both
+    clicks agree, and the card says why. steady=True keeps the old rebuild
+    (the gate, not the rebuild, is what changed)."""
+    def click(steady):
+        tmp = tempfile.mkdtemp()
+        sentence = Sentence("LU GAK BAYAR DIA BUAT NEMENIN LU",
+                            (0, 0, 10, 10), [("NEMENIN", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # maps to 201.313 — the seek landing,
+                                        # PAST the position window's end
+        pos = {"start": 196.76, "end": 201.26, "score": 0.0,
+               "text": "I didn't pay him to accompany Valoran,",
+               "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                "caption_auto": True}, pos=pos,
+                         appear_t=201.313, steady=steady)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=200.965)
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            return src.sliced, json.load(f)
+
+    sliced, m = click(steady=False)
+    start, end, _, _ = sliced
+    assert m["audio_window"]["matched_by"] == "position", m["audio_window"]
+    assert abs(end - 201.26) < 1e-6, sliced      # window end kept
+    assert start <= 199.0, sliced                # not the landing's tail
+    assert "anchored_at_appearance" not in m["video_source"], m["video_source"]
+    assert any("pause/seek" in n for n in m["notes"]), m["notes"]
+
+    sliced2, m2 = click(steady=True)
+    assert m2["audio_window"]["matched_by"] == "onscreen", m2["audio_window"]
+    assert abs(sliced2[0] - (201.313 - 1.0)) < 1e-6, sliced2
+    print("PASS builder: a seek-landing appearance is refused — the "
+          "position window survives; a steady one still rebuilds")
+
+
+def test_anchor_trims_runon_start():
+    """card_0005: paused mid-life and clicked; the ASR run-on walked the
+    position window 4s into the PREVIOUS sentences, and because the window
+    already sat at cap length the appearance only 'centred' it — no trim
+    ('started too early by a lot'). A trusted appearance must BOUND the
+    start: backshift + grace behind the pop, nothing older."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence('NGAPAIN KAU LIHAT "STREAM" AKU?', (0, 0, 10, 10),
+                            [("KAU", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0
+        pos = {"start": 65.659, "end": 70.159, "score": 0.0,
+               "text": "previous sentences plus this one", "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                "caption_auto": True}, pos=pos,
+                         appear_t=69.7, steady=True)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=69.759)
+        start, end, _, _ = src.sliced
+        from cappa.flashcard.clip import APPEAR_BACKSHIFT, APPEAR_TRIM_GRACE
+        lead = APPEAR_BACKSHIFT + APPEAR_TRIM_GRACE
+        assert abs(start - (69.7 - lead)) < 1e-6, src.sliced   # not 65.659
+        assert end <= 70.159 + 1e-6, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["video_source"]["anchored_at_appearance"] == 69.7
+        print("PASS builder: the seen start bounds a run-on position window")
 
 
 def test_builder_waits_for_the_clear():
@@ -934,6 +1014,8 @@ if __name__ == "__main__":
     test_builder_life_outranks_auto_text()
     test_builder_onscreen_when_track_has_hole()
     test_builder_rebuilds_from_onscreen_life()
+    test_unsteady_appearance_cannot_anchor()
+    test_anchor_trims_runon_start()
     test_builder_appearance_anchor()
     test_builder_backshift_covers_late_stamp()
     test_builder_seen_clear_ends_clip()

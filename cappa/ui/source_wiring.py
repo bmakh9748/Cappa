@@ -80,6 +80,10 @@ class SourceWiring:
         # ...and lets a position-matched card anchor its clip at the moment
         # the caption appeared on screen (mono -> video time).
         self.session.set_video_mapper(self.bridge.video_at)
+        # ...and refuse that anchor when the row appeared because of a
+        # pause/seek rather than during continuous playback (user rule:
+        # a row must be SEEN appearing for its stamp to mean anything).
+        self.session.set_steady_prober(self.bridge.steady_at)
         self._bridge_video_id = None      # last video the bridge auto-selected
         self._caption_retry = (None, 0, 0.0)  # (video, attempts, last try)
         # Cappa's own transcript of the captions it watches: rows that leave
