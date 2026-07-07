@@ -20,7 +20,7 @@ import json
 import os
 from collections import deque
 
-from ..flashcard.timing import APPEAR_LAG, CLEAR_LAG
+from ..detection.latency import APPEAR_LAG, CLEAR_LAG
 
 TRANSCRIPTS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),

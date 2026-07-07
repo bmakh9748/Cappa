@@ -1,8 +1,9 @@
 """Audio timing for flashcard drafts."""
 
 # Detection latency between a real on-screen event and our timestamp for it.
-APPEAR_LAG = 0.30   # settle debounce (~0.1s) + up to one scan interval
-CLEAR_LAG = 0.35    # tracking.CLEAR_CONFIRM before a vanish is surfaced
+# The lags belong to detection (they measure ITS reaction time) and live
+# there; imported here so every window function can keep reading timing.*.
+from ..detection.latency import APPEAR_LAG, CLEAR_LAG
 
 # Safety padding so a word at the very edge of the line still has its audio.
 PREROLL = 0.40

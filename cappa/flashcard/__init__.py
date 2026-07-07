@@ -10,7 +10,9 @@ The map (one ingredient per file):
                    text, provenance, translations, snap-to-track correction
     clip.py        the audio: picks the caption window (text vs position
                    match) and cuts it -- source audio, loopback, fallbacks
-    timing.py      window maths: detection lags, pre/postroll, min/max clip
+    timing.py      window maths: pre/postroll, min/max clip (the appear/clear
+                   lags come from detection/latency.py — they measure the
+                   pipeline, not the card)
     model.py       CardDraft
     prefs.py       which fields a card collects and on which side (live copy
                    of the Flashcards settings tab)
