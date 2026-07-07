@@ -174,6 +174,34 @@ def test_window_for_near():
           % (m["start"], m["end"]))
 
 
+def test_window_for_caps_phantom_tail():
+    """card_0075: in the rolling auto format a word's raw end is the NEXT
+    word's start, so the last matched word's end absorbed the whole
+    inter-sentence silence -- the clip ran past the sentence into the next
+    line, and the cap (centred on the click) then trimmed the real START to
+    pay for that phantom tail. The text-match window must cap the last
+    token's end at WORD_MAX, exactly as position windows already do."""
+    from cappa.source.transcript import WORD_MAX
+    from cappa.source.vtt import Token
+    toks = []
+    for k, w in enumerate(["keadilan", "itu", "harus", "ditegakkan"]):
+        toks.append(Token(w, 821.0 + k * 0.4, 821.4 + k * 0.4))
+    # _fill_ends left the sentence's last word ending where the NEXT
+    # sentence's first word starts, 3.6s of silence later.
+    toks[-1] = Token(toks[-1].text, toks[-1].start, 826.2)
+    toks.append(Token("selanjutnya", 826.2, 826.6))
+    tr = Transcript(toks)
+    m = tr.window_for("KEADILAN ITU HARUS DITEGAKKAN")
+    assert m and m["i"] == 0 and m["j"] == 4, m
+    limit = toks[3].start + WORD_MAX
+    assert m["end"] <= limit + 1e-6, (
+        "matched window keeps the phantom tail: end %.2f > %.2f" % (m["end"],
+                                                                    limit))
+    assert m["end"] > toks[3].start, m
+    print("PASS phantom-tail: window ends %.2f, silence + next line left out"
+          % m["end"])
+
+
 def test_window_for_rejects_shared_tail():
     """The card-5 failure: an OCR line must NOT match a far caption that only
     shares a trailing word or two -- neither globally (word-blended metric) nor
@@ -701,6 +729,7 @@ if __name__ == "__main__":
     test_window_at()
     test_window_at_presilence()
     test_window_for_near()
+    test_window_for_caps_phantom_tail()
     test_window_for_rejects_shared_tail()
     test_builder_prefers_caption_track()
     test_builder_position_fallback()

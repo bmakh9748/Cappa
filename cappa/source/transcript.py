@@ -81,9 +81,13 @@ class Transcript:
         if best is None or best[0] < min_score:
             return None
         score, i, j = best
+        # The last token's end is capped like window_at's (card_0075): in the
+        # rolling format a word's raw end is the NEXT word's start, so an
+        # uncapped end absorbs the inter-sentence silence and the clip runs
+        # into the next line's audio.
         return {
             "start": self.tokens[i].start,
-            "end": self.tokens[j - 1].end,
+            "end": _capped_end(self.tokens[j - 1]),
             "score": score,
             "text": " ".join(self.tokens[k].text for k in range(i, j)),
             "i": i,
