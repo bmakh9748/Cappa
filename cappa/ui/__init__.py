@@ -4,7 +4,10 @@ The map (one window/widget per file):
 
     overlay_window.py   the transparent, click-through overlay: paint,
                         pick-window/select-area modes, follow loop, word
-                        hotspots, hotkeys, worker + recorder + source wiring
+                        hotspots, hotkeys, capture-worker wiring
+    source_wiring.py    the video-source machinery behind the overlay:
+                        bridge + session + recorder + OCR transcript log,
+                        gated and glued (Qt-free; ticked by the overlay)
     launcher.py         corner icon + menu (pick/select/clipboard video/
                         settings/exit); status tooltip (target · fps ·
                         captions · yt)
