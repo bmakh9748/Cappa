@@ -9,10 +9,11 @@ card instead of crashing the overlay.
 Fetched captions and audio cache per videoId under source/.cache, so a video is
 pulled once and every later card on it is instant.
 
-Operational caveat: recent yt-dlp warns that YouTube extraction is deprecated
-without a JavaScript runtime (deno). Captions and audio still download today,
-but that is the most likely future break point -- if fetches start failing,
-installing deno and passing it to yt-dlp is the fix."""
+Operational caveat, since materialized: YouTube format extraction now REQUIRES
+a JavaScript runtime plus yt-dlp's challenge solver scripts (yt-dlp-ejs, from
+pip install "yt-dlp[default]"). _ydl_opts enables both deno and node; the
+machine must have one of them installed or audio downloads fail with
+'Requested format is not available' while captions keep working."""
 
 import os
 import subprocess
@@ -56,8 +57,15 @@ def cookie_file_path(cache_dir=CACHE_DIR):
 
 def _ydl_opts(**extra):
     """Base yt-dlp options; attaches the extension-supplied cookie file when
-    one exists so fetches ride the user's logged-in session."""
-    opts = {"quiet": True, "no_warnings": True}
+    one exists so fetches ride the user's logged-in session.
+
+    js_runtimes: YouTube format URLs now carry a JS challenge yt-dlp must run
+    a real JavaScript engine to solve; without one every video download dies
+    with 'Requested format is not available' (captions survive: they come
+    from metadata). yt-dlp only enables deno by default — enable node too so
+    whichever the machine has gets used (card_0047's machine has node)."""
+    opts = {"quiet": True, "no_warnings": True,
+            "js_runtimes": {"deno": {}, "node": {}}}
     cookies = cookie_file_path()
     if os.path.exists(cookies):
         opts["cookiefile"] = cookies
@@ -75,9 +83,9 @@ def _friendly(exc):
         return "YouTube bot check -- install the Cappa Bridge extension so "\
                "your logged-in cookies can be used"
     if "Requested format is not available" in text or "No video formats" in text:
-        return "YouTube offered no playable formats (extraction broken?) -- "\
-               "try: pip install -U yt-dlp, and install deno (the JS runtime "\
-               "yt-dlp now wants for YouTube)"
+        return "YouTube offered no playable formats -- yt-dlp needs a JS "\
+               "runtime (install deno or Node.js) and its challenge solver "\
+               "(pip install -U \"yt-dlp[default]\")"
     return text
 
 

@@ -8,4 +8,4 @@ ffmpeg-python
 genanki
 deep-translator
 PyAudioWPatch
-yt-dlp
+yt-dlp[default]
