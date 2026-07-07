@@ -520,6 +520,19 @@ class StartupWindow(QWidget):
         self._load_from_settings()
         self.cancelled.emit()
 
+    def closeEvent(self, event):
+        """The title-bar X. Once the app runs this window is just a dialog,
+        but the overlay is a Qt.Tool window — invisible to Qt's
+        last-window-closed accounting — so letting the close proceed would
+        quit the WHOLE app. Swallow it and treat it as Cancel. On first run
+        the window really is the app's front door: closing it exits."""
+        if self._started:
+            event.ignore()
+            self.hide()
+            self._on_cancel()
+        else:
+            event.accept()
+
     # ------------------------------------------------------------ internals
     def _update_clip_labels(self, _value=0):
         self._min_label.setText("Shortest clip: %.1f s (one-word blips are "
