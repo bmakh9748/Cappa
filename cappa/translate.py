@@ -16,7 +16,18 @@ as the sentence uses it (Arabic معروف alone comes back as the noun
 'favor'; inside وغير معروف it becomes 'known'). Quotes usually survive
 translation; whenever they don't (dropped, moved, or Google leaves the
 quoted word untranslated) the bare-word translation is the fallback, so
-context can only improve on the old behaviour, never lose it.
+context can only improve on the old behaviour, never lose it. The quotes
+can also DRIFT: when the marked word fuses with a neighbour into one
+phrase, Google puts the quotes around the neighbour's translation
+(card_0047: SEKALIAN came back "GET OUT" — DIKELUARIN's meaning). A span
+whose back-translation names a different word of the sentence is rejected
+the same way, falling back to the bare word.
+
+Case: hardsub captions SHOUT, and Google half-guesses all-caps words it
+would translate fine in lowercase (card_0052: KELAR -> 'GONE', kelar ->
+'finished'). Fully-uppercase input is therefore translated in lowercase,
+and the answer keeps Google's natural casing — a card full of shouted
+translations is unreadable (user call: never mirror the caption's caps).
 
 SOURCE_LANGUAGE defaults to auto-detect, but auto-detect fails on lone words
 (a bare "BAWA" comes back "BAWA"): naming the video's language via the settings
@@ -120,9 +131,50 @@ def _extract_marked(text, word):
     return span
 
 
+def _span_points_elsewhere(span, word, sentence):
+    """True when the marked span is really a DIFFERENT word's translation:
+    its back-translation into SOURCE_LANGUAGE matches another word of the
+    sentence and not the marked one (card_0047: "GET OUT" back-translates
+    to KELUAR — the stem of the neighbouring DIKELUARIN, not of SEKALIAN).
+    Substring matching absorbs affixes (KELUAR ⊂ DIKELUARIN, BAWA ⊂
+    MEMBAWA); tokens under 3 chars are noise (di-, ke-). Needs a named
+    SOURCE_LANGUAGE to translate back into, and is best-effort: 'auto' or
+    a failed round-trip accepts the span rather than lose a good one."""
+    if SOURCE_LANGUAGE == "auto":
+        return False
+    try:
+        from deep_translator import GoogleTranslator
+        back = GoogleTranslator(source=TARGET_LANGUAGE,
+                                target=SOURCE_LANGUAGE).translate(span) or ""
+    except Exception:
+        return False
+    back = back.strip().casefold()
+    wordf = (word or "").casefold()
+    if not back or back in wordf or wordf in back:
+        return False
+    for token in sentence.split():
+        tok = clean_word(token).casefold()
+        if not tok or wordf in tok:
+            continue   # the marked word itself isn't "elsewhere"
+        if len(tok) >= 3 and (back in tok or tok in back):
+            return True
+    return False
+
+
+def _deshout(text):
+    """ALL-CAPS input lowered for the translator, other text untouched.
+    Hardsub fonts shout, and Google translates shouted Indonesian on a
+    guess-by-shape basis: KELAR (finished) came back 'GONE' bare and
+    'GET OUT' in context, while kelar comes back 'finished' (card_0052).
+    Mixed case is meaningful (German nouns, names) and passes through."""
+    return text.lower() if (text or "").isupper() else text
+
+
 def translate(word, sentence=""):
     """Blocking: the TARGET_LANGUAGE meaning of `word` — as its `sentence`
     uses it when possible (see the module header), the bare word otherwise.
+    Shouted input is translated in lowercase and the answer stays in
+    Google's natural casing (never the caption's caps — user call).
     Raises TranslationError with a short, displayable reason."""
     key = (word, sentence or "")
     hit = _cache.get(key)
@@ -135,17 +187,19 @@ def translate(word, sentence=""):
     translator = GoogleTranslator(source=SOURCE_LANGUAGE,
                                   target=TARGET_LANGUAGE)
     text = ""
-    marked = _mark(sentence, word)
+    marked = _mark(_deshout(sentence), word)
     if marked:
         try:
             text = _extract_marked(translator.translate(marked), word)
         except Exception as exc:
             raise TranslationError(
                 "no translation — check your internet") from exc
+        if text and _span_points_elsewhere(text, word, sentence):
+            text = ""   # quotes drifted onto a neighbour; use the bare word
     if not text:
         # No sentence, the word wasn't in it, or the marks didn't survive.
         try:
-            text = (translator.translate(word) or "").strip()
+            text = (translator.translate(_deshout(word)) or "").strip()
         except Exception as exc:
             raise TranslationError(
                 "no translation — check your internet") from exc

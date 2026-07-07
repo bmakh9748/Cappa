@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa.translate import _extract_marked, _mark, clean_word
+from cappa.translate import _deshout, _extract_marked, _mark, clean_word
 
 CASES = [
     ("hello,", "hello"),              # trailing comma from the line
@@ -73,5 +73,22 @@ for text, word, want in EXTRACT_CASES:
         text, word, got, want)
 print("PASS: %d extraction cases (survive, drop, untranslated)"
       % len(EXTRACT_CASES))
+
+# Shouted hardsub text is lowered for the translator (Google half-guesses
+# all-caps words: card_0052's KELAR -> 'GONE'); anything with meaningful
+# case, no case at all, or nothing survives untouched.
+DESHOUT_CASES = [
+    ("UDAH MAU KELAR, GUYS!", "udah mau kelar, guys!"),
+    ("Dari pertanyaan", "Dari pertanyaan"),   # mixed case is meaningful
+    ("das Wort", "das Wort"),                 # German nouns keep their caps
+    ("食べたことがある", "食べたことがある"),  # caseless scripts untouched
+    ("...", "..."),                           # no cased chars -> untouched
+    ("", ""),
+    (None, None),
+]
+for raw, want in DESHOUT_CASES:
+    got = _deshout(raw)
+    assert got == want, "FAIL: _deshout(%r) = %r, wanted %r" % (raw, got, want)
+print("PASS: %d de-shout cases (caps, mixed, caseless)" % len(DESHOUT_CASES))
 
 print("ALL PASS")
