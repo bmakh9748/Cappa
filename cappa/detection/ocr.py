@@ -26,7 +26,15 @@ import numpy as np
 
 from .sentence import Sentence
 
-PAD = 4  # px of context around the crop; rec likes a little breathing room
+PAD = 4      # px of context around the crop; rec likes breathing room
+PAD_ALT = 8  # the second read's padding. Stylised fonts squeeze word
+             # spaces below the rec model's column stride, so whether a
+             # space is emitted flips with tiny framing changes
+             # (card_0056: pad 4 read "GENE"DIKILLER, pad 8 read
+             # "GENE"DI KILLER — same frame). Reading twice and letting
+             # the SPACIER agreeing read win recovers what one framing
+             # swallowed; disagreeing reads keep the first (today's)
+             # behaviour.
 
 # settings.source_language code -> rapidocr LangRec value. Only scripts the
 # default multi-script model CANNOT read are listed; Latin/CJK languages stay
@@ -133,28 +141,46 @@ class TextReader:
         self._ensure()
         if self._model is None:
             return None, 0.0
-        h, w = frame.shape[:2]
         l, t, r, b = box
         if b - t < 2 or r - l < 2:  # judged BEFORE padding: a sliver of a
             return None, 0.0        # box is no evidence, however padded
-        ct, cb = max(t - PAD, 0), min(b + PAD, h)
-        cl, cr = max(l - PAD, 0), min(r + PAD, w)
-        crop = np.ascontiguousarray(frame[ct:cb, cl:cr, :3])
-        try:
-            res = self._model(crop, use_det=False, use_cls=False,
-                              use_rec=True, return_word_box=True)
-        except Exception:
+        got = self._read_once(frame, box, PAD)
+        if got is None:
             return None, 0.0
-        if not res.txts:
-            return Sentence("", box, []), 0.0
-        text = res.txts[0]
-        score = float(res.scores[0]) if res.scores else 0.0
-        spans = self._word_spans(res, cl, cr, l, r, t, b)
+        text, score, spans = got
+        if text and not any(_is_cjk(ch) for ch in text):
+            # Second framing: the spacier read wins when both saw the same
+            # characters (PAD_ALT above; never CJK — spacelessness is
+            # correct there and a hallucinated split must not stick).
+            alt = self._read_once(frame, box, PAD_ALT)
+            if (alt is not None and alt[0]
+                    and alt[0].replace(" ", "") == text.replace(" ", "")
+                    and alt[0].count(" ") > text.count(" ")):
+                text, score, spans = alt
         if spans:
             text = _respace(text, spans)
         elif text:
             spans = [(text, box)]  # no geometry: the line is one hotspot
         return Sentence(text, box, spans), score
+
+    def _read_once(self, frame, box, pad):
+        """One rec pass over `box` padded by `pad`: (text, score, spans),
+        ('', 0.0, []) for a readable-but-empty crop, None on rec failure."""
+        h, w = frame.shape[:2]
+        l, t, r, b = box
+        ct, cb = max(t - pad, 0), min(b + pad, h)
+        cl, cr = max(l - pad, 0), min(r + pad, w)
+        crop = np.ascontiguousarray(frame[ct:cb, cl:cr, :3])
+        try:
+            res = self._model(crop, use_det=False, use_cls=False,
+                              use_rec=True, return_word_box=True)
+        except Exception:
+            return None
+        if not res.txts:
+            return "", 0.0, []
+        text = res.txts[0]
+        score = float(res.scores[0]) if res.scores else 0.0
+        return text, score, self._word_spans(res, cl, cr, l, r, t, b)
 
     @staticmethod
     def _word_spans(res, cl, cr, l, r, t, b):
