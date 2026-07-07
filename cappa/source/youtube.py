@@ -151,13 +151,21 @@ def fetch_transcript(url, lang=None, prefer_manual=True, cache_dir=CACHE_DIR):
 def _pick_subtitle(info, lang, prefer_manual):
     """(lang_code, is_auto, vtt_url) for the best available track.
 
-    Auto captions come with machine-TRANSLATED variants for every language on
-    Earth; only the spoken-language track (usually the `xx-orig` variant, or
-    the code matching the video's language) is usable for text matching, so
-    for the auto pool we try: requested lang (+ its -orig), the video's own
-    language (+ its -orig), then any -orig variant -- and never fall back to an
-    arbitrary translation (dict order once handed us Abkhazian). Manual subs
-    are a short, genuine list, so any of them beats nothing."""
+    LANGUAGE first, source second. A track in the requested (or the
+    video's own) language is text-matchable against the OCR lines even
+    when machine-made; a human track in ANOTHER language is a translation
+    that can never match — picking it forces every card onto coarse
+    position timing (cards 0069/0071: the manual ENGLISH track was chosen
+    over the video's own Indonesian auto captions). Within one language,
+    `prefer_manual` decides between the uploader's track and the auto
+    captions.
+
+    Auto captions come with machine-TRANSLATED variants for every language
+    on Earth; only the spoken-language track (the `xx-orig` variant, or
+    the code matching the video's language) is usable, so the last resorts
+    stay narrow: any -orig auto track, then any manual track (real timing
+    in a real language, position-only) -- and never an arbitrary auto
+    translation (dict order once handed us Abkhazian)."""
     manual = info.get("subtitles") or {}
     auto = info.get("automatic_captions") or {}
     order = []
@@ -166,30 +174,27 @@ def _pick_subtitle(info, lang, prefer_manual):
             order.append(code)
             order.append(code + "-orig")
 
-    if prefer_manual:
-        pools = [(manual, False), (auto, True)]
-    else:
-        pools = [(auto, True), (manual, False)]
+    pools = [(manual, False), (auto, True)]
+    if not prefer_manual:
+        pools.reverse()
 
-    for pool, is_auto in pools:
-        for code in order:
+    for code in order:
+        for pool, is_auto in pools:
             if code in pool:
                 url = _vtt_url(pool[code])
                 if url:
                     return code, is_auto, url
-        if is_auto:
-            # last resort in the auto pool: the spoken-language original
-            for code, fmts in pool.items():
-                if code.endswith("-orig"):
-                    url = _vtt_url(fmts)
-                    if url:
-                        return code, is_auto, url
-        else:
-            # manual pool: any uploader track is real timing in a real language
-            for code, fmts in pool.items():
-                url = _vtt_url(fmts)
-                if url:
-                    return code, is_auto, url
+    # Last resort in the auto pool: the spoken-language original.
+    for code, fmts in auto.items():
+        if code.endswith("-orig"):
+            url = _vtt_url(fmts)
+            if url:
+                return code, True, url
+    # Any uploader track: real timing in a real language (position mode).
+    for code, fmts in manual.items():
+        url = _vtt_url(fmts)
+        if url:
+            return code, False, url
     raise SourceError("no usable subtitles or auto-captions")
 
 
