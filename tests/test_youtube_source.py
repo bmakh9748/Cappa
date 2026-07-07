@@ -256,6 +256,26 @@ def test_window_at_presilence():
           "utterance start")
 
 
+def test_window_at_prefers_played_line():
+    """card_0077: the ASR never transcribed the on-screen sentence (a
+    neighbor's phantom end swallowed its span), and the click fell into
+    that hole — 2.1s after the last played word ENDED, 1.9s before the
+    NEXT line started. Nearest-start distance picked the future line,
+    speech that hadn't even happened yet at click time. The line that
+    already played must win."""
+    from cappa.source.vtt import Token
+    toks = [Token("di", 829.92, 830.58), Token("luar", 830.58, 830.70),
+            Token("Nalar", 830.70, 835.70),   # phantom end spans the hole
+            Token("ini", 835.70, 836.70), Token("mumpung", 836.70, 837.00)]
+    tr = Transcript(toks)
+    w = tr.window_at(833.806)
+    assert w and "Nalar" in w["text"], w
+    assert "ini" not in w["text"].split(), w
+    assert w["start"] <= 829.92 + 1e-6 and w["end"] <= 831.8, w
+    print("PASS window_at: a silence click stays with the line that "
+          "already played")
+
+
 def test_builder_position_fallback():
     """OCR text that isn't in the caption track (a translated burned-in sub, or
     a garbled auto-caption at the real spot) must fall back to the playback
@@ -728,6 +748,7 @@ if __name__ == "__main__":
     test_no_match()
     test_window_at()
     test_window_at_presilence()
+    test_window_at_prefers_played_line()
     test_window_for_near()
     test_window_for_caps_phantom_tail()
     test_window_for_rejects_shared_tail()

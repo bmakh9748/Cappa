@@ -109,10 +109,24 @@ class Transcript:
         idx = next((i for i, tok in enumerate(toks)
                     if tok.start <= t <= _capped_end(tok)), None)
         if idx is None:
-            # t sits in a silence (or past the track): the nearest word is
-            # still the line playing/last played there.
-            idx = min(range(len(toks)), key=lambda i: abs(toks[i].start - t))
-            if abs(toks[idx].start - t) > max_span:
+            # t sits in a silence (or past the track). A word that starts
+            # after t has not been SPOKEN yet at t, so it cannot be the line
+            # the user is reading: the line that just played wins whenever
+            # there is one. Its distance is measured from its capped END,
+            # not its start — card_0077 clicked 2.1s after the last played
+            # word ended, but that word's START was 3.1s back, so plain
+            # nearest-start distance handed the click to the NEXT line,
+            # 1.9s in the future. A future line is taken only when no past
+            # word is within max_span (long silence, and the bridge's
+            # position can run a touch behind a line that just started).
+            prev = next((i for i in range(len(toks) - 1, -1, -1)
+                         if toks[i].start <= t), None)
+            nxt = 0 if prev is None else prev + 1
+            if prev is not None and t - _capped_end(toks[prev]) <= max_span:
+                idx = prev
+            elif nxt < len(toks) and toks[nxt].start - t <= max_span:
+                idx = nxt
+            else:
                 return None
         i = idx
         while (i > 0 and toks[i].start - _capped_end(toks[i - 1]) <= gap
