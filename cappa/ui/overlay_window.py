@@ -33,6 +33,11 @@ DOT_STALE = 2.0      # extension silent this long -> the yt dot goes dark.
                      # or hidden. The dot reacts here, near-instantly; the
                      # RECORDER keeps its longer linger below — stop/start
                      # churn on every tab flick is costly, a dark dot isn't.
+CAPTION_RETRY_WAIT = 20.0  # cooldown between caption-fetch retries
+CAPTION_RETRY_MAX = 2      # retries per video: transient failures (a bot
+                           # check before the extension's cookies landed, a
+                           # network blip) heal; a genuinely captionless
+                           # video stops costing fetches after two tries
 MIN_SELECTION = 20   # ignore accidental micro-drags (logical px)
 EDGE_GRIP = 8        # grabbable band inside a locked region's border (logical px)
 
@@ -126,6 +131,7 @@ class OverlayWindow(QMainWindow):
         # the caption appeared on screen (mono -> video time).
         self._source.set_video_mapper(self._bridge.video_at)
         self._bridge_video_id = None      # last video the bridge auto-selected
+        self._caption_retry = (None, 0, 0.0)  # (video, attempts, last try)
         if self._bridge.error:
             print("[cappa] browser bridge: " + self._bridge.error)
         self._popup = WordPopup(self, region_provider=self._card_region,
@@ -815,6 +821,27 @@ class OverlayWindow(QMainWindow):
             self._source.set_video(state.get("url") or vid)
             print("[cappa] source: browser video %s (%s)"
                   % (vid, (state.get("title") or "?")[:50]))
+        elif vid and self._source.status == "no captions":
+            self._retry_captions(vid, state)
+
+    def _retry_captions(self, vid, state):
+        """A caption fetch that failed can be transient (bot check before the
+        extension's cookies arrived, a network blip) — but it used to be
+        PERMANENT: the session refused the same video and the poll never
+        re-selected it, so the dot sat red for the whole watch unless the
+        user changed videos (which is why it kept coming back on tab
+        switches). Retry a couple of times with a cooldown instead."""
+        r_vid, tries, at = self._caption_retry
+        if r_vid != vid:
+            r_vid, tries, at = vid, 0, 0.0
+        now = time.monotonic()
+        if tries >= CAPTION_RETRY_MAX or now - at < CAPTION_RETRY_WAIT:
+            self._caption_retry = (r_vid, tries, at)
+            return
+        self._caption_retry = (vid, tries + 1, now)
+        print("[cappa] source: retrying captions for %s (%d/%d)"
+              % (vid, tries + 1, CAPTION_RETRY_MAX))
+        self._source.set_video(state.get("url") or vid)
 
     def _gate_recorder(self, alive):
         """Record system audio only while the extension is reporting a

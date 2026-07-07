@@ -49,7 +49,12 @@ class SourceSession:
                 self.error, self.status = str(exc), "bad URL"
             return
         with self._lock:
-            if vid == self._video_id and self.status not in ("error", "idle"):
+            # Same video again is a no-op only while there's nothing to redo:
+            # captions arrived, or a fetch is in flight. A FAILED fetch ("no
+            # captions" from a transient bot check / network blip) may be
+            # retried by pointing the session at the same video once more.
+            if vid == self._video_id and (self.transcript_ready
+                                          or self.status == "loading captions"):
                 return
             self._video_id = vid
             self._url = youtube.info_url(url)
