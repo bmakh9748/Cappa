@@ -9,8 +9,10 @@
 // yt-dlp can't decrypt current Chrome/Edge cookie stores on Windows itself,
 // but an extension reads them natively via chrome.cookies.
 
-const ENDPOINT = "http://127.0.0.1:8765/state";
-const COOKIE_ENDPOINT = "http://127.0.0.1:8765/cookies";
+// 18765, not 8765 — 8765 is AnkiConnect's port and Anki is usually open
+// alongside Cappa. Must match cappa/source/bridge.py and manifest.json.
+const ENDPOINT = "http://127.0.0.1:18765/state";
+const COOKIE_ENDPOINT = "http://127.0.0.1:18765/cookies";
 const COOKIE_INTERVAL_MS = 10 * 60 * 1000; // refresh every 10 minutes
 
 let lastCookiePush = 0;

@@ -17,16 +17,36 @@ No Qt."""
 
 import json
 import os
+import socket
 import threading
 import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
-PORT = 8765
+# NOT 8765: that is AnkiConnect's port, and Anki is exactly the app a Cappa
+# user has open. With both bound (Windows lets two sockets share a port when
+# the reuse flag is set), the extension's reports were delivered to Anki and
+# Cappa sat on "yt: idle" -- whichever app launched first won, which is why
+# the failure came and went with reboots. Must match extension/background.js
+# and extension/manifest.json.
+PORT = 18765
 STALE_AFTER = 5.0    # no update within this many seconds -> position unknown
 HISTORY = 200        # ~2.3 min of samples at the extension's ~700ms cadence
 MAX_ANCHOR_GAP = 90.0  # a mapping farther than the loopback buffer is useless
+
+
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """Never share the port. http.server's default reuse flag is what let
+    the bridge and AnkiConnect both hold 8765 without an error; exclusive
+    binding turns a taken port into an OSError that start() surfaces."""
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):   # Windows
+            self.socket.setsockopt(socket.SOL_SOCKET,
+                                   socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class BrowserBridge:
@@ -53,7 +73,7 @@ class BrowserBridge:
         if self._server is not None:
             return
         try:
-            self._server = ThreadingHTTPServer(
+            self._server = _ExclusiveHTTPServer(
                 (self._host, self._port), self._make_handler())
         except OSError as exc:
             self.error = "bridge could not bind %s:%d (%s)" % (
@@ -84,6 +104,16 @@ class BrowserBridge:
             if isinstance(ct, (int, float)):
                 self._history.append((now, float(ct),
                                       bool(data.get("paused", False))))
+
+    def age(self):
+        """Seconds since the extension last reported, or None if it never
+        has (the clipboard-only path). For UI staleness checks that want a
+        TIGHTER window than current()'s STALE_AFTER."""
+        with self._lock:
+            if self._state is None:
+                return None
+            at = self._at
+        return time.monotonic() - at
 
     def current(self):
         """Latest browser state, or None if nothing fresh. Adds `age` and a

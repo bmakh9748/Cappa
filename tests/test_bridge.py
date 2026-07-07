@@ -98,6 +98,20 @@ def main():
         assert line.split("\t") == [".youtube.com", "TRUE", "/", "TRUE",
                                     "1900000000", "SID", "abc123"], line
         print("PASS bridge: /cookies writes a valid Netscape cookie file")
+
+        # A port someone else holds must FAIL LOUDLY, never bind alongside.
+        # Windows happily lets two reuse-flagged sockets share a port and
+        # splits the traffic between apps: AnkiConnect on 8765 silently ate
+        # the extension's reports while Cappa reported "yt: idle".
+        other = BrowserBridge(port=port)
+        other.start()
+        assert other.error, "second bind on a taken port must set error"
+        assert "could not bind" in other.error, other.error
+        other.stop()
+        # The original bridge is unharmed and still answering.
+        code, body = _get(port)
+        assert code == 200 and b"cappa" in body, (code, body)
+        print("PASS bridge: a taken port errors instead of silently sharing")
     finally:
         bridge.stop()
     print("ALL PASS")
