@@ -10,6 +10,5 @@ screenshots/
 *.mp3
 *.png
 .env
-AGENTS.md
 cappa/source/.cache/
 settings.json

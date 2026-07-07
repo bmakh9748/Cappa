@@ -18,10 +18,19 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 | Path | Role |
 |---|---|
 | `run.py` | Launcher |
-| `cappa/app.py` | Qt setup + `main()` |
+| `cappa/app.py` | Qt setup + `main()`: startup window → overlay + launcher |
 | `cappa/winapi.py` | All Win32/DWM calls (no Qt) |
-| `cappa/ui/` | Everything you see: the overlay (paint, pick/select, follow loop) and the corner launcher (icon + menu) |
-| `cappa/detection/` | Everything that finds captions, one stage per file — capture → diff → **neural text detection** (PP-OCRv5 via ONNX) → classifier → clear-watching — on a background thread. Map in its `__init__.py` |
+| `cappa/settings.py` | Persisted user settings (`settings.json`) |
+| `cappa/translate.py` | Sentence/word translation — deep-translator's free Google endpoint, **never an LLM** |
+| `cappa/dictionary.py` | Word meanings — Wiktionary definitions, Google as hint + fallback |
+| `cappa/audio.py` | WASAPI loopback ring buffer (record what you hear, clip retroactively) |
+| `cappa/ui/` | Everything you see: the overlay, corner launcher, settings window, word popup |
+| `cappa/detection/` | Everything that finds captions, one stage per file — capture → diff → **neural text detection** (PP-OCRv5 via ONNX) → OCR → classifier → clear-watching — on a background thread |
+| `cappa/source/` | YouTube caption track as the timing oracle: VTT parsing, OCR-line alignment, yt-dlp/ffmpeg, browser bridge |
+| `cappa/flashcard/` | A clicked word → a card draft folder under `cards/card_NNNN/` (audio window choice, screenshot, provenance) |
+| `extension/` | "Cappa Bridge" browser extension: which video + position → the bridge |
+
+Every package's `__init__.py` docstring holds its per-file map — read those first. [AGENTS.md](AGENTS.md) is the structural rulebook for anyone (human or LLM) changing the code.
 
 ## Tests
 

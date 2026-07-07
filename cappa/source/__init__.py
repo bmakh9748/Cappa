@@ -10,6 +10,8 @@ similarity, and cut the card's audio from the downloaded track at the matched
   vtt.py         parse WebVTT (manual + auto rolling formats) -> timed tokens
   transcript.py  Transcript model + OCR-line -> caption-window aligner
   youtube.py     yt-dlp fetch of metadata/captions/audio + ffmpeg slicing
+  session.py     SourceSession: the active video, fetched on a daemon thread
+  bridge.py      localhost server the browser extension reports position to
 
 vtt/transcript are pure and import-cheap; youtube.py lazy-imports yt-dlp, so
 importing this package never requires the network or yt-dlp."""
