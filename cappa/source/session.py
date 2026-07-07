@@ -31,6 +31,7 @@ class SourceSession:
         self._lang = lang
         self._position_provider = None   # () -> browser state dict, or None
         self._mono_mapper = None         # video_t -> monotonic seconds, or None
+        self._video_mapper = None        # monotonic seconds -> video_t, or None
         self._audio_retry = threading.Lock()  # one download retry at a time
         self.transcript_ready = False   # captions fetched + aligned-ready
         self.audio_ready = False        # audio downloaded, clips can be cut
@@ -111,6 +112,22 @@ class SourceSession:
         cut caption-exact audio from the LOOPBACK buffer when the source
         download isn't available."""
         self._mono_mapper = mapper
+
+    def set_video_mapper(self, mapper):
+        """Supply a callable mapping a monotonic moment -> the video time then
+        playing (the bridge's video_at). Lets a position-matched card anchor
+        its clip at the moment the caption APPEARED on screen."""
+        self._video_mapper = mapper
+
+    def video_time_at(self, mono):
+        """Video seconds playing at monotonic moment `mono`, or None."""
+        mapper = self._video_mapper
+        if mapper is None or not mono or mono <= 0.0:
+            return None
+        try:
+            return mapper(mono)
+        except Exception:
+            return None
 
     # --------------------------------------------------------------- queries
     def window_for(self, ocr_text, near_t=None):

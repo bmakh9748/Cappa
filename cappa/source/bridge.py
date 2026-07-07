@@ -129,6 +129,28 @@ class BrowserBridge:
         _, mono, ct = best
         return mono + (video_t - ct)
 
+    def video_at(self, mono):
+        """The video time that was playing at monotonic moment `mono`, or
+        None — mono_at's inverse, same nearest-playing-sample anchoring.
+        Lets the flashcard turn 'the caption appeared at clock time T' into
+        'the caption appeared at video time V' (card_0061: the clip must
+        anchor where the LINE began, not where playback sat at click)."""
+        if mono is None:
+            return None
+        with self._lock:
+            samples = list(self._history)
+        best = None  # (|m - mono|, m, ct)
+        for m, ct, paused in samples:
+            if paused:
+                continue
+            d = abs(m - mono)
+            if best is None or d < best[0]:
+                best = (d, m, ct)
+        if best is None or best[0] > MAX_ANCHOR_GAP:
+            return None
+        _, m, ct = best
+        return ct + (mono - m)
+
     # ------------------------------------------------------------- cookies
     def _write_cookies(self, cookies):
         """Write extension-supplied cookie dicts as a Netscape cookies.txt for

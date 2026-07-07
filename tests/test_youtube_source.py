@@ -90,13 +90,18 @@ class FakeSource:
 
     transcript_ready = True
 
-    def __init__(self, match, meta, pos=None, mono=None, clip_fails=False):
+    def __init__(self, match, meta, pos=None, mono=None, clip_fails=False,
+                 appear_t=None):
         self._match = match
         self._meta = meta
         self._pos = pos
         self._mono = mono          # canned (t0, t1) monotonic window, or None
         self._clip_fails = clip_fails
+        self._appear_t = appear_t  # canned appearance video-time, or None
         self.sliced = None
+
+    def video_time_at(self, mono):
+        return self._appear_t
 
     def window_for(self, text, near_t=None):
         return self._match
@@ -198,6 +203,26 @@ def test_window_at():
           % (w["start"], w["end"], w["text"]))
 
 
+def test_window_at_presilence():
+    """The rolling parser chains a token's end to the NEXT token's start, so
+    the last word before a silence 'lasts' the whole silence (card_0061:
+    'lagi' spanned 8.2s). A position inside that phantom span must still
+    reach BACK to the utterance's start — the raw end used to fail the
+    max_span test for every backward step — and the window must not carry
+    the silence as if it were audio."""
+    from cappa.source.vtt import Token
+    toks = [Token("korban", 225.2, 225.7), Token("pisang", 225.7, 226.2),
+            Token("lagi", 226.2, 234.5),   # pre-silence phantom end
+            Token("next", 234.5, 235.0)]
+    tr = Transcript(toks)
+    w = tr.window_at(227.0)     # paused inside the phantom span
+    assert w and w["start"] <= 225.2 + 1e-6, w
+    assert w["end"] <= 227.3, w
+    assert "korban" in w["text"], w
+    print("PASS window_at: pre-silence phantom span reaches the "
+          "utterance start")
+
+
 def test_builder_position_fallback():
     """OCR text that isn't in the caption track (a translated burned-in sub, or
     a garbled auto-caption at the real spot) must fall back to the playback
@@ -222,6 +247,36 @@ def test_builder_position_fallback():
         assert abs(m["audio_window"]["start"] - 40.0) < 1e-6
         assert m["video_source"]["matched_by"] == "position"
         print("PASS builder: position window used when text doesn't match")
+
+
+def test_builder_appearance_anchor():
+    """A position-matched clip opens where the caption APPEARED, not around
+    the playback position at card time: card_0061 was paused past the line,
+    and the old near_t-centred cap kept the sentence's tail and cut its
+    start. The fake's position window spans the whole speech run; the
+    appearance mapping places the line's start early inside it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("korban pisang lagi kah", (0, 0, 10, 10),
+                            [("korban", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # monotonic; fake maps it to 225.4
+        pos = {"start": 223.2, "end": 227.6, "score": 0.0,
+               "text": "garbled speech run", "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "id",
+                                "caption_auto": True}, pos=pos,
+                         appear_t=225.4)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=227.0)
+        start, end, _, _ = src.sliced
+        assert start <= 225.4 + 1e-6 and 225.4 - start < 0.6, src.sliced
+        assert end <= 227.6 + 1e-6, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["video_source"]["anchored_at_appearance"] == 225.4, (
+            m["video_source"])
+        print("PASS builder: position clip anchored at caption appearance")
 
 
 def test_builder_loopback_rescue():
@@ -520,10 +575,12 @@ if __name__ == "__main__":
     test_auto()
     test_no_match()
     test_window_at()
+    test_window_at_presilence()
     test_window_for_near()
     test_window_for_rejects_shared_tail()
     test_builder_prefers_caption_track()
     test_builder_position_fallback()
+    test_builder_appearance_anchor()
     test_builder_loopback_rescue()
     test_pick_subtitle_orig()
     test_choose_window()

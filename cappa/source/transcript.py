@@ -22,6 +22,14 @@ from difflib import SequenceMatcher
 _EDGE = re.compile(r"^\W+|\W+$", re.UNICODE)  # leading/trailing punctuation
 MIN_SCORE = 0.65          # below this we report no confident match
 SEARCH_RADIUS = 20.0      # seconds around near_t to consider (when given)
+WORD_MAX = 1.0            # effective cap on one token's spoken duration. The
+                          # rolling-VTT parser sets a token's end to the NEXT
+                          # token's start, so the last word before a silence
+                          # carries the whole silence in its raw end
+                          # (card_0061: 'lagi' spanned 8.2s) — and that one
+                          # phantom-long word poisoned every gap and span
+                          # test around it, cutting the real sentence out of
+                          # the position window.
 _SHRINK = 1               # candidate window may be at most 1 word shorter...
 _GROW = 2                 # ...and up to 2 longer than the OCR line. Asymmetric
                           # on purpose: a shorter window can perfectly match a
@@ -95,28 +103,37 @@ class Transcript:
         if not toks or t is None:
             return None
         idx = next((i for i, tok in enumerate(toks)
-                    if tok.start <= t <= tok.end), None)
+                    if tok.start <= t <= _capped_end(tok)), None)
         if idx is None:
+            # t sits in a silence (or past the track): the nearest word is
+            # still the line playing/last played there.
             idx = min(range(len(toks)), key=lambda i: abs(toks[i].start - t))
             if abs(toks[idx].start - t) > max_span:
                 return None
         i = idx
-        while (i > 0 and toks[i].start - toks[i - 1].end <= gap
-               and toks[idx].end - toks[i - 1].start <= max_span):
+        while (i > 0 and toks[i].start - _capped_end(toks[i - 1]) <= gap
+               and _capped_end(toks[idx]) - toks[i - 1].start <= max_span):
             i -= 1
         j = idx
-        while (j + 1 < len(toks) and toks[j + 1].start - toks[j].end <= gap
-               and toks[j + 1].end - toks[i].start <= max_span):
+        while (j + 1 < len(toks)
+               and toks[j + 1].start - _capped_end(toks[j]) <= gap
+               and _capped_end(toks[j + 1]) - toks[i].start <= max_span):
             j += 1
         return {
             "start": toks[i].start,
-            "end": toks[j].end,
+            "end": _capped_end(toks[j]),
             "score": 0.0,
             "text": " ".join(toks[k].text for k in range(i, j + 1)),
             "i": i,
             "j": j + 1,
             "by": "position",
         }
+
+
+def _capped_end(tok):
+    """A token's end, trusted only up to WORD_MAX past its start (see the
+    WORD_MAX note: raw ends absorb the silence after the last word)."""
+    return min(tok.end, tok.start + WORD_MAX)
 
 
 def _tokens_of(text):

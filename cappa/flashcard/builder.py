@@ -256,9 +256,24 @@ def _write_audio_from_source(draft, sentence, source, near_t=None,
     start, end = widen_to_min(
         match["start"], match["end"],
         timing.MIN_CLIP - SOURCE_PREROLL - SOURCE_POSTROLL, floor=0.0)
-    start, end = shrink_to_max(
-        start, end, timing.MAX_CLIP - SOURCE_PREROLL - SOURCE_POSTROLL,
-        center=near_t)
+    cap = timing.MAX_CLIP - SOURCE_PREROLL - SOURCE_POSTROLL
+    # A POSITION match knows the surrounding speech run but not the word's
+    # moment inside it, and near_t is wherever playback sits at card time —
+    # often paused PAST the line, which anchored the cap at the sentence's
+    # tail and cut its start off (card_0061). The moment the caption
+    # APPEARED on screen is where the utterance begins (hardsubs are synced
+    # to speech), so when the bridge can place that appear-time in video
+    # seconds and it lands in (or just before) the window, open the cap
+    # there instead.
+    center = near_t
+    if matched_by == "position":
+        appeared = getattr(sentence, "appeared_at", 0.0) or 0.0
+        t_appear = getattr(source, "video_time_at", lambda m: None)(
+            appeared - timing.APPEAR_LAG)
+        if t_appear is not None and start - 3.0 <= t_appear <= end:
+            center = max(t_appear, start) + cap / 2.0
+            draft.source_meta["anchored_at_appearance"] = round(t_appear, 3)
+    start, end = shrink_to_max(start, end, cap, center=center)
 
     wav_path = os.path.join(draft.folder_path, "audio.wav")
     window = {

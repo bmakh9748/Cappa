@@ -105,6 +105,9 @@ class OverlayWindow(QMainWindow):
         # Lets a card cut caption-exact audio from the loopback buffer when
         # the source download is missing (bot check, still in flight, ...).
         self._source.set_mono_mapper(self._bridge.mono_at)
+        # ...and lets a position-matched card anchor its clip at the moment
+        # the caption appeared on screen (mono -> video time).
+        self._source.set_video_mapper(self._bridge.video_at)
         self._bridge_video_id = None      # last video the bridge auto-selected
         if self._bridge.error:
             print("[cappa] browser bridge: " + self._bridge.error)
