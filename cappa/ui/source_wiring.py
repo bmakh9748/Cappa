@@ -101,6 +101,17 @@ class SourceWiring:
         self._ready_tipped = False    # 'captions ready' announced this video
         if self.bridge.error:
             print("[cappa] browser bridge: " + self.bridge.error)
+        # The media cache (downloaded audio/captions) is a convenience, not
+        # a record: prune it to its cap so closed sessions don't pile up
+        # gigabytes (user worry, 2026-07-07). cards/ and transcripts/ are
+        # the app's memory and are never pruned.
+        try:
+            from ..source.youtube import prune_cache
+            n = prune_cache()
+            if n:
+                print("[cappa] media cache: pruned %d old file(s)" % n)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ tick
     def poll(self):

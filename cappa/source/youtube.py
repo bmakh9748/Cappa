@@ -25,9 +25,49 @@ from .vtt import parse_vtt
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 _UA = "Mozilla/5.0"        # some subtitle CDNs 403 an empty user agent
 
+# The media cache (downloaded audio + caption files) prunes itself to this
+# many bytes at startup, oldest files first. Audio runs 10-50 MB per video
+# and is re-downloadable, so the cache is a convenience, never a record —
+# unlike cards/ and transcripts/, which are the app's memory and are never
+# touched. 500 MB keeps roughly the last dozen videos instant.
+CACHE_MAX_BYTES = 500 * 1024 * 1024
+
 
 class SourceError(Exception):
     """A video's captions or audio could not be fetched."""
+
+
+def prune_cache(cache_dir=CACHE_DIR, max_bytes=CACHE_MAX_BYTES):
+    """Delete the oldest cached media until the cache fits `max_bytes`.
+    cookies.txt is exempt (it is credentials, not media, and tiny). Returns
+    how many files were removed. Fail-soft: a file in use or missing is
+    simply skipped."""
+    try:
+        names = os.listdir(cache_dir)
+    except OSError:
+        return 0
+    files = []
+    for name in names:
+        if name == "cookies.txt":
+            continue
+        path = os.path.join(cache_dir, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        files.append((st.st_mtime, st.st_size, path))
+    total = sum(size for _, size, _ in files)
+    removed = 0
+    for _, size, path in sorted(files):        # oldest first
+        if total <= max_bytes:
+            break
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        total -= size
+        removed += 1
+    return removed
 
 
 # --------------------------------------------------------------- video ids

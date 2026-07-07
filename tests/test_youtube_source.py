@@ -145,6 +145,27 @@ class FakeSource:
         return 0.5
 
 
+def test_prune_cache():
+    """The media cache trims itself to its byte cap, oldest first, keeping
+    cookies.txt (credentials, not media) whatever its age."""
+    from cappa.source.youtube import prune_cache
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, name in enumerate(["old.webm", "mid.webm", "new.webm",
+                                  "cookies.txt"]):
+            p = os.path.join(tmp, name)
+            with open(p, "wb") as f:
+                f.write(b"x" * 100)
+            os.utime(p, (1000 + i, 1000 + i))
+        removed = prune_cache(cache_dir=tmp, max_bytes=250)
+        left = sorted(os.listdir(tmp))
+        assert removed == 1 and left == ["cookies.txt", "mid.webm",
+                                         "new.webm"], (removed, left)
+        assert prune_cache(cache_dir=tmp, max_bytes=250) == 0  # already fits
+        assert prune_cache(cache_dir=os.path.join(tmp, "missing")) == 0
+        print("PASS prune: cache trimmed oldest-first to the cap, "
+              "cookies kept")
+
+
 def test_builder_prefers_caption_track():
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence(
@@ -1047,6 +1068,7 @@ def test_builder_min_clip():
 if __name__ == "__main__":
     test_manual()
     test_auto()
+    test_prune_cache()
     test_no_match()
     test_window_at()
     test_window_at_presilence()
