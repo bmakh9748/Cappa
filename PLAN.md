@@ -727,6 +727,49 @@ Boundary rules:
 > re-read while it lives (retry-the-read lever, not built); loopback history is 90 s —
 > a word clicked later than that has no fallback audio (the caption-track path doesn't
 > care); the card_0045 residual gap above (churn + clear before "Create").
+>
+> **Card-quality fixes (done, from the cards 47–62 debugging night).** Audio downloads:
+> YouTube format URLs now carry a JS challenge — `_ydl_opts` enables the deno/node
+> runtimes and requirements moved to `yt-dlp[default]` for the solver scripts.
+> Translation: ALL-CAPS hardsubs are lowercased before Google (KELAR read as caps came
+> back 'GONE'; lowercase 'finished' — card_0052), answers keep natural casing (user
+> call), and a marked-span answer whose back-translation names a DIFFERENT word of the
+> sentence is rejected for the bare word (quotes drifted onto a neighbour, card_0047).
+> Privacy: the loopback recorder pauses when the extension stops reporting a visible
+> YouTube tab and resumes on return (`_gate_recorder`; extension-less sessions keep the
+> always-on recorder). Blocks: stacked caption rows whose det boxes BLEED (outline/glow
+> fonts overlap up to ~45% of row height) still join one block (card_0052); OCR reads
+> each line twice with different croppings and the spacier agreeing read wins (the rec
+> model's space emission flips with framing at these font sizes — card_0056). Audio
+> windows: rolling-VTT token ends absorb the following silence, so position-window
+> grouping now caps effective word duration (card_0061's 'lagi' "lasted" 8.2 s and
+> blocked the walk back to the sentence start), and a position-matched clip anchors at
+> the caption's on-screen APPEARANCE mapped to video time (`bridge.video_at`), not at
+> wherever playback sat when clicked. Honesty: a card built from a shaky OCR read
+> (conf < 0.8) says so in its notes (card_0060's unreadable page produced a
+> confident-looking garbage card).
+
+## The polish stage — better reading and translation (planned, user call)
+
+Three upgrades queued from real failures, all opt-in and none breaking the free/local
+default path:
+
+1. **DeepL as the primary translator** (free tier 500k chars/month; Indonesian and
+   Arabic supported). Same deep-translator dependency surface, but the API takes an
+   explicit `context` parameter — replacing the quote-marking hack and its drift
+   failure mode entirely. Google's free endpoint stays as the fallback; the no-LLM
+   rule stands.
+2. **Cloud OCR as "hard mode"** for text the local models cannot read. Ground truth
+   from card_0060: fully-vocalized classical Arabic (aldiwan poetry page) is beyond
+   every PP-OCR arabic pack — v5 mobile reads mush at conf 0.45, server packs don't
+   exist, v4 mobile reads mirrored. Google Cloud Vision (the Lens engine; ~free at
+   our volume: 1k images/month free) or Azure Read (5k/month free) reads it clean.
+   Trigger: `ocr_conf` below the shaky threshold (now measured per line) or a
+   settings toggle; local PP-OCR stays the always-on reader.
+3. **Page-text source for non-video pages**: extend the bridge extension beyond
+   youtube.com so a normal webpage POSTs its visible text + word geometry, and pages
+   like the poetry site never need OCR at all. This is the correct fix for card_0060,
+   not a better model.
 
 ## Detection — the hard part (Steps 2–5)
 
