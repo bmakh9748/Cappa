@@ -140,10 +140,56 @@ def test_window_hint_recalls_first_sighting():
               "fuzzy on punctuation, bounded near the click")
 
 
+def test_window_hint_matches_block_rows_and_drops_inverted_ends():
+    """card_0016: a stacked caption logs as separate ROWS ('AKU CUMA' +
+    'BSie DITONTON, LHO!') while the clicked sentence is the joined BLOCK —
+    equality matching missed its own sighting. A row's text contained in
+    the block (or vice versa) counts, since a block's rows live and die
+    together. Junk rows stay out ('C' must not lend timing to anything),
+    and a sighting whose life spans a SEEK (clear mapped before its own
+    appearance: 249.65 -> 227.9 in the real log) keeps its start but
+    surrenders its end."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        rows = [("BSie DITONTON, LHO!", 100.0, 100.6, 249.012, 249.571),
+                ("C", 100.0, 100.6, 249.012, 249.571),        # junk row
+                ("BSie DITONTON, LHO!", 150.0, 154.4, 249.65, 227.915)]
+        for text, m0, m1, v0, v1 in rows:
+            s = _row(text, m0)
+            s.cleared_at = m1
+            # Canned mapping: appear stamp -> v0, clear stamp -> v1.
+            log.observe("vidB", [s],
+                        lambda m, a=m0, v0=v0, v1=v1: v0 if m < a + 0.1
+                        else v1)
+            log.observe("vidB", [],
+                        lambda m, a=m0, v0=v0, v1=v1: v0 if m < a + 0.1
+                        else v1)
+        hint = log.window_hint("vidB", "AKU CUMA BSie DITONTON, LHO!",
+                               near_t=249.5)
+        assert hint and abs(hint["start"] - 249.012) < 1e-6, hint
+        assert abs(hint["end"] - 249.571) < 1e-6, hint
+        # The junk row alone can never produce a hint for a real sentence.
+        assert log.window_hint("vidB", "totally different words here",
+                               near_t=249.5) is None
+        # Only the seek-spanning sighting available: start survives, the
+        # impossible end is dropped.
+        log2 = OcrTranscriptLog(root=tmp)
+        log2._read["vidC"] = [{"text": "BSie DITONTON, LHO!",
+                               "appeared_video": 249.65,
+                               "cleared_video": 227.915}]
+        h2 = log2.window_hint("vidC", "AKU CUMA BSie DITONTON, LHO!",
+                              near_t=249.5)
+        assert h2 and abs(h2["start"] - 249.65) < 1e-6, h2
+        assert h2["end"] is None, h2
+        print("PASS ledger: block sentences recall their rows' sightings; "
+              "junk and seek-spanned ends stay out")
+
+
 if __name__ == "__main__":
     test_row_logged_on_clear()
     test_row_still_up_logged_from_stamp()
     test_silent_vanish_and_junk_not_logged()
     test_blip_loop_logs_once_rewatch_logs_again()
     test_window_hint_recalls_first_sighting()
+    test_window_hint_matches_block_rows_and_drops_inverted_ends()
     print("ALL PASS")

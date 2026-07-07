@@ -120,7 +120,7 @@ class OcrTranscriptLog:
         best = None
         for rec in self._records(vid):
             start = rec.get("appeared_video")
-            if start is None or _norm_hint(rec.get("text")) != key:
+            if start is None or not _hint_match(key, rec.get("text")):
                 continue
             if near_t is not None and abs(start - near_t) > radius:
                 continue
@@ -128,8 +128,14 @@ class OcrTranscriptLog:
                 best = rec
         if best is None:
             return None
-        return {"start": best["appeared_video"],
-                "end": best.get("cleared_video")}
+        end = best.get("cleared_video")
+        if end is not None and end < best["appeared_video"]:
+            # A row that stayed up ACROSS a seek logs its clear at the
+            # landing — an end before its own start (card_0016's log:
+            # appeared 249.65, 'cleared' 227.9). The appearance is still
+            # the earliest sighting's truth; the end is not.
+            end = None
+        return {"start": best["appeared_video"], "end": end}
 
     def _records(self, vid):
         """All records logged for `vid`, read back once and kept current as
@@ -163,6 +169,29 @@ def _norm_hint(text):
     the punctuation/spacing ('KAN, YO?' vs 'KAN,YO?' — cards 2/3 were the
     same line): compare on letters and digits alone, casefolded."""
     return "".join(ch for ch in (text or "").casefold() if ch.isalnum())
+
+
+HINT_MIN_CHARS = 6   # a substring match needs this much meat: junk rows
+                     # ('C', '0', a clock) must never lend their timing to
+                     # a real sentence. Shorter texts still match, but only
+                     # by exact equality.
+
+
+def _hint_match(key, rec_text):
+    """Does a logged row's text witness the clicked sentence `key` (both
+    normalized)? Equality, or containment either way: the ledger logs each
+    ROW of a stacked caption separately while the clicked sentence is the
+    joined BLOCK (card_0016: 'AKU CUMA' + 'BSie DITONTON, LHO!' logged as
+    two rows, clicked as one sentence) — and a block's rows appear and
+    clear together, so any row's life IS the block's life."""
+    rk = _norm_hint(rec_text)
+    if not rk:
+        return False
+    if rk == key:
+        return True
+    if len(rk) < HINT_MIN_CHARS or len(key) < HINT_MIN_CHARS:
+        return False
+    return rk in key or key in rk
 
 
 def _mapped(video_at, mono):
