@@ -156,6 +156,22 @@ class SourceSession:
             return None
         return state.get("play_time") if state else None
 
+    def is_paused(self):
+        """Browser-reported paused state, or None when the bridge can't say
+        (no extension, stale reports). Three-valued on purpose: only a
+        definite 'playing' should make the card path wait on live on-screen
+        events (a paused row is frozen — its clear never comes)."""
+        provider = self._position_provider
+        if provider is None:
+            return None
+        try:
+            state = provider()
+        except Exception:
+            return None
+        if not state:
+            return None
+        return bool(state.get("paused", False))
+
     def window_at(self, t):
         """The window of the caption line playing at time `t` (position-based,
         language-neutral), or None."""

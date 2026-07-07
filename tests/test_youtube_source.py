@@ -91,7 +91,7 @@ class FakeSource:
     transcript_ready = True
 
     def __init__(self, match, meta, pos=None, mono=None, clip_fails=False,
-                 appear_t=None, clear_t=None):
+                 appear_t=None, clear_t=None, paused=None):
         self._match = match
         self._meta = meta
         self._pos = pos
@@ -99,7 +99,11 @@ class FakeSource:
         self._clip_fails = clip_fails
         self._appear_t = appear_t  # canned appearance video-time, or None
         self._clear_t = clear_t    # canned clear video-time, or None
+        self._paused = paused      # canned bridge paused state (None=unknown)
         self.sliced = None
+
+    def is_paused(self):
+        return self._paused
 
     def video_time_at(self, mono):
         # Tests stamp appearances near mono 100 and clears well after:
@@ -274,6 +278,167 @@ def test_window_at_prefers_played_line():
     assert w["start"] <= 829.92 + 1e-6 and w["end"] <= 831.8, w
     print("PASS window_at: a silence click stays with the line that "
           "already played")
+
+
+def test_builder_rebuilds_from_onscreen_life():
+    """card_0077 end-to-end: the position window is the PREVIOUS line
+    ('di luar Nalar' — the track never heard the clicked sentence), so the
+    row's appearance maps AFTER that window ends. No track window is right
+    there; the clip must be rebuilt from the row's on-screen life and the
+    provenance must say so."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("Istrinya juga dipikir, mas!", (0, 0, 10, 10),
+                            [("dipikir", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # monotonic; fake maps it to 832.0
+        pos = {"start": 829.92, "end": 831.7, "score": 0.0,
+               "text": "di luar Nalar", "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "id",
+                                "caption_auto": True}, pos=pos,
+                         appear_t=832.0)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=833.806)
+        start, end, _, _ = src.sliced
+        # life = [832.0 - 1.0 backshift, click + 0.4 tail = 834.206]; the
+        # cap around its midpoint keeps the sentence, none of either
+        # neighboring line.
+        assert start >= 831.0 - 1e-6 and end <= 834.206 + 1e-6, src.sliced
+        assert start <= 832.0 <= end, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["audio_window"]["matched_by"] == "onscreen", m["audio_window"]
+        assert m["video_source"]["matched_by"] == "onscreen"
+        assert m["video_source"]["onscreen_appeared"] == 832.0
+        assert m["video_source"]["anchored_at_appearance"] == 832.0
+        assert any("on-screen timing" in n for n in m["notes"]), m["notes"]
+        print("PASS builder: a line the track never heard is clipped from "
+              "its on-screen life")
+
+
+def test_builder_waits_for_the_clear():
+    """A mid-life click on a PLAYING video: the clear stamp lands moments
+    after the click, and it — not the click — is the sentence's true end
+    (card_0077: 'the line left at 13:55, that's what should have been
+    recorded'). The source audio is a file, so the builder can afford to
+    wait a beat for the vanish instead of chopping at the click."""
+    import threading
+    import time as _time
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("KALO PAGI PILIH KOBO", (0, 0, 10, 10),
+                            [("PAGI", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # -> video 822.5 (fake mapping)
+        pos = {"start": 821.0, "end": 860.0, "score": 0.0,
+               "text": "giant blob cue", "by": "position"}
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                "caption_auto": False}, pos=pos,
+                         appear_t=822.5, clear_t=823.4, paused=False)
+
+        def clear_later():
+            _time.sleep(0.3)
+            sentence.cleared_at = 106.0   # -> video 823.4 (fake mapping)
+
+        threading.Thread(target=clear_later, daemon=True).start()
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=828.0)
+        start, end, _, _ = src.sliced
+        assert abs(end - 823.4) < 1e-6, src.sliced   # the awaited clear
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["video_source"]["onscreen_end"] == 823.4, m["video_source"]
+        print("PASS builder: a playing video's clip waits for the clear "
+              "and ends there")
+
+
+def test_live_end_prefers_fresh_position():
+    """After a timed-out wait the line is STILL up: the freshest playback
+    position (words heard during the wait), not the click, bounds the clip
+    — unless the bridge can't say or reports a seek away."""
+    from cappa.flashcard.clip import PAUSE_TAIL, _live_end
+
+    class Fresh:
+        def play_time(self):
+            return 831.9
+
+    class Seeked:
+        def play_time(self):
+            return 999.0
+
+    class Mute:
+        pass
+
+    assert abs(_live_end(Fresh(), 830.0) - (831.9 + PAUSE_TAIL)) < 1e-9
+    assert abs(_live_end(Seeked(), 830.0) - (830.0 + PAUSE_TAIL)) < 1e-9
+    assert abs(_live_end(Mute(), 830.0) - (830.0 + PAUSE_TAIL)) < 1e-9
+    print("PASS live-end: fresh position bounds the clip, seeks distrusted")
+
+
+def test_builder_life_outranks_auto_text():
+    """The 2026-07-07 priority, end to end: an AUTO track's text match —
+    even a strong one — must not outrank the row's SEEN on-screen life.
+    Here the ASR match sits 4s after the row appeared (a duplicate line
+    later in the video); the clip must follow the life, not the match."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("kobo kanaeru main valo", (0, 0, 10, 10),
+                            [("kobo", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # monotonic; fake maps it to 830.0
+        match = {"start": 834.0, "end": 836.5, "score": 0.9,
+                 "text": "kobo kanaeru main valo", "by": "text"}
+        pos = {"start": 829.5, "end": 831.9, "score": 0.0,
+               "text": "speech run", "by": "position"}
+        src = FakeSource(match, {"video_id": "vid", "caption_lang": "id",
+                                 "caption_auto": True}, pos=pos,
+                         appear_t=830.0)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=831.0)
+        start, end, _, _ = src.sliced
+        assert end <= 832.0 + 1e-6, src.sliced   # not the ASR's 834-836.5
+        assert start <= 830.0 <= end, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["audio_window"]["matched_by"] == "position", m["audio_window"]
+        assert m["video_source"]["anchored_at_appearance"] == 830.0
+        print("PASS builder: the seen life beats a strong auto-track match")
+
+
+def test_builder_onscreen_when_track_has_hole():
+    """card_0080: the dot was green (transcript ready) but the ASR track had
+    a hole wider than window_at's reach at the click — text AND position
+    matches both came up empty, and the card fell to a silent loopback and
+    lost its audio. With source audio and the bridge mapping available, the
+    clip must instead be cut from the source at the row's on-screen life."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence("Kobo INI MANCA KALO MAIN VALO", (0, 0, 10, 10),
+                            [("MAIN", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # monotonic; fake maps it to 850.2
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "id",
+                                "caption_auto": True}, pos=None,
+                         appear_t=850.2)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src,
+                            near_t=851.5)
+        assert src.sliced is not None, "no source clip was cut"
+        start, end, _, _ = src.sliced
+        # life = [849.2 (appearance - backshift), 851.9 (click + tail)]
+        assert start >= 849.2 - 1e-6 and end <= 851.9 + 1e-6, src.sliced
+        assert start <= 850.2 <= end, src.sliced
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["audio_window"]["matched_by"] == "onscreen", m["audio_window"]
+        assert m["video_source"]["matched_by"] == "onscreen"
+        assert m["video_source"]["onscreen_appeared"] == 850.2
+        assert any("on-screen timing" in n for n in m["notes"]), m["notes"]
+        print("PASS builder: a track hole still cuts source audio from the "
+              "row's on-screen life")
 
 
 def test_builder_position_fallback():
@@ -533,20 +698,30 @@ def test_choose_window():
     window (they agree on the moment, and the text match spans the whole
     on-screen sentence where position is just the speech chunk around the
     click — card_0044); a text match elsewhere loses to position."""
-    from cappa.flashcard.builder import _choose_window
+    from cappa.flashcard.clip import choose_window
     strong_near = {"start": 30.0, "end": 33.0, "score": 0.90, "by": "text"}
     strong_far = {"start": 60.0, "end": 63.0, "score": 0.90, "by": "text"}
     weak_near = {"start": 30.0, "end": 33.0, "score": 0.66, "by": "text"}
     weak_off = {"start": 38.0, "end": 41.0, "score": 0.66, "by": "text"}
     pos = {"start": 29.5, "end": 33.5, "score": 0.0, "by": "position"}
-    assert _choose_window(strong_far, None, None) is strong_far   # no position
-    assert _choose_window(strong_near, pos, 31.0) is strong_near  # strong+near
-    assert _choose_window(strong_far, pos, 31.0) is pos           # strong but far
-    assert _choose_window(weak_near, pos, 31.0) is weak_near      # weak, agrees
-    assert _choose_window(weak_off, pos, 31.0) is pos             # weak, apart
-    assert _choose_window(weak_near, None, 31.0) is weak_near     # weak, no pos
+    assert choose_window(strong_far, None, None) is strong_far   # no position
+    assert choose_window(strong_near, pos, 31.0) is strong_near  # strong+near
+    assert choose_window(strong_far, pos, 31.0) is pos           # strong but far
+    assert choose_window(weak_near, pos, 31.0) is weak_near      # weak, agrees
+    assert choose_window(weak_off, pos, 31.0) is pos             # weak, apart
+    assert choose_window(weak_near, None, 31.0) is weak_near     # weak, no pos
+    # The 2026-07-07 priority: a SEEN on-screen life outranks any AUTO-track
+    # match — even a strong one — while a human-made track keeps its rank.
+    assert choose_window(strong_near, pos, 31.0,
+                         auto=True, has_life=True) is pos
+    assert choose_window(strong_near, None, 31.0,
+                         auto=True, has_life=True) is None   # -> on-screen
+    assert choose_window(strong_near, pos, 31.0,
+                         auto=True, has_life=False) is strong_near
+    assert choose_window(strong_near, pos, 31.0,
+                         auto=False, has_life=True) is strong_near
     print("PASS choose_window: strong+near wins; weak wins only when it "
-          "overlaps the position window")
+          "overlaps the position window; a seen life outranks auto matches")
 
 
 def test_builder_falls_back_when_no_match():
@@ -754,6 +929,11 @@ if __name__ == "__main__":
     test_window_for_rejects_shared_tail()
     test_builder_prefers_caption_track()
     test_builder_position_fallback()
+    test_builder_waits_for_the_clear()
+    test_live_end_prefers_fresh_position()
+    test_builder_life_outranks_auto_text()
+    test_builder_onscreen_when_track_has_hole()
+    test_builder_rebuilds_from_onscreen_life()
     test_builder_appearance_anchor()
     test_builder_backshift_covers_late_stamp()
     test_builder_seen_clear_ends_clip()
