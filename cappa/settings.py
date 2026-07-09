@@ -48,7 +48,7 @@ _SOURCE_CODES = {code for code, _ in SOURCE_LANGUAGES}
 # no length knowledge needed) ignores the maximum and lets the clip fit
 # the whole sentence, up to timing.AUTO_MAX_CLIP.
 MIN_CLIP_RANGE = (0.5, 1.5)
-MAX_CLIP_RANGE = (1.5, 5.0)
+MAX_CLIP_RANGE = (1.5, 8.0)   # a real spoken sentence: median 2.1s, p90 7.0s
 DEFAULT_MIN_CLIP = 1.0
 DEFAULT_MAX_CLIP = 3.0
 DEFAULT_AUTO_CLIP = True

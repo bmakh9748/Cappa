@@ -8,8 +8,14 @@ Create Anki card button: the screenshot is captured immediately when the word
 is clicked, then clicking the button gathers the card's remaining ingredients
 (word + sentence translations and the audio clip cut from the rolling recorder
 buffer around when the sentence was on screen) via cappa.flashcard, also off
-the UI thread. The .apkg export is the next step; today the button saves the
-pieces and reports what it collected.
+the UI thread. Saving the draft immediately triggers
+cappa.flashcard.sync_to_anki() on the SAME background thread -- no separate
+export step, no import dialog: with Anki open the card lands in it LIVE
+through the AnkiConnect add-on, with Anki closed it goes straight into the
+collection file for next launch. Only the new card is delivered (each card
+folder keeps a receipt once it's in Anki); a sync problem is appended to
+the button's message but the draft itself is never lost -- the receipt-less
+card rides the next save's sync.
 
 A child of the overlay, so it parks/hides with it and is excluded from
 capture along with it. The overlay adds its geometry to the interactive
@@ -297,9 +303,31 @@ class WordPopup(QWidget):
                                          "" if len(draft.notes) == 1 else "s")
             if not ok:
                 msg = "Card failed"
+            else:
+                # The draft is saved either way; a sync problem is appended
+                # to the message, never lost -- the undelivered card rides
+                # the next save's sync pass.
+                msg += " · " + self._sync_to_anki()
             self._carded.emit(req, ok, msg)
         except Exception as exc:
             self._carded.emit(req, False, "Card failed: %s" % exc)
+
+    def _sync_to_anki(self):
+        """Deliver the just-saved card (plus any earlier save Anki wasn't
+        reachable for) -- live into the open app, or into its collection
+        file when closed. Cards already delivered are never touched.
+        Still on the card-build thread; never raises."""
+        try:
+            added = flashcard.sync_to_anki()
+        except flashcard.SyncError as exc:
+            print("[cappa] anki sync:", exc)
+            return "Anki: %s" % exc
+        except Exception as exc:
+            print("[cappa] anki sync failed:", exc)
+            return "Anki sync failed: %s" % exc
+        result = "Anki: %d new" % added if added else "Anki: nothing new"
+        print("[cappa] anki sync:", result)
+        return result
 
     def _card_done(self, req, ok, message):
         if req != self._req or not self.isVisible():

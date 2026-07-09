@@ -39,6 +39,21 @@ CAPTION_RETRY_MAX = 2      # retries per video: transient failures (a bot
                            # video stops costing fetches after two tries
 
 
+def live_video_id(state, bridge_video_id):
+    """The video id on-screen captions may be attributed to RIGHT NOW, or
+    None. Only a fresh, playing bridge report counts. `state` is
+    bridge.current() (None once the extension's reports go stale — the tab
+    was hidden, closed, or isn't YouTube at all); a paused report is a
+    frozen frame, not caption life. In either case whatever the overlay is
+    reading is NOT this video's caption and must not land in its transcript
+    under the last-known id (which used to happen: the id persisted after
+    the reports stopped, so text from another tab/app was logged as if it
+    were the video's)."""
+    if state is None or state.get("paused"):
+        return None
+    return bridge_video_id
+
+
 class SourceWiring:
     def __init__(self, video_language=None, on_tip=None):
         self._on_tip = on_tip or (lambda text: None)
@@ -90,6 +105,17 @@ class SourceWiring:
         self.session.set_sighting_lookup(
             lambda text, near_t=None: self.ocr_log.window_hint(
                 self._bridge_video_id, text, near_t))
+        # ...and how fast this video's speaker talks, so a line still being
+        # spoken at click time has its end PREDICTED from the words still to
+        # come rather than cut at a flat tail.
+        self.session.set_rate_lookup(
+            lambda: self.ocr_log.seconds_per_word(self._bridge_video_id))
+        # ...and this run's watched rows in a video-time window, so a card's
+        # sentence can be completed from what WE saw plus what the track
+        # heard (our transcript first, the track filling the holes).
+        self.session.set_rows_lookup(
+            lambda t0, t1: self.ocr_log.rows_between(
+                self._bridge_video_id, t0, t1))
         self._bridge_video_id = None      # last video the bridge auto-selected
         self._caption_retry = (None, 0, 0.0)  # (video, attempts, last try)
         # Cappa's own transcript of the captions it watches: rows that leave
@@ -224,9 +250,12 @@ class SourceWiring:
     # -------------------------------------------------------------- captions
     def observe_captions(self, captions):
         """Cappa's own transcript: rows that just left the screen get written
-        down with their on-screen life — the durable record cards cite."""
-        self.ocr_log.observe(self._bridge_video_id, captions,
-                             self.bridge.video_at)
+        down with their on-screen life — the durable record cards cite. Only
+        while a YouTube video is genuinely live in front of us: a stale
+        report (tab hidden/closed/not YouTube) or a paused one yields no
+        video id, and observe() logs nothing without one."""
+        vid = live_video_id(self.bridge.current(), self._bridge_video_id)
+        self.ocr_log.observe(vid, captions, self.bridge.video_at)
 
     # ---------------------------------------------------------------- status
     def status_suffix(self):

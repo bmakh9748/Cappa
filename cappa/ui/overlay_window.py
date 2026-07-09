@@ -13,6 +13,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QCursor, QFont
 
 from .. import winapi
 from ..detection.worker import CaptureWorker
+from ..screen_recorder import RegionRecorder
 from .launcher import Launcher
 from .source_wiring import SourceWiring
 from .word_popup import WordPopup
@@ -585,16 +586,6 @@ class OverlayWindow(QMainWindow):
         self._capture_thread = QThread(self)
         self._capture_worker = CaptureWorker(
             self.capture_region,
-            # Read off-thread at scan time (atomic attribute read, same deal
-            # as capture_region): a user-drawn area is judged from the first
-            # scan, so a paused video's on-screen caption is found instantly.
-            user_area_provider=lambda: self._region is not None,
-            # Experiment (user call): too many real caption words were being
-            # rejected — sometimes between consecutive lines — and hover-only
-            # styling makes loose detection cheap. Every text line the
-            # detector finds becomes hoverable words; junk text is hoverable
-            # too, nothing more. Flip to False to restore the caption gates.
-            accept_all=True,
             # The video language from Settings decides which rec model reads
             # captions (Arabic etc. need their own pack; None = default).
             ocr_lang=self._video_language,
@@ -605,9 +596,16 @@ class OverlayWindow(QMainWindow):
         self._capture_worker.regions.connect(self._on_regions)
         self._capture_worker.detector_ok.connect(self._on_detector_ok)
         self._capture_thread.start()
+        # A rolling MP4 of the tracked area, for scrubbing back to a bad card
+        # while testing. Grabs the SAME rectangle (capture_region), on its own
+        # thread, and idles automatically whenever nothing is tracked; capped
+        # at 5 GB. Fail-soft — no ffmpeg just means no recording.
+        self._area_recorder = RegionRecorder(self.capture_region)
+        self._area_recorder.start()
         QApplication.instance().aboutToQuit.connect(self._stop_capture)
 
     def _stop_capture(self):
+        self._area_recorder.stop()
         self._capture_worker.stop()
         self._capture_thread.quit()
         self._capture_thread.wait(1000)
