@@ -1,24 +1,12 @@
-"""Bookkeeping between neural scans: which captions are live, and which text
-boxes we've already judged.
+"""Bookkeeping between neural scans: which captions are live.
 
-Every detector scan reports ALL text on screen — the caption AND the
-persistent stuff (watermarks, UI labels, channel names). Two memories keep
-that sane:
-
-    live   caption boxes currently on screen (accepted by the classifier,
-           watched for clearing by stability.py)
-    seen   text boxes that were scanned and NOT accepted; while a box keeps
-           showing up in scans it stays remembered, so a watermark is judged
-           once, not on every scan. Entries expire once the text has been
-           gone a while, freeing the spot.
-
-A remembered box only suppresses a new one if it matches by overlap AND by a
-coarse content fingerprint of the pixels inside. Overlap alone was a trap:
-consecutive caption lines land in the same spot with similar-shaped boxes, so
-a caption memorised once (e.g. the line on screen when tracking started)
-silently muted every line after it. With the fingerprint, the same spot
-showing NEW text is fresh; only truly unchanged furniture stays suppressed.
-Cleared captions are not remembered at all.
+Every detector scan reports ALL text on screen, and every text line becomes
+a live caption (the caption-vs-not gates are gone — user call, 2026-07-09);
+the ledger's job is knowing what is ALREADY live so a line is read once, not
+on every scan, and noticing when a live line leaves or changes. Each live
+box carries a coarse content fingerprint of the pixels inside, taken at
+accept time: it's what tells a blip from a real clear (resurrect) and spots
+a line replaced in place (drifted).
 
 Clears are debounced, not instant: the watcher can misread a brief overlay
 (YouTube's control-bar gradient darkening the caption zone on mouse-move) as
@@ -38,7 +26,6 @@ import numpy as np
 from .sentence import Sentence
 
 MATCH_OVERLAP = 0.55   # intersection / smaller-area to call two boxes "same"
-SEEN_TTL = 4.0         # seconds a vanished (rejected) box stays remembered
 MISS_LIMIT = 3         # consecutive scans not seeing a live caption = stale
 CLEAR_CONFIRM = 0.35   # seconds a clear stays pending before it surfaces —
                        # long enough for the post-clear fast rescan
@@ -100,7 +87,6 @@ def _fp_close(a, b):
 class CaptionLedger:
     def __init__(self):
         self._live = []   # accepted caption boxes
-        self._seen = []   # [box, last_seen, fingerprint] of rejected text
         self._misses = {}  # live box -> consecutive scans that didn't see it
         self._fps = {}     # live box -> fingerprint captured at accept time
         self._sentences = {}  # live box -> Sentence (text + Words)
@@ -115,20 +101,11 @@ class CaptionLedger:
         """What the overlay renders: the live captions as Sentences."""
         return [self._sentences[box] for box in self._live]
 
-    def fresh(self, scan_boxes, sample=None, scale=1):
-        """The scan's boxes that are genuinely new: not a live caption, and
-        not remembered rejected text STILL SHOWING THE SAME CONTENT. These
-        are what the classifier judges."""
-        out = []
-        for box in scan_boxes:
-            if any(_same(box, x) for x in self._live):
-                continue
-            fp = _fingerprint(box, sample, scale)
-            if any(_same(box, e[0]) and _fp_close(fp, e[2])
-                   for e in self._seen):
-                continue
-            out.append(box)
-        return out
+    def fresh(self, scan_boxes):
+        """The scan's boxes that are genuinely new: not already live. These
+        are what gets read and accepted."""
+        return [box for box in scan_boxes
+                if not any(_same(box, x) for x in self._live)]
 
     def accept(self, box, sample=None, scale=1, sentence=None,
                appeared_at=0.0):
@@ -141,23 +118,6 @@ class CaptionLedger:
         sentence = sentence or Sentence("", box, [])
         sentence.appeared_at = appeared_at or time.monotonic()
         self._sentences[box] = sentence
-
-    def mark_seen(self, scan_boxes, sample=None, scale=1):
-        """After judging a scan: refresh/remember every non-live box the scan
-        reported (accepted ones are live, everything else is 'seen'), and
-        forget entries whose text has been gone longer than SEEN_TTL."""
-        now = time.monotonic()
-        for box in scan_boxes:
-            if any(_same(box, x) for x in self._live):
-                continue
-            fp = _fingerprint(box, sample, scale)
-            for entry in self._seen:
-                if _same(box, entry[0]):
-                    entry[0], entry[1], entry[2] = box, now, fp
-                    break
-            else:
-                self._seen.append([box, now, fp])
-        self._seen = [e for e in self._seen if now - e[1] <= SEEN_TTL]
 
     def drifted(self, sample=None, scale=1):
         """Live boxes whose pixels stopped matching their accept-time
@@ -269,7 +229,6 @@ class CaptionLedger:
 
     def reset(self):
         self._live = []
-        self._seen = []
         self._misses = {}
         self._fps = {}
         self._sentences = {}

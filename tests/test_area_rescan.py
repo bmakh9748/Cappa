@@ -1,9 +1,8 @@
-"""What happens to text ALREADY on screen at lock-on (think: paused video):
-- user-drawn area: judged immediately, any size (the user pointed here)
-- whole window, BIG text: judged immediately (stylised captions are big;
-  page furniture isn't)
-- whole window, small text: memorised unjudged until it changes (the
-  search-bar rule) — the furniture-safety control leg."""
+"""Text ALREADY on screen at lock-on (think: paused video) is judged and
+boxed by the first scan, in every mode — the baseline/memorise pass is gone
+along with the caption-vs-not gates (user call, 2026-07-09). Also drives the
+manual refresh: after a forced refresh the same text is boxed again (the
+'check again for words' path). Runs the real worker thread."""
 
 import ctypes
 import sys
@@ -46,20 +45,15 @@ wl, wt, wr, wb = winapi.extended_frame_bounds(int(win.winId()))
 region = (wl, wt, wr - wl, wb - wt)
 
 
-def run_leg(user_area, settle=3.0, timeout=60.0, refresh=False):
+def run_leg(settle=3.0, timeout=60.0, refresh=False):
     """Drive the real worker over the static window. Returns the 'appeared'
-    boxes seen within `settle` seconds after the loop starts reporting fps
-    (i.e. well after the baseline/first scan).
+    boxes seen within `settle` seconds of the loop coming up.
 
-    refresh=True: let the baseline settle, discard whatever it boxed, then
-    fire worker.refresh() and collect only what the forced re-scan boxes —
-    this is the 'check again for words' path."""
+    refresh=True: let the first scan land, discard what it boxed, then fire
+    worker.refresh() and collect only what the forced re-scan boxes."""
     events, fps = [], []
     thread = QThread()
-    worker = CaptureWorker(
-        lambda: region,
-        user_area_provider=(lambda: True) if user_area else None,
-    )
+    worker = CaptureWorker(lambda: region)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.regions.connect(lambda p: events.extend(p[0]))
@@ -71,46 +65,38 @@ def run_leg(user_area, settle=3.0, timeout=60.0, refresh=False):
     while time.perf_counter() - t0 < timeout:
         app.processEvents()
         time.sleep(0.02)
-        if user_area and not refresh and any(k == "appeared" for k, _ in events):
+        if not refresh and any(k == "appeared" for k, _ in events):
             break  # got what we came for (can beat the first fps report)
         if ready_at is None and fps:
             ready_at = time.perf_counter()
         if ready_at is not None and time.perf_counter() - ready_at >= settle:
             if refresh and not fired:
-                # Baseline has settled and (for small text) memorised it.
-                # Drop what it boxed, force a fresh judged scan, keep timing.
+                # First scan has landed and boxed the caption. Drop that,
+                # force a fresh judged scan, keep timing.
                 events.clear()
                 fired = True
                 worker.refresh()
                 ready_at = time.perf_counter()
                 continue
             break
-    if not user_area:  # control leg must have watched the loop actually run
-        assert ready_at is not None, "FAIL: worker never reported fps"
     worker.stop()
     thread.quit()
     thread.wait(3000)
     return [b for k, b in events if k == "appeared"]
 
 
-# --- leg 1: user-drawn area => the on-screen caption is boxed immediately ---
-boxes = run_leg(user_area=True)
-assert boxes, ("FAIL: caption already on screen was not boxed after "
-               "selecting the area")
+# --- leg 1: the on-screen caption is boxed by the first scan ----------------
+boxes = run_leg()
+assert boxes, "FAIL: caption already on screen was not boxed at lock-on"
 d = QApplication.primaryScreen().devicePixelRatio()
 cx, cy = (90 + 460 / 2) * d, (260 + 60 / 2) * d  # label centre, physical px
-l, t, r, b = boxes[0]
-assert l < cx < r and t < cy < b, (
-    "FAIL: box %r misses the caption centre (%r, %r)" % (boxes[0], cx, cy)
+hit = [b for b in boxes if b[0] < cx < b[2] and b[1] < cy < b[3]]
+assert hit, (
+    "FAIL: no box covers the caption centre (%r, %r): %r" % (cx, cy, boxes)
 )
-print("PASS: user-drawn area judges pre-existing caption on the first scan")
+print("PASS: pre-existing caption is boxed by the first scan")
 
-# --- leg 2: whole-window lock, BIG caption => judged at lock-on too ---------
-boxes = run_leg(user_area=False)
-assert boxes, "FAIL: big caption at lock-on not boxed in window mode"
-print("PASS: big caption at lock-on is boxed in window mode")
-
-# --- leg 3: whole-window lock, SMALL text => memorised (furniture rule) -----
+# --- leg 2: small text is judged too (no furniture memorising anymore) ------
 caption.setStyleSheet(
     "background: black; color: white; font-size: 13px; font-weight: bold;"
 )
@@ -118,18 +104,13 @@ caption.setText("small pre-existing line of text")
 caption.setGeometry(140, 275, 360, 20)  # tight: the black label strip IS
 app.processEvents()                     # the det box, so keep it small
 app.processEvents()
-boxes = run_leg(user_area=False)
-assert not boxes, (
-    "FAIL: small pre-existing text must be memorised, boxed %r" % boxes
-)
-print("PASS: small pre-existing text stays memorised in window mode")
+boxes = run_leg()
+assert boxes, "FAIL: small pre-existing text was not boxed at lock-on"
+print("PASS: small pre-existing text is boxed too")
 
-# --- leg 4: refresh re-scans and boxes even that memorised small text -------
-# The whole point of "check again for words": a forced refresh judges what
-# the baseline had muted, so the small line the control leg left memorised
-# now gets boxed.
-boxes = run_leg(user_area=False, refresh=True)
-assert boxes, "FAIL: refresh did not re-scan the memorised small text"
-print("PASS: refresh forces a fresh scan of previously-memorised text")
+# --- leg 3: refresh re-scans and boxes the same text again ------------------
+boxes = run_leg(refresh=True)
+assert boxes, "FAIL: refresh did not re-scan the on-screen text"
+print("PASS: refresh forces a fresh scan of on-screen text")
 
 print("ALL PASS")

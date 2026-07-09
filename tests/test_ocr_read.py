@@ -19,7 +19,46 @@ from difflib import SequenceMatcher
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from cappa.detection.ocr import TextReader, _respace
+from cappa import lexicon
+from cappa.detection.ocr import TextReader, _lexicon_split, _respace, _respan
+
+# _lexicon_split (pure): a glued run is broken ONLY into pieces that are
+# every one a real word; the split decision comes from the word list, not
+# from a lucky second reading. card_0027's 'YOU CANALWAYS' -> 'YOU CAN
+# ALWAYS'. A tiny in-memory pack stands in for a downloaded one.
+lexicon._packs["en"] = {w: i for i, w in enumerate(
+    ["you", "can", "always", "family", "members", "the", "it"])}
+try:
+    assert _lexicon_split("YOU CANALWAYS", "en") == "YOU CAN ALWAYS"
+    assert _lexicon_split("FAMILYMEMBERS", "en") == "FAMILY MEMBERS"
+    # A real word is never torn apart, even though 'always' contains no
+    # shorter known split here.
+    assert _lexicon_split("ALWAYS", "en") == "ALWAYS"
+    # An OCR letter error ('YOUCAL' — N misread as L) has no all-known
+    # split and is left exactly as read.
+    assert _lexicon_split("YOUCAL ALWAYS", "en") == "YOUCAL ALWAYS"
+    # No pack for a language -> nothing changes (only ever ADDS splitting).
+    assert _lexicon_split("CANALWAYS", "de") == "CANALWAYS"
+    # Case is preserved; matching is case-insensitive.
+    assert lexicon.split("CanAlways", "en") == ["Can", "Always"]
+finally:
+    lexicon._packs.pop("en", None)
+print("PASS: the lexicon splits glued runs into real words, spares words "
+      "and OCR errors")
+
+# _respan: the base read's geometry re-cut to the merged words. 'YOUCANALWAYS'
+# spans x=100..460 as two spans; after the merge a hotspot must exist for each
+# of the three words, tiling the same pixels.
+merged = _respan([("YOU", (100, 10, 190, 70)), ("CANALWAYS", (190, 10, 460, 70))],
+                 "YOU CAN ALWAYS")
+assert [w for w, _ in merged] == ["YOU", "CAN", "ALWAYS"], merged
+assert merged[0][1] == (100, 10, 190, 70), merged
+assert merged[1][1][0] == 190 and merged[2][1][2] == 460, merged
+assert merged[1][1][2] == merged[2][1][0], "words must tile, not overlap"
+# Characters that don't line up leave the spans untouched.
+same = [("HELLO", (0, 0, 50, 10))]
+assert _respan(same, "HEL LO THERE") == same
+print("PASS: re-cut spans tile the line, one hotspot per merged word")
 
 # _respace (pure, no model): a line whose text lost a space between words
 # (card_0044: 'KARENA APA' read as 'KARENAAPA') is rebuilt from the word

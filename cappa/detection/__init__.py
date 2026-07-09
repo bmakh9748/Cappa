@@ -7,8 +7,8 @@ The map (one stage per file, chained by worker.py on a background thread):
     stability.py   watch live captions for vanishing  every frame   <1 ms
     detector.py    NEURAL text detection (ONNX)       on change     ~0.06-0.1 s
     ocr.py         read text in accepted boxes (ONNX) on accept     ~0.02 s
-    tracking.py    ledger: live/seen boxes, clear debounce
-    classifier.py  caption or not-caption (geometry + text rules)
+    tracking.py    ledger: live boxes, clear debounce, drift
+    classifier.py  the junk-text tag (clock/URL/handle stays off cards)
     sentence.py    the data model a read line becomes: a Sentence of Words
     latency.py     the pipeline's measured reaction times (appear/clear lags)
     worker.py      the background thread gluing it all together

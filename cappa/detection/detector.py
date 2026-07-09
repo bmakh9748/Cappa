@@ -2,7 +2,7 @@
 (DBNet, PP-OCRv5 mobile). Given a frame, it returns tight boxes around every
 piece of text — any language, any styling, no background box needed, trained
 on millions of samples. It replaces hand-tuned "does this look like text"
-heuristics; the classifier still decides which of its boxes are captions.
+heuristics; every text line it finds becomes a live, hoverable caption.
 
 The model runs through onnxruntime — RapidOCR ships the same PP-OCRv5 weights
 pre-converted to ONNX — instead of PaddlePaddle's executor. Same model, same
@@ -35,11 +35,10 @@ MERGE_OVERLAP = 0.6  # of the smaller height: vertical overlap = "same line"
 
 def merge_lines(boxes):
     """One box per TEXT LINE: DBNet returns big/spaced/italic captions as
-    several fragments (per word or word-group), which downstream misreads
-    as a crowd of boxes — the burst rule then rejects the lot. Fragments
-    that overlap vertically and sit within a glyph-height's gap
-    horizontally are the same line; everything downstream (ledger,
-    classifier, watcher, OCR) wants them as one."""
+    several fragments (per word or word-group). Fragments that overlap
+    vertically and sit within a glyph-height's gap horizontally are the
+    same line; everything downstream (ledger, watcher, OCR) wants them
+    as one."""
     merged = []
     for box in sorted(boxes, key=lambda b: b[0]):
         for i, m in enumerate(merged):

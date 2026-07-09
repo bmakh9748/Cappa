@@ -1,7 +1,10 @@
-﻿"""Reproduce the real failure: tracking a WHOLE browser window in default
-YouTube layout â€” video pane left of centre, UI text everywhere (tab title,
-video title, sidebar recommendations). The caption inside the video must be
-accepted; all the page text must not. Runs the real production worker."""
+﻿"""Tracking a WHOLE browser window in default YouTube layout — video pane
+left of centre, UI text everywhere (tab title, video title, churning chat).
+Detection accepts every text line (the caption-vs-not gates are gone, user
+call 2026-07-09: page text becomes hoverable words too — that's the deal);
+what must hold is the caption's own life amid the churn: boxed at lock-on,
+re-read when the line changes, cleared when it leaves. Runs the real
+production worker."""
 
 import ctypes
 import sys
@@ -88,11 +91,9 @@ caption.setStyleSheet("background: black; color: white; font-size: 22px;"
 caption.setAlignment(Qt.AlignCenter)
 caption.setGeometry(215, 400, 420, 40)  # centred IN THE VIDEO, not the window
 # NOTE: visible from the start, like real usage, where a caption is already
-# on screen when the user picks the window. This line is SMALL text, so the
-# baseline scan memorises it unjudged (furniture safety) and the FIRST line
-# is never boxed; the NEXT line must still get through (content
-# fingerprints). BIG text at lock-on IS judged and boxed - that path is
-# covered by test_area_rescan leg 2.
+# on screen when the user picks the window. With no baseline pass it must be
+# boxed by the FIRST scan, and the NEXT line (drawn over the same spot) must
+# be re-read via the drift machinery.
 
 boxes_layer = BoxLayer(browser)
 boxes_layer.setGeometry(0, 0, 1272, 692)
@@ -155,16 +156,6 @@ while not got_fps and time.perf_counter() - t0 < 120:
     pump(0.1)
 assert got_fps, "worker never came up"
 
-# phase 1: page + playing video + the FIRST caption line (present since
-# lock-on, eaten by the baseline scan) -> nothing may be accepted
-pump(3.0)
-assert events == [], "FAIL: something accepted during baseline: %r" % events
-print("PASS: page furniture and the lock-on caption line stay quiet")
-
-# phase 2: the caption CHANGES to the next line -> must be judged fresh
-caption.setText("and here comes the second line")
-t_on = time.perf_counter()
-pump(3.0)
 cl, ct = (10 + 215) * d, (40 + 400) * d   # ground truth: caption geometry
 cr, cb = cl + 420 * d, ct + 40 * d        # in window coords, physical px
 
@@ -174,29 +165,37 @@ def in_truth(b):
             and b[2] <= cr + 24 and b[3] <= cb + 24)
 
 
-appeared = [(b, t) for k, b, t in events if k == "appeared"]
-assert appeared, "FAIL: changed caption line never accepted: %r" % events
-box, t_hit = appeared[0]
-assert in_truth(box), (
-    "FAIL: box %r vs caption (%d,%d,%d,%d)" % (box, cl, ct, cr, cb))
-print("PASS: NEXT caption line accepted despite the memorised first line "
+# phase 1: the FIRST caption line (present since lock-on) is boxed by the
+# first scans — no baseline pass mutes it. Page text gets accepted too now;
+# only the caption zone is asserted.
+pump(3.0)
+assert any(k == "appeared" and in_truth(b) for k, b, t in events), (
+    "FAIL: the lock-on caption line was never accepted: %r" % events)
+print("PASS: the lock-on caption line is boxed by the first scan")
+
+# phase 2: the caption CHANGES to the next line (same spot, no clean vanish)
+# -> the drift machinery must retire the old text and re-read the new
+caption.setText("and here comes the second line")
+t_on = time.perf_counter()
+pump(3.0)
+hits = [(b, t) for k, b, t in events
+        if k == "appeared" and t >= t_on and in_truth(b)]
+assert hits, "FAIL: changed caption line never re-read: %r" % events
+box, t_hit = hits[0]
+print("PASS: NEXT caption line re-read in place "
       "(latency %.0f ms, box %r)" % ((t_hit - t_on) * 1000, box))
 
-# phase 3: caption clears -> no live boxes may remain
+# phase 3: caption clears -> no live box may remain IN THE CAPTION ZONE
+# (page furniture stays live elsewhere — that's the accept-everything deal)
 caption.hide()
 t_off = time.perf_counter()
 pump(2.0)
-assert live_now == [], "FAIL: stale live boxes after hide: %r" % live_now
-lat = [t - t_off for k, b, t in events if k == "cleared" and t >= t_off]
-print("PASS: no live boxes after hide (cleared %s)"
+stale = [s.box for s in live_now if in_truth(s.box)]
+assert not stale, "FAIL: stale live boxes after hide: %r" % stale
+lat = [t - t_off for k, b, t in events
+       if k == "cleared" and t >= t_off and in_truth(b)]
+print("PASS: no live caption-zone boxes after hide (cleared %s)"
       % ("%.0f ms later" % (lat[0] * 1000) if lat else "before the hide"))
-
-# phase 4: nothing OUTSIDE the caption zone was ever accepted. (The caption
-# itself may be re-accepted if something briefly covers the window mid-test
-# - this captures the REAL screen, so hands off while it runs.)
-strays = [b for k, b, t in events if k == "appeared" and not in_truth(b)]
-assert not strays, "FAIL: non-caption acceptances: %r" % strays
-print("PASS: nothing but the caption was ever accepted")
 
 worker.stop()
 thread.quit()

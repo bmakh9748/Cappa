@@ -20,31 +20,20 @@ led = CaptionLedger()
 # an empty ledger: everything in a scan is fresh
 assert led.fresh([CAPTION, WATERMARK]) == [CAPTION, WATERMARK]
 
-# accept the caption; the watermark is judged (rejected) and remembered
+# accept the caption: a live box is not re-read on the next scan, even
+# through a little box wobble; other text stays fresh
 led.accept(CAPTION)
-led.mark_seen([CAPTION, WATERMARK])
 assert led.live() == [CAPTION]
-
-# next scan: same caption (wobbled box) and same watermark -> nothing fresh
-assert led.fresh([CAPTION_WOBBLE, WATERMARK]) == []
-led.mark_seen([CAPTION_WOBBLE, WATERMARK])
-print("PASS: live captions and remembered junk are not re-judged")
+assert led.fresh([CAPTION_WOBBLE, WATERMARK]) == [WATERMARK]
+print("PASS: live captions are not re-read; new text is fresh")
 
 # the caption clears; the NEXT LINE in the same spot must be fresh
 assert led.clear(CAPTION) is True
 assert led.clear(CAPTION) is False, "double clear should be a no-op"
-assert led.fresh([NEXT_LINE, WATERMARK]) == [NEXT_LINE], (
+assert led.fresh([NEXT_LINE]) == [NEXT_LINE], (
     "FAIL: next caption line in the same spot was suppressed"
 )
 print("PASS: cleared spot is immediately fresh for the next line")
-
-# junk memory expires once the text has been gone for SEEN_TTL
-tracking.SEEN_TTL = 0.1  # shrink for the test
-led.mark_seen([WATERMARK])
-time.sleep(0.15)
-led.mark_seen([])  # a scan with the watermark gone -> entry expires
-assert led.fresh([WATERMARK]) == [WATERMARK]
-print("PASS: vanished junk is forgotten after the TTL")
 
 # sweep: a live caption that scans stop seeing gets retired at MISS_LIMIT
 led.reset()
@@ -59,9 +48,8 @@ led.sweep([CAPTION])  # reappearing resets the miss count
 assert led.sweep([]) == [] and led.sweep([]) == []
 print("PASS: sweep retires unseen captions, reappearing resets the count")
 
-# fingerprints: the same SPOT showing NEW content must be fresh again â€”
-# this is the caption-line-change case (a memorised line must not mute the
-# next one), while unchanged content stays suppressed.
+# fingerprints (used by resurrect/drift below): a coarse content signature
+# of the pixels inside a box, on the diff's downscaled grid.
 import numpy as np
 
 SCALE = 8
@@ -73,17 +61,8 @@ def sample(fill):
     return s
 
 
-led2 = CaptionLedger()
-led2.mark_seen([CAPTION], sample(200), SCALE)  # line 1 memorised (baseline)
-assert led2.fresh([CAPTION], sample(200), SCALE) == [], (
-    "unchanged content should stay suppressed"
-)
 changed = sample(200)
 changed[55:60, 35:60] = 40  # the text changed
-assert led2.fresh([CAPTION], changed, SCALE) == [CAPTION], (
-    "FAIL: new content in a memorised spot was muted"
-)
-print("PASS: content change frees a memorised spot; same content stays muted")
 
 # clear hysteresis: a suspected clear stays PENDING; the same spot coming
 # back with the accept-time content is resurrected silently (a gradient or
@@ -130,7 +109,7 @@ assert led4.drifted(changed, SCALE) == [CAPTION], (
     "persistent content change must retire the live line"
 )
 assert led4.live() == []
-assert led4.fresh([CAPTION], changed, SCALE) == [CAPTION], (
+assert led4.fresh([CAPTION]) == [CAPTION], (
     "the replaced spot must be immediately fresh"
 )
 print("PASS: in-place content change retires the line; blips do not")

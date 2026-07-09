@@ -11,9 +11,9 @@ pick Arabic and the arabic pack loads; anything else keeps the measured-best
 default. set_language() swaps the model live; loading falls back to the
 default pack on any failure.
 
-Cost discipline: the worker calls read() only for boxes that just passed the
-geometric classifier — a few times a minute, never per scan — so the
-detection path gets no slower.
+Cost discipline: the worker calls read() only for boxes the ledger says are
+genuinely NEW — a few times a minute, never per scan — so the detection
+path gets no slower.
 
 Fail-open by design: if the model can't load or a read errors, read()
 returns (None, 0.0), and callers must treat unreadable text as NO EVIDENCE,
@@ -24,17 +24,10 @@ import sys
 
 import numpy as np
 
+from .. import lexicon
 from .sentence import Sentence
 
 PAD = 4      # px of context around the crop; rec likes breathing room
-PAD_ALT = 8  # the second read's padding. Stylised fonts squeeze word
-             # spaces below the rec model's column stride, so whether a
-             # space is emitted flips with tiny framing changes
-             # (card_0056: pad 4 read "GENE"DIKILLER, pad 8 read
-             # "GENE"DI KILLER — same frame). Reading twice and letting
-             # the SPACIER agreeing read win recovers what one framing
-             # swallowed; disagreeing reads keep the first (today's)
-             # behaviour.
 
 # settings.source_language code -> rapidocr LangRec value. Only scripts the
 # default multi-script model CANNOT read are listed; Latin/CJK languages stay
@@ -95,6 +88,43 @@ def _respace(text, spans):
     return text
 
 
+def _lexicon_split(text, lang):
+    """Each word of `text` that the recogniser glued to its neighbour, split
+    back apart against `lang`'s word list -- 'YOU CANALWAYS' -> 'YOU CAN
+    ALWAYS'. Only pieces that are every one a real word are accepted, so a
+    genuine word is never torn and an OCR letter-error (no valid split) is
+    left as is. Unchanged when the language has no pack loaded, so this only
+    ever adds the ability to split (card_0027)."""
+    out = []
+    for token in text.split():
+        out.extend(lexicon.split(token, lang))
+    return " ".join(out)
+
+
+def _respan(spans, text):
+    """Re-cut `spans` (word, box) so they spell `text`, whose words differ
+    only in where the spaces fall. A character is assumed to occupy an equal
+    slice of its span's box -- the same assumption the midpoint tiling below
+    already makes, and accurate enough for a hotspot. Returns the original
+    spans when the characters don't line up."""
+    words = text.split()
+    chars = []
+    for word, (l, t, r, b) in spans:
+        if not word:
+            continue
+        step = (r - l) / float(len(word))
+        chars += [(l + i * step, l + (i + 1) * step, t, b)
+                  for i in range(len(word))]
+    if len(chars) != sum(len(w) for w in words):
+        return spans
+    out, k = [], 0
+    for word in words:
+        seg, k = chars[k:k + len(word)], k + len(word)
+        out.append((word, (int(round(seg[0][0])), min(c[2] for c in seg),
+                           int(round(seg[-1][1])), max(c[3] for c in seg))))
+    return out
+
+
 def _is_rtl(ch):
     o = ord(ch)
     return (0x0590 <= o <= 0x08FF        # Hebrew, Arabic + supplements
@@ -107,12 +137,15 @@ class TextReader:
         self._model = None
         self._failed = False
         self._script = _SCRIPT_MODELS.get(lang)  # None -> default model
+        self._lang = lang                         # for the lexicon splitter
 
     def set_language(self, lang):
         """Switch the rec model for a newly picked video language (worker
-        thread, between scans). A no-op unless the language maps to a
-        different model; otherwise the current model is dropped and the next
-        read loads the right one."""
+        thread, between scans). The rec MODEL only changes when the script
+        does; the language string is always kept, since the lexicon
+        splitter is keyed by language, not script (en and id share a
+        model but not a word list)."""
+        self._lang = lang
         script = _SCRIPT_MODELS.get(lang)
         if script == self._script:
             return
@@ -148,19 +181,20 @@ class TextReader:
         if got is None:
             return None, 0.0
         text, score, spans = got
-        if text and not any(_is_cjk(ch) for ch in text):
-            # Second framing: the spacier read wins when both saw the same
-            # characters (PAD_ALT above; never CJK — spacelessness is
-            # correct there and a hallucinated split must not stick).
-            alt = self._read_once(frame, box, PAD_ALT)
-            if (alt is not None and alt[0]
-                    and alt[0].replace(" ", "") == text.replace(" ", "")
-                    and alt[0].count(" ") > text.count(" ")):
-                text, score, spans = alt
         if spans:
             text = _respace(text, spans)
         elif text:
             spans = [(text, box)]  # no geometry: the line is one hotspot
+        if text and not any(_is_cjk(ch) for ch in text):
+            # A word the recogniser GLUED to its neighbour is split back
+            # apart by the lexicon -- but only into pieces that are every
+            # one a real word, so a genuine word is never torn and an OCR
+            # letter-error is left alone. No pack for the language -> no
+            # change. Never CJK: spacelessness there is correct.
+            split_text = _lexicon_split(text, self._lang)
+            if split_text != text:
+                spans = _respan(spans, split_text)
+                text = split_text
         sentence = Sentence(text, box, spans)
         sentence.ocr_conf = score  # cards warn when a shaky read got through
         return sentence, score
