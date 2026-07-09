@@ -73,18 +73,34 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
    Silent clips are discarded (card_0027); every degradation leaves a note.
 5. The draft saves to `cards/card_NNNN/` — word, sentence, translations, screenshot,
    audio, and `metadata.json` with full provenance (boxes, timing windows, match scores,
-   video source, notes). `.apkg` export is the remaining step.
+   video source, notes) — and goes straight into Anki in the same pass.
 
 ---
 
 ## Flashcard Export
 
-- **Today:** every saved card is a complete draft folder under `cards/card_NNNN/`
-  (all pieces + metadata); the export step below is not built yet.
-- User opens the control panel and clicks Export
-- `genanki` bundles all saved cards + media (screenshots + audio clips) into a single `.apkg` file
-- User drags `.apkg` into Anki — all media imports automatically
-- Each card contains: word, translation, sentence, screenshot, audio clip
+- Every saved card is a complete draft folder under `cards/card_NNNN/` (word,
+  sentence, translations, screenshot, audio, `metadata.json` provenance).
+- **No separate export step.** Clicking **Create Anki card** saves the
+  draft AND puts it into Anki in the same background-thread pass
+  (`cappa/flashcard/anki_sync.py` — the whole feature in one module). Anki
+  OPEN: the card goes through the AnkiConnect add-on's localhost API
+  (2055492159) and is visible in the running app the moment the button
+  finishes. Anki CLOSED: it's written straight into Anki's own collection
+  file (the official `anki` package) and is there on next launch. No
+  .apkg, no import dialog either way; if Anki can't be reached at all the
+  button says so.
+- **Delivery is per-card and once.** A delivered folder gets an
+  `anki_synced.txt` receipt and is never touched again — whatever the user
+  edits or deletes IN Anki stays that way; a sync pass sends only
+  receipt-less cards (normally: exactly the card just saved). A failed
+  delivery leaves no receipt and rides the next save; a card already in
+  Anki (found by its `cappa::card_NNNN` tag) is adopted, not re-added. One
+  deck per learning language ("Cappa \<Language\>", get-or-create by name).
+- Each card contains: word, translation, sentence, screenshot, audio clip —
+  whichever of those the Flashcards settings tab has switched on, on
+  whichever side, in the design configured when that card was made
+  (`card_template` in its own metadata).
 
 ---
 
@@ -124,14 +140,14 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 | Video source | **yt-dlp** + **ffmpeg** | Caption track (timing precision bonus — the SCREEN is the backbone since 2026-07-07) + source audio download/slicing |
 | Playback bridge | Chrome/Edge extension → localhost `http.server` | Which video is playing + exact position, ~1/s, never leaves the machine |
 | Word meanings | **Wiktionary REST** (`dictionary.py`) + **deep-translator** (free Google endpoint) | Definitions first, contextual translation as hint/fallback — free, no key. **NO LLM** |
-| Flashcard export | **genanki** | Generates Anki `.apkg` files with embedded media |
+| Flashcard export | **AnkiConnect** (live, Anki open) + **anki** (direct collection write, Anki closed) | One module (`flashcard/anki_sync.py`) picks whichever shows the card soonest; `anki` is the official library the desktop app itself runs on |
 | OS | **Windows only** (for now) | Overlay behaviour uses Win32 APIs |
 | Language | **Python 3.11+** | |
 
 ### Install commands
 ```bash
 pip install -r requirements.txt
-# PySide6 pywin32 mss numpy rapidocr onnxruntime ffmpeg-python genanki
+# PySide6 pywin32 mss numpy rapidocr onnxruntime anki
 # deep-translator PyAudioWPatch yt-dlp
 ```
 
@@ -169,7 +185,13 @@ Also requires:
 8. **Control panel UI** — became the corner launcher + startup/settings window **[done]**
 9. **Audio extraction** — caption-track windows from source audio, loopback fallbacks **[done]**
 10. **Screenshot capture** — frame frozen at word click **[done]**
-11. **Flashcard export** — genanki .apkg generation **[next]**
+11. **Flashcard export** — per-card Anki delivery riding the Create card button **[done]**
+12. **Card draft review (user correction)** — before a card is saved/synced, a DRAFT
+    popup shows exactly what the card will contain (word, sentence, both translations,
+    the screenshot, the audio clip) so the user can SEE it and fix what the pipeline got
+    wrong — the wrong-word OCR read, a sentence polluted by on-screen furniture, a clip
+    that landed off the word. The human-in-the-loop that makes the automatic mistakes
+    recoverable instead of silently shipped to Anki. **[planned — next]**
 
 ---
 
@@ -188,6 +210,8 @@ cappa/
                         #   the word is translated IN its sentence via a marked span)
   dictionary.py         # word -> MEANING: Wiktionary definitions, contextual
                         #   translation as hint + fallback (no Qt, no LLM)
+  lexicon.py            # per-language word list (downloadable ~50k pack) + the
+                        #   splitter that un-glues OCR'd words (CANALWAYS->CAN ALWAYS)
   settings.py           # tiny persisted settings holder (settings.json; no Qt)
   audio.py              # LoopbackRecorder: WASAPI loopback ring buffer (90s, monotonic-
                         #   stamped, follows the default output device; fail-soft; no Qt)
@@ -215,7 +239,8 @@ cappa/
     sentence.py         # Sentence/Word model, caption BLOCKS (stacked lines), and
                         #   click_pool (click-time vs card-time caption reconcile)  [done]
     latency.py          # the pipeline's measured reaction times (appear/clear lags)
-  flashcard/            # gathers one card's pieces into cards/card_NNNN (no .apkg yet)
+  flashcard/            # gathers one card's pieces into cards/card_NNNN, and
+                        #   puts each new card into Anki (anki_sync.py)
     builder.py          # build_draft: block sentence, provenance, translations,
                         #   snap-to-track correction — what the CARD says
     clip.py             # the audio: window choice (seen life vs track) + cutting
@@ -226,6 +251,9 @@ cappa/
     screenshot.py       # click-time PNG capture/write
     timing.py           # audio window maths (pre/postroll, min/max clip)
     writer.py           # card_NNNN folders + metadata.json
+    anki_sync.py        # sync(): put the new card into Anki -- live (AnkiConnect)
+                        #   when open, collection file when closed; per-folder
+                        #   anki_synced.txt receipts, delivered once, never re-swept  [done]
   source/               # video-source truth: timing, audio, and Cappa's own transcript
     vtt.py              # WebVTT parser (manual + auto rolling formats) -> timed tokens
     transcript.py       # Transcript model + OCR-line -> caption-window aligner
@@ -249,7 +277,7 @@ tests/
   test_settings.py, test_translate.py              # settings roundtrip, word cleanup
   test_overlay_*.py, test_captions_live.py         # live overlay behaviour
   test_browser_sim.py, test_realistic_video.py     # end-to-end sims (draw what they detect)
-  bench_*.py            # detector speed benchmarks (run individually)
+  test_anki_sync.py     # per-card Anki delivery (fake add-on + throwaway collection)
 ```
 
 Boundary rules:
@@ -492,7 +520,8 @@ Boundary rules:
 > `expire_clears()` surfaces the real clear after CLEAR_CONFIRM (0.35 s). Real clears
 > land ~0.3 s later; blips produce nothing. Knock-on: **paddlepaddle/paddleocr dropped
 > from requirements.txt** — detection AND recognition are both rapidocr+onnxruntime now
-> (the old `bench_paddle_*.py` scripts still want paddle; they're historical). New tests:
+> (the `bench_paddle_*.py` scripts that still wanted paddle were deleted 2026-07-08).
+> New tests:
 > `test_ocr_read.py` (real Japanese+English reads through TextReader), text-rule legs in
 > `test_classifier.py`, hysteresis legs in `test_tracking.py`. Suite: 11/11.
 >
@@ -744,11 +773,8 @@ Boundary rules:
 > caption-track timing is visible at a glance. The popup reports degraded saves on the
 > button itself ("Saved card_0046 · 2 notes") instead of a silent thumbs-up.
 >
-> **Next step:** the genanki `.apkg` export (the last build-order item — the drafts
-> in `cards/` already contain every field and media file a card needs, and the
-> Flashcards tab already decides layout/design), then the Japanese word-unit
-> decision (local tokeniser vs resolving the clicked segment), then VAD
-> clip-edge snapping (polish item 4).
+> **Next step:** the Japanese word-unit decision (local tokeniser vs resolving
+> the clicked segment), then VAD clip-edge snapping (polish item 4).
 >
 > _Deferred / known limits:_ multi-DPI across
 > mixed-scaling monitors may be slightly off (uses primary-screen DPR); tracking a
@@ -900,8 +926,166 @@ Boundary rules:
 > (4) *Glyph-exact hue tint on hover* — built and rejected (ragged masks on
 > compressed video); don't retry without morphological cleanup tested on
 > real H.264.
+>
+> **Getting cards into Anki — the road to `anki_sync.py` (done).** Build
+> order item 11 first shipped as a `genanki` `.apkg` exporter, then as a
+> launcher "Export to Anki" menu action writing `collection.anki2`
+> directly. Both are gone: the user wanted no export control and no import
+> dialog of any kind, so the sync fused to the Create Anki card button
+> itself ("when i press make card it goes straight to anki that is what i
+> want"). What survived those rounds and still holds: write through Anki's
+> own API, never hand-rolled SQL; back up `collection.anki2` before
+> touching it (it holds thousands of notes of unrelated study history);
+> one deck per learning language; identify each note by a `cappa::card_NNNN`
+> tag. See the entry below for the code as it actually stands.
+>
+> **2026-07-08 — Anki sync goes live and per-card, all of it in
+> `flashcard/anki_sync.py` (done; user calls).** First: "when i press
+> create card... i should see it immediately in anki" — the direct
+> collection write can never do that (Anki locks `collection.anki2` while
+> it runs), so the user green-lit an add-on, and AnkiConnect (2055492159)
+> was ALREADY installed on this machine (the playback bridge moved off
+> port 8765 precisely because AnkiConnect owns it). sync() probes the
+> add-on's port per call (1s cap — it sits on the card-save thread) and
+> picks its route: Anki open → the card goes through the localhost JSON
+> API (pure stdlib urllib, no new dependency) and appears in the running
+> app as the button finishes; closed → written into the collection file
+> with the official `anki` package (rotating backup first), there on next
+> launch. Both routes write identical identity — the `cappa::card_NNNN`
+> tag, one "Cappa card" notetype (created once from the current design;
+> the copy in Anki is the user's to edit), per-card media names
+> (`card_NNNN_screenshot.png`) — so either route adopts the other's notes.
+> Second: "just the card i saved, not all the cards" — a sweep that
+> re-sends every draft resurrects anything the user deletes in Anki (they
+> deleted the whole backlog deck minutes after it appeared; the deck is
+> theirs). Delivery is per-card and ONCE: a delivered folder gets an
+> `anki_synced.txt` receipt and is never touched again; a failed delivery
+> leaves no receipt and rides the next save; a card already in Anki is
+> adopted by tag, not re-added; deleting a receipt is the manual re-sync
+> for one card. The old unwired `.apkg` bundling path and its genanki
+> dependency were removed the same day. All existing card folders were
+> receipted in the migration (the deck deletion stands — nothing re-adds
+> it). Verified twice against the real running Anki: the 20-draft backlog
+> landed live in "Cappa Indonesian" on the first pass, and after the
+> receipts change a scratch dir holding one receipted + one new card
+> delivered EXACTLY the new one, in 0.2s (the test then erased its own
+> traces). `tests/test_anki_sync.py`: closed route against a throwaway
+> collection, open route against a faked add-on at the module's transport
+> seam, receipts/adoption/no-resurrection.
+>
+> **2026-07-08 — recall is session-only, and a sighting closes where it
+> really ended (done, card_0025; user rule, don't re-litigate).** Two
+> defects in the same call. (1) `window_hint` read `transcripts/*.jsonl`
+> back off disk, so a card made today could take its timing from a watch
+> weeks ago. Banned: "you can take from only this instance of the app being
+> open. when you close the app it should go. when i reopen taking from the
+> past times its been open is bad." The log keeps a per-run in-memory list
+> of what it watched and answers only from that; the files stay a durable
+> record and are never read. A reopened app recalls nothing until it
+> watches something itself. (2) A hardsub that TYPES ON is re-read as it
+> grows, logging a chain of rows — card_0025's line logged as `NUMPANG` →
+> `NUMPANG DI HELIKOPTER ..` → `NUMPANG DI HELIKOPTER KEBALIK .`. Recall
+> took the earliest row for its START (right: a seek can only log a LATER
+> appearance, so the minimum is nearest the true pop) but also took that
+> row's END — which is merely the moment the fragment grew. The clip closed
+> at 205.983 when the caption lived to 207.073: **1.09 s lost, ending
+> before "DI HELIKOPTER KEBALIK" was ever spoken.** A sighting now closes
+> at the last row of its chain, where "same chain" is ≤ `SIGHTING_GAP`
+> (2 s) of wall clock — in the real log a chain's rows follow within
+> 0.03-1.13 s while the nearest re-watch sits 3.3 s away, so the two never
+> blur. Replayed against the real transcript, the recall returns
+> 205.518 → 207.073. `tests/test_ocr_transcript.py` grows two legs: a
+> reopened log recalls nothing from its own file, and a typed-on line
+> closes at its last row while a re-watch never extends it.
 
-## The polish stage — better reading and translation (planned, user call)
+> **2026-07-08 — junk is clickable, never card-able (done, card_0028).** The
+> first Shorts cards came out as `@korrathetaymi -DIED ON-THE`: the channel's
+> watermark sits one row above the caption, matches its glyph height, and
+> `caption_block` stacked it into the card's sentence. It is NOT a classifier
+> miss — `text_verdict` already calls a leading `@` a handle, and the
+> watermark reads at **confidence 1.000**. The rule simply never runs: the
+> overlay passes `accept_all=True` (user call — "junk text becomes hoverable
+> words, nothing more"), which stands down every gate including the text
+> rules. Read literally, that promise was about HOTSPOTS, not about what may
+> land on a card. So the worker now always computes `text_verdict` and, under
+> accept_all, STAMPS the row (`Sentence.junk`) instead of dropping the box.
+> A stamped row stays clickable, but never joins someone else's caption block
+> and never enters `transcripts/`. Clicking the watermark itself still works
+> — that's a deliberate act. Measured on the same frame: the caption reads at
+> 0.960, the watermark at 1.000, the channel name `ComedyShot` at 1.000 and
+> is TALLER than the caption (79px vs 62px) — so neither confidence nor size
+> can separate chrome from captions, which is why the text rules exist.
+
+> **2026-07-08 — Shorts polish pass (done, on real cards card_0027
+> `YOU CANALWAYS` and card_0028 `@korr -DIED ON-THE`):**
+> 1. *Reject chrome.* The junk-stamp above (`Sentence.junk` from the text
+>    rules) already catches the common watermark by its shape — card_0028's
+>    '@korrathetaymi' is an @-handle. A repetition-based FURNITURE detector
+>    was tried for plain-text chrome (a bare channel name) and REMOVED the
+>    same day: it conflated three things it couldn't tell apart — a genuine
+>    catchphrase said twice, and worst, a REWOUND caption. Rewinding to
+>    re-study a line is the exact workflow window_hint serves (card_0009),
+>    and furniture-by-repetition would have flagged that very line as junk.
+>    Plain-text chrome is deferred to the positional approach (queued item 6:
+>    the extension reports the video/caption rect, everything else is masked
+>    — deterministic, no heuristic).
+> 2. *Word un-gluing by lexicon* (replaced a short-lived cross-frame voting
+>    hack). The rec model is confident-wrong about spacing on tight captions
+>    (card_0027 'YOU CANALWAYS'). A first attempt read the crop at a second
+>    padding and unioned the two framings' spaces — user rejected it as a
+>    lucky case that can also over-split when a framing hallucinates a stray
+>    space. The real fix (`cappa/lexicon.py`): split a glued token ONLY into
+>    pieces that are every one a real word, from a per-language word list;
+>    never tear a genuine word, leave an OCR letter-error ('YOUCAL') alone.
+>    `ocr._lexicon_split` decides WHAT to split, `_respan` positions the
+>    hotspot boxes. One downloadable ~50k-word pack per language
+>    (FrequencyWords, cached in `lexicon_packs/`, fetched by the worker like
+>    the OCR models, no-op without a pack). Verified end-to-end with the real
+>    en pack: card_0027's crop reads 'YOU CAN ALWAYS', three hotspots, a
+>    hover sweep picks exactly one word at every x.
+> 3. *Sentence tail by words-left, this video's pace.* `_live_end` no longer
+>    adds a flat 0.4s to a line still on screen; it predicts the end as
+>    APPEARANCE + words × pace (user call: don't assume the clicked word is
+>    the one being spoken — the user reads, then clicks). Pace is measured
+>    per video from its own captions (`ocr_transcript.seconds_per_word`,
+>    median life/words over multi-word rows), clamped, defaulting until 5
+>    rows are seen. Legal because the clip comes from the downloaded file;
+>    the loopback rescue still clamps (a ring buffer holds no unplayed audio).
+> 4. *Clip cap raised 5s -> 8s* (`AUTO_MAX_CLIP`, MAX_CLIP_RANGE): a real
+>    spoken sentence is 2.1s median, 7.0s p90, so 5s truncated one in five.
+
+> **2026-07-09 — transcript only records a live video; + fast-caption
+> groundwork (done + a design set).** Two logging bugs: (1) a PAUSED video's
+> frozen frame produced appeared_video==cleared_video artifacts; (2) worse,
+> when the extension's reports went stale (tab hidden/closed/not YouTube)
+> the last video id PERSISTED, so on-screen text from another tab/app got
+> logged under it. Both fixed by one gate: `source_wiring.live_video_id`
+> returns the id ONLY on a fresh, playing bridge report, else None, and
+> `ocr_transcript.observe` logs nothing without an id (test_source_gate.py).
+> Also instrumented: each transcript row now records `ocr_conf` (additive
+> key) to settle whether captions too quick to read come back
+> low-confidence — early read (cards 0027/0028 garbles at 0.96-1.00) says
+> NO: OCR reads confidently wrong or MISSES entirely (no event, no
+> confidence), so confidence can't be the trigger for "OCR fell behind".
+> BUILT the same day — word-at-a-time sentence completion (user spec; the
+> tried-and-rejected alternatives are logged in memory, not here): a clicked
+> chunk finds its whole SENTENCE in the track (`Transcript.sentence_for`:
+> text match is the gate — burned-in creator subs don't match and are left
+> alone; `sentence_slice` grows the match to terminal punctuation / '>>'
+> speaker markers / a >1.5s silence). `builder._complete_sentence` then
+> rebuilds the sentence OURS-FIRST (`_fill_sentence`): our transcript rows
+> are the words wherever we read them; the track fills only unclaimed
+> words; a low-`ocr_conf` row loses its say (each row now logs conf); a row
+> claims a track word only when TIME-near AND TEXT-similar (0.5) — time
+> alone let 'RESPECT' swallow 'you' and let a watermark spanning the
+> sentence claim real words; rows claiming nothing are dropped (the
+> neighbour sentence's words, 'SUPER TE' chrome). Timing: ours at any edge
+> we cover, the track's otherwise; the span rides to the audio cut as
+> matched_by='assembled' (clip.py skips the clear-wait — the end is known).
+> Provenance: metadata gains `sentence_assembly` {span, score,
+> ocr_sentence, filled_from_track}. Verified on the real g4erZWrKEjQ track
+> + transcript: 'years'→'two YEARS ago', 'team'→'you on that TEAM',
+> one-word sentences untouched. `tests/test_sentence_fill.py`.
 
 Upgrades queued from real failures, all opt-in and none breaking the free/local
 default path:
@@ -931,6 +1115,65 @@ default path:
    accepted half of the ML idea weighed on 2026-07-07 (see "Ideas weighed and
    set aside") — the model reads the waveform, where the missing information
    actually lives.
+5. **YouTube Shorts support.** The pieces that *look* like blockers already work:
+   `extension/content.js` matches `/shorts/<id>` and picks the largest PLAYING
+   `<video>` (card_0018's fix, when the feed's preloaded neighbours were being
+   read at t=0), and `youtube.extract_video_id` accepts `/shorts/` URLs, so
+   metadata, captions and audio fetch unchanged. **The real blocker is the loop.**
+   Everything in the timing stack assumes video time advances with the wall clock
+   between seeks, and a looping short breaks that in four places:
+   - `bridge.mono_at(video_t)` — "when did video second `t` play through the
+     speakers" — picks the sample with the nearest `currentTime`. Under a loop,
+     video time is no longer *injective* over wall clock: second 3.0 exists once
+     per pass, and the nearest-sample search may answer with a pass from minutes
+     ago (outside the loopback ring buffer). This is the one that silently cuts
+     the wrong audio. Fix: stamp each sample with a **pass counter** (bumped when
+     `currentTime` jumps back while the previous sample sat near `duration`), and
+     resolve `mono_at` within the newest pass that contains `video_t`.
+   - `bridge.steady_at(mono)` — a loop restart reads as a seek (correctly), but it
+     poisons the whole `STEADY_BEFORE` (2 s) window behind it, so no caption in a
+     pass's first two seconds can ever anchor its own appearance. With the pass
+     counter, "steady" can mean "no jump *within this pass*".
+   - `tracking.py` identity — the same caption, same pixels, same box, one loop
+     later. If it never registers a clear, `appeared_at` keeps a stamp from the
+     previous pass and maps to nonsense. A loop boundary should force-clear the
+     live ledger: the screen belongs to a new pass.
+   - `ocr_transcript.REPEAT_GAP` (10 s) — written to stop a paused frame spamming
+     the log with the same row. A short under 10 s loops *inside* that window, so
+     every pass after the first is silently discarded as a "blip loop". The
+     dedupe must exempt a genuine loop boundary.
+
+   Two smaller ones: clip windows are never clamped to `[0, duration]` (the
+   duration is already in `session.meta()`, just unused), and scrolling the feed
+   rewrites the video id every ~700 ms report, so a fast scroll fires a fetch and
+   an audio download per short — debounce on "same id for ≥1.5 s". Finally, many
+   shorts carry **no caption track at all**, which throws the whole card onto the
+   on-screen life — so the loop work above is a prerequisite, not a polish pass.
+   Order: pass counter in the bridge → loop-clear the ledger → dedupe exemption →
+   duration clamp + id debounce. Ground it first by making one card on one short
+   and reading its `metadata.json` provenance, the way every other timing bug here
+   was found.
+6. **Positional chrome masking.** Reject watermarks, channel bars, buttons and
+   YouTube's own translated-subtitle overlay by POSITION, not by reading them. The
+   content script already calls `getBoundingClientRect()` on the active `<video>`;
+   have it also report that rect (and, when present, the `.ytp-caption-window-
+   container` rect) to the bridge. The app masks detection to the video area and
+   drops anything over the player chrome — deterministic, no heuristic, and it
+   NEVER reads the overlay's words (position only, so the no-ASR/no-LLM rules are
+   untouched). This is the real fix for the plain-text chrome that a repetition
+   heuristic could not safely catch (furniture detection was tried and removed
+   2026-07-08: it flagged rewound captions, which is the opposite of what a study
+   tool should do). Cost: mapping browser client coords → screen coords.
+7. **Lexicon word-splitter — DONE 2026-07-08** (`cappa/lexicon.py`, was
+   "stage 5"). Splits a glued token into pieces that are every one a real word,
+   ranked by frequency, ≤3 pieces, each ≥2 chars, positioned via `ocr._respan`.
+   Skips CJK (no spaces). Word source: a downloadable ~50k-word pack per language
+   (FrequencyWords / OpenSubtitles, cached in `lexicon_packs/`), fetched by the
+   detection worker like the OCR model packs — the "user downloads a pack per
+   language" model the user chose. Cannot fix an OCR letter error ('YOUCAL', N
+   misread as L). Remaining polish if ever needed: a Settings toggle / progress
+   note while a pack downloads; Arabic clitics (والبيت) are naturally safe because
+   a bare clitic isn't a standalone pack word, so no split is proposed.
 
 ## Detection — the hard part (Steps 2–5)
 
@@ -954,10 +1197,138 @@ we build each stage:
   at ≤736px (PP-OCRv5 mobile det), recognition ~10-20 ms/line (PP-OCRv6 small
   multi-script), both through onnxruntime on the worker thread. Rec reads full-res crops
   of accepted boxes only.
-- **Classifier (Step 5) — built:** geometry (size band, aspect, centredness,
-  burst-with-cooldown) plus fail-open text rules (letter ratio, URL/handle) on the OCR
-  text; all knobs at the top of `classifier.py`. The risk remains hand-tuning against
-  real videos — knobs stay in one place, and the visible overlay highlights are the
-  feedback loop for that tuning.
+- **Classifier (Step 5) — built, then DELETED (2026-07-09, user call; see the
+  entry below):** the geometry gates, baseline muting and 'seen' memory rejected
+  too many real words; accept-all had long been the shipped behaviour. All that
+  remains is `classifier.text_verdict`, the junk-text STAMP (clock/URL/handle
+  stays clickable but off cards/transcript, card_0028).
 - **Temporal stability:** the same subtitle read on consecutive frames must be recognised as "the
   same" (avoid flicker/duplicate hotspots), and clearing must be prompt when it disappears.
+
+---
+
+## 2026-07-09 — The great simplification (user calls, all three)
+
+Three deletions in one day, all user-ordered after real cards kept coming out
+wrong for reasons buried in accumulated machinery:
+
+1. **Caption-vs-not gates deleted.** See the Step 5 bullet above. `worker.py`
+   lost the baseline/user-area/accept_all plumbing, `tracking.py` lost the
+   'seen' memory (provably dead once nothing is ever rejected) and with it the
+   paused-frame `ignore_seen` rescue it necessitated. `classifier.py` is now
+   just the junk-text tag.
+
+2. **Blanket clip padding deleted.** `APPEAR_BACKSHIFT` (1.0) +
+   `APPEAR_TRIM_GRACE` (0.8) opened every position-anchored clip 1.8 s before
+   the appearance stamp — worst-case insurance sized from one bad card pair
+   (0069/0071) that put the previous sentence's tail on every card with an
+   accurate stamp, which is most of them: the same row watched three times
+   stamped within ~170 ms (card_0035's transcript). The measured lags in
+   `detection/latency.py` (already subtracted at mapping time) and the user's
+   own buffers are the only time arithmetic left.
+
+3. **The clip-window ladder replaced by THE WINDOW RULE (user spec, verbatim
+   intent: 'it is not complicated').** The clip is the clicked caption BLOCK's
+   on-screen life: every row of the block looked up in this run's transcript
+   (`sighting_window` — which also recalls the real pop when the live row is a
+   churn REBIRTH, card_0002, or a seek landing) plus its live ledger stamps;
+   EARLIEST appearance → start, LATEST clear → end, `HEAD_BUFFER` 0.4 s in
+   front, `TAIL_TRIM` 0.2 s off the end (both user-specified). The caption
+   track NEVER times a clip anymore — `choose_window`, position windows,
+   `_onscreen_match`, the slide-to-click invariant and the steady-seek gate
+   are all gone; the track's text match is recorded only as provenance and as
+   `_snap_to_track`'s ground truth (card_0018 unchanged). min/max clip
+   settings still clamp, the cap centring on the click. The sentence-assembly
+   span (word-at-a-time fill) still wins when it exists — it is transcript
+   timing already.
+
+   card_0002 was the trigger: animated eye-strokes drawn beside 'melahirkan'
+   kept churning the row (clear + re-accept + '-I' misread), the reborn row's
+   stamp mapped to 40.569 for a caption whose logged sighting popped at 39.11,
+   and the no-padding anchor missed the clicked word entirely. Under the rule
+   the same card cuts 38.71→40.37. Detection-side root cause (watch/fingerprint
+   the GLYPHS, not the det box, so adjacent animated art can't churn the row)
+   is diagnosed but NOT yet built — the transcript-recall anchor makes the
+   clip immune either way.
+
+Tests: `test_classifier.py` is junk-tag-only; `test_area_rescan.py` and
+`test_browser_sim.py` assert the accept-everything world (caption-zone-scoped);
+`test_youtube_source.py`'s builder tests all re-derived for the window rule
+(deleted: choose_window / position-fallback / distrusts-impossible-stamp /
+backshift tests). Full suite re-run green, live sims 5/5 styles zero FP.
+
+### 2026-07-09c — the caption track becomes a bounded fallback (card_0006)
+
+Two follow-on card fixes on top of the window rule:
+
+- **No buffer around the on-screen life.** The transcript's appeared/cleared
+  are ALREADY detector-lag-corrected (ocr_transcript subtracts APPEAR_LAG;
+  the live-stamp path subtracts it too), so the earlier HEAD_BUFFER 0.4 /
+  TAIL_TRIM 0.2 double-counted — a head buffer opened the clip early and the
+  tail trim chopped the last word (card_0006: 'jangan banyak alasan ya' lost
+  its tail). Both constants are now 0 (kept named for a future deliberate
+  ring-out).
+- **The track fills a missing edge and extends the END, but never moves the
+  START earlier than our observed appearance.** window_for (word-exact,
+  de-phantomed, same-occurrence-gated) supplies an edge we never saw and
+  extends the end when our clear came early (churn / a quick click loses the
+  tail). But the caption's words weren't on screen before we saw it pop, so
+  an EARLIER track tag is just the ASR's lead and must not pull the clip onto
+  the previous sentence (card_0006: our clean appear 49.05 vs the auto
+  track's 'jangan' at 48.42). Provenance now records start_from / end_from /
+  track_window so which source timed each edge is auditable.
+- Min-clip verified still enforced under Auto (a 0.537s life widens to the
+  0.6 floor; Auto only frees the MAX). No change needed there.
+
+### DEFERRED — the reconciliation: whose timing to trust (open)
+
+The core unsolved question, to return to. Our on-screen timing is usually the
+most accurate, but it fails specifically when **the caption came and went too
+quickly for our scanner to read** (churn, a pause, a typed-on line, a flash) —
+then it's a fragment and the autocaption's window is better. The task is to
+know WHEN our reading is a fragment and switch sources per edge.
+
+- REJECTED referee: sentence length D (block words × pace). The failure is
+  about our detection's TIME RESOLUTION, not how long the sentence is — a fast
+  long line and a slow short line fail on the same thing (did it linger long
+  enough for us to pin both edges). D can't tell us that. (User call.)
+- DIRECTION: the tell is our observed on-screen time vs a FIXED floor tied to
+  our scan cadence (~SCAN_INTERVAL + APPEAR/CLEAR lag). Under it, we flashed-
+  missed it → use the autocaption; above it → trust ours. Open: measure it as
+  video-time duration, or add a real scan-count to the transcript row; and
+  whether DETECTION stamps the "barely-saw-it / timing-unreliable" flag at
+  watch time (it sees the frames) so the builder just reads the flag.
+- The user's fuller ladder for genuinely-missing edges, once the tell exists:
+  saw start not end → end = earliest-block-appearance + D (block words, update
+  with the real clear if it later lands); saw end not start → start = end − D;
+  saw neither → the single autocaption cue at the click (timing only, text may
+  be garbage), unless that cue < ~0.6·D → ; no autocaption → note it and clip
+  = [click − D, click + D] (~2× length, since the click's place in the
+  sentence is unknown). Text-match trust gated by a similarity check (~0.6).
+- Current INTERIM behaviour (this section's card_0006 rule) assumes our
+  appearance is reliable; it gets card_0004 wrong (our appear was itself a
+  churn fragment there, so the track's earlier start was right) — that's the
+  case the fragment-tell will fix.
+
+### 2026-07-09d — sentence translation: flat join, not comma (user-reported)
+
+"My cat gave birth" was coming out "I gave birth to a cat". Not a translator
+problem — Google renders the plain sentence perfectly ("tadi kucing saya
+melahirkan" -> "My cat just gave birth"). The bug was our own: a multi-line
+caption block was sent to the translator COMMA-joined ("tadi kucing, saya
+melahirkan"), and the stray comma made Google parse two clauses -> "the cat,
+I gave birth". The comma-join was an over-fit to card_0074 (one caption that
+happened to wrap at a clause boundary); it breaks the far more common
+mid-clause wrap. Now the sentence is translated FLAT (space-joined, exactly
+as the card displays it). card_0074 reads a touch more awkwardly flat but is
+still correct; every mid-clause wrap is fixed. NO change to the no-LLM rule —
+Google was never the problem. (`builder._translate_fields`.)
+
+### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
+
+Turning the browser's own captions (CC) on or off makes a block of text
+appear/disappear on screen all at once; detection reads it and stamps
+"appeared here" / "cleared here" as if a caption naturally popped — which can
+feed a wrong clip window. We need to recognise a CC toggle (a whole block
+appearing/vanishing at once, not a single caption line cycling) and NOT record
+those as honest appear/clear stamps. Left for later, per the user.

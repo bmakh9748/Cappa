@@ -13,6 +13,8 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 
 **Controls:** everything is behind the small icon at the bottom-left of the screen — click it for a menu: *Pick window* (click a window to lock onto it) · *Select area* (drag a box over just the video/subtitle region, then resize it any time by dragging its border) · *Use video from clipboard* (paste a YouTube URL for exact caption timing/audio — or install `extension/` so it's automatic) · *Settings…* (reopens the startup window) · *Exit*. Hover the icon for status (target · fps · captions · yt). Hovering a detected caption word underlines it; **click it** for its popup (✕ closes it — clicking a word never clicks the video underneath). **Ctrl+Alt+Shift+X** quits from anywhere (also shown next to Exit in the menu). Esc only cancels a pending pick/drag.
 
+**Flashcards:** clicking **Create Anki card** in the word popup saves the draft AND writes it straight into Anki's own collection in the same step — no export button, no import dialog. The only requirement is that Anki itself be closed at that moment (its collection file can only be open by one process); if it's open, the button says so, and the card still syncs automatically the next time you make one.
+
 ## Layout
 
 | Path | Role |
@@ -25,9 +27,9 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 | `cappa/dictionary.py` | Word meanings — Wiktionary definitions, Google as hint + fallback |
 | `cappa/audio.py` | WASAPI loopback ring buffer (record what you hear, clip retroactively) |
 | `cappa/ui/` | Everything you see: the overlay, corner launcher, settings window, word popup |
-| `cappa/detection/` | Everything that finds captions, one stage per file — capture → diff → **neural text detection** (PP-OCRv5 via ONNX) → OCR → classifier → clear-watching — on a background thread |
-| `cappa/source/` | YouTube caption track as the timing oracle: VTT parsing, OCR-line alignment, yt-dlp/ffmpeg, browser bridge |
-| `cappa/flashcard/` | A clicked word → a card draft folder under `cards/card_NNNN/` (audio window choice, screenshot, provenance) |
+| `cappa/detection/` | Everything that finds captions, one stage per file — capture → diff → **neural text detection** (PP-OCRv5 via ONNX) → OCR → clear-watching — on a background thread; every text line found becomes hoverable words |
+| `cappa/source/` | Video-source truth: Cappa's own transcript times the clips; VTT parsing + OCR-line alignment (text provenance), yt-dlp/ffmpeg, browser bridge |
+| `cappa/flashcard/` | A clicked word → a card draft folder under `cards/card_NNNN/` (audio window choice, screenshot, provenance), then straight into Anki (`anki_sync.py`) — live via AnkiConnect when Anki is open, into its collection file when closed |
 | `extension/` | "Cappa Bridge" browser extension: which video + position → the bridge |
 
 Every package's `__init__.py` docstring holds its per-file map — read those first. [AGENTS.md](AGENTS.md) is the structural rulebook for anyone (human or LLM) changing the code.
@@ -44,7 +46,6 @@ small always-on-top windows, load the neural model (a few seconds each) and
 drive the real pipeline against real on-screen pixels — **hands off the mouse
 and keyboard while they run**, anything covering their windows changes what
 they see. The two simulator tests draw cyan outlines around whatever
-detection accepts, so you can watch it work. `tests/bench_*.py` are detector
-speed benchmarks, run individually.
+detection accepts, so you can watch it work.
 
 See [PLAN.md](PLAN.md) for the full architecture and build order.

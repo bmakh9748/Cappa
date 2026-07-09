@@ -82,7 +82,7 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
     in the comment and gets a regression test citing the same number. Each
     card's `metadata.json` is a provenance record precise enough to debug
     from — keep it that way: **add keys, never rename or repurpose them**
-    (a future `.apkg` exporter and old cards both read them).
+    (old cards are read back by the same code as new ones).
 11. **New setting = four touches:** a field in `settings.py`, a row in
     `ui/startup.py`, the push in `app.py`'s `apply_settings()`, and module
     state in the consuming module (read at call time, so Save applies live).

@@ -6,10 +6,7 @@ always-on-top windows, load the neural model (a few seconds, up to ~20 s on
 a busy machine) and drive the real pipeline against real on-screen pixels —
 HANDS OFF the mouse and keyboard while they run. The two simulator tests
 draw cyan outlines around whatever detection accepts, so you can watch it
-work in real time.
-
-`bench_*.py` files are benchmarks, not tests — run them individually when
-tuning detector speed."""
+work in real time."""
 
 import os
 import subprocess
@@ -21,15 +18,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UNIT = [
     "test_diff.py",          # frame diff: change masks + settle debounce
     "test_merge.py",         # detector fragments -> one box per text line
-    "test_classifier.py",    # caption/not-caption geometry + text rules
-    "test_tracking.py",      # ledger: live/seen, fingerprints, clear debounce
+    "test_classifier.py",    # junk-text tag (clock/URL/handle off cards)
+    "test_tracking.py",      # ledger: live boxes, fingerprints, clear debounce
     "test_watcher.py",       # instant caption-vanished detection
     "test_translate.py",     # popup word cleanup (pure, no network)
     "test_dictionary.py",    # Wiktionary defs: format, ordering, fallback
+    "test_lexicon.py",       # per-language word list: splits glued OCR runs
     "test_settings.py",      # settings load/save + translate target switch
     "test_audio.py",         # loopback ring buffer: clip math, device rebind
+    "test_screen_recorder.py",  # area recorder's 5 GB self-cap (prune, no ffmpeg)
     "test_flashcard.py",     # draft folders: text, provenance, media paths
+    "test_anki_sync.py",     # per-card Anki delivery: live (faked add-on) +
+                             #   closed (throwaway collection file) + receipts
     "test_youtube_source.py",  # VTT parse + OCR->caption alignment (fixtures)
+    "test_sentence_fill.py",   # word-at-a-time sentence completion (ours-first)
+    "test_source_gate.py",     # captions attach to a video only while it plays
     "test_ocr_transcript.py",  # per-video ledger of watched caption rows
     "test_bridge.py",        # localhost browser bridge: POST/GET + play_time
     "test_ocr_read.py",      # rec reads Japanese + English (loads the model)
@@ -39,7 +42,7 @@ LIVE = [
     "test_overlay_popout.py",    # popout tracking, deselect-on-close
     "test_overlay_resize.py",    # region edge-resizing, bar auto-hide
     "test_captions_live.py",     # overlay draws/clears a real caption box
-    "test_area_rescan.py",       # user-drawn area judges pre-existing caption
+    "test_area_rescan.py",       # pre-existing text boxed at lock-on + refresh
     "test_browser_sim.py",       # whole-browser layout + churning chat
     "test_realistic_video.py",   # 5 caption styles over a moving scene
 ]
