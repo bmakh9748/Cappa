@@ -3,13 +3,12 @@ __pycache__/
 *.pyo
 .venv/
 venv/
-*.apkg
-media/
-cards/
-screenshots/
-transcripts/
-*.mp3
-*.png
 .env
+
+# The app's own data and caches, never the repo's.
+cards/
+transcripts/
+recordings/
 cappa/source/.cache/
+lexicon_packs/
 settings.json

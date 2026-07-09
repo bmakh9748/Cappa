@@ -4,8 +4,7 @@ mss
 numpy
 rapidocr
 onnxruntime
-ffmpeg-python
-genanki
+anki
 deep-translator
 PyAudioWPatch
 yt-dlp[default]
