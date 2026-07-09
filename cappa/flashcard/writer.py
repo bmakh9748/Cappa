@@ -73,9 +73,12 @@ def _metadata(draft, folder):
         "audio_seconds": draft.audio_seconds,
         "audio_window": draft.audio_window,
         "video_source": draft.source_meta,
-        # The front/back layout and Anki-style template configured when this
-        # card was made, so the future .apkg export renders it the way the
-        # user had it set then.
+        # Set when a word-at-a-time sentence was completed from this run's
+        # transcript + the caption track (holds the original OCR block).
+        "sentence_assembly": draft.assembled,
+        # The front/back layout and Anki-style template configured when
+        # this card was made -- provenance only (the Anki notetype itself
+        # is created once by anki_sync from the then-current design).
         "card_layout": prefs.layout(),
         "card_template": prefs.template(),
         "notes": list(draft.notes),

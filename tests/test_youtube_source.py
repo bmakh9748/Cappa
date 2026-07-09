@@ -166,16 +166,19 @@ def test_prune_cache():
               "cookies kept")
 
 
-def test_builder_prefers_caption_track():
+def test_builder_block_life_times_the_clip():
+    """THE window rule (user spec, 2026-07-09): with no track match, the clip
+    is purely the block's on-screen life — earliest appearance to latest
+    clear, no buffer (the stamps are already detector-lag-corrected)."""
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence(
             "dari pemikiran muncullah kemajuan", (10, 20, 300, 50),
             [("dari", (10, 20, 50, 50)), ("kemajuan", (60, 20, 300, 50))])
-        match = {"start": 16.44, "end": 18.86, "score": 0.96, "i": 0, "j": 4,
-                 "text": "Dari pemikiran, muncullah kemajuan."}
+        sentence.appeared_at = 100.0    # -> video 16.5 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 18.8
         meta = {"video_id": "abc", "url": "u", "title": "t", "channel": "c",
                 "caption_lang": "id", "caption_auto": False}
-        src = FakeSource(match, meta)
+        src = FakeSource(None, meta, appear_t=16.5, clear_t=18.8)
         # recorder=None on purpose: if the source path didn't win, the fallback
         # would leave an "audio recorder not running" note we can detect.
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
@@ -183,16 +186,53 @@ def test_builder_prefers_caption_track():
                             screenshot_note="no shot", source=src)
         assert src.sliced is not None, "source clip was never cut"
         assert draft.audio_path and os.path.exists(draft.audio_path)
+        start, end, _, _ = src.sliced
+        assert abs(start - 16.5) < 1e-6, src.sliced   # no head buffer
+        assert abs(end - 18.8) < 1e-6, src.sliced      # no tail trim
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["audio_window"]["source"] == "caption_track", m["audio_window"]
-        assert m["audio_window"]["matched_by"] == "text", m["audio_window"]
-        assert abs(m["audio_window"]["start"] - 16.44) < 1e-6
+        assert m["audio_window"]["source"] == "source_audio", m["audio_window"]
+        assert m["audio_window"]["matched_by"] == "block_life", m["audio_window"]
+        assert m["video_source"]["start_seconds"] == 16.5
+        assert m["video_source"]["start_from"] == "onscreen"
+        assert m["video_source"]["end_seconds"] == 18.8
+        assert m["video_source"]["end_from"] == "onscreen"
         assert m["video_source"]["caption_lang"] == "id"
-        assert m["video_source"]["caption_auto"] is False
         assert not any("recorder" in n for n in m["notes"]), m["notes"]
-        print("PASS builder: caption-track audio preferred (window 16.44-18.86)")
+        print("PASS builder: pure on-screen life times the clip (no track)")
+
+
+def test_builder_track_extends_end_not_start():
+    """card_0006: we cleanly saw the line appear at 49.05 and lose it early
+    at 49.52 (a churn/quick-click fragment of its tail). The matched track
+    (48.42-50.22) must EXTEND the end past our early clear, but must NOT pull
+    the start earlier than our clean appearance — the auto track's 'jangan'
+    tag at 48.42 is ASR lead and would open the clip on the previous line."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence(
+            "jangan banyak alasan ya", (0, 0, 300, 50),
+            [("banyak", (100, 0, 200, 50))])
+        sentence.appeared_at = 100.0    # -> video 49.05 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 49.52
+        match = {"start": 48.42, "end": 50.219, "score": 1.0,
+                 "text": "jangan banyak alasan ya"}
+        src = FakeSource(match, {"video_id": "vid", "caption_lang": "id",
+                                 "caption_auto": True},
+                         appear_t=49.05, clear_t=49.52)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src, near_t=49.5)
+        start, end, _, _ = src.sliced
+        assert abs(start - 49.05) < 1e-6, src.sliced   # OUR appear, not 48.42
+        assert abs(end - 50.219) < 1e-6, src.sliced     # track extends the end
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["video_source"]["start_from"] == "onscreen", m["video_source"]
+        assert m["video_source"]["end_from"] == "track", m["video_source"]
+        assert m["video_source"]["track_window"] == [48.42, 50.219]
+        print("PASS builder: the track extends the end but never the start")
 
 
 def test_window_for_near():
@@ -311,64 +351,48 @@ def test_window_at_prefers_played_line():
 
 
 def test_builder_rebuilds_from_onscreen_life():
-    """card_0077 end-to-end: the position window is the PREVIOUS line
-    ('di luar Nalar' — the track never heard the clicked sentence), so the
-    row's appearance maps AFTER that window ends. No track window is right
-    there; the clip must be rebuilt from the row's on-screen life and the
-    provenance must say so."""
+    """card_0077 end-to-end: the track never heard the clicked sentence at
+    all. The clip is the row's on-screen life regardless — no clear yet, so
+    the end is predicted from the video's spoken pace."""
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence("Istrinya juga dipikir, mas!", (0, 0, 10, 10),
                             [("dipikir", (0, 0, 5, 5))])
         sentence.appeared_at = 100.0    # monotonic; fake maps it to 832.0
-        pos = {"start": 829.92, "end": 831.7, "score": 0.0,
-               "text": "di luar Nalar", "by": "position"}
         src = FakeSource(None, {"video_id": "vid", "caption_lang": "id",
-                                "caption_auto": True}, pos=pos,
-                         appear_t=832.0)
+                                "caption_auto": True}, appear_t=832.0)
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src,
                             near_t=833.806)
         start, end, _, _ = src.sliced
-        # life = [832.0 - 1.0 backshift, click + 0.4 tail = 834.206]; the
-        # cap around its midpoint keeps the sentence, none of either
-        # neighboring line.
-        assert start >= 831.0 - 1e-6 and end <= 834.206 + 1e-6, src.sliced
-        assert start <= 832.0 <= end, src.sliced
+        # start = appearance (no buffer); end = predicted spoken end
+        # (playback floor 833.806 + tail).
+        assert abs(start - 832.0) < 1e-6, src.sliced
+        assert 832.0 <= end <= 834.206 + 1e-6, src.sliced
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["audio_window"]["matched_by"] == "onscreen", m["audio_window"]
-        assert m["video_source"]["matched_by"] == "onscreen"
-        assert m["video_source"]["onscreen_appeared"] == 832.0
-        assert m["video_source"]["anchored_at_appearance"] == 832.0
-        assert any("on-screen timing" in n for n in m["notes"]), m["notes"]
+        assert m["audio_window"]["matched_by"] == "block_life", m["audio_window"]
+        assert m["video_source"]["start_seconds"] == 832.0
+        assert m["video_source"]["end_from"] == "predicted", m["video_source"]
         print("PASS builder: a line the track never heard is clipped from "
               "its on-screen life")
 
 
-def test_unsteady_appearance_cannot_anchor():
-    """Cards 2-3 of 2026-07-07: one re-watched line, clicked twice, produced
-    two DIFFERENT wrong clips — the user had seeked back, the row 'appeared'
-    at the seek landing, and that stamp was trusted. On card 2 the landing
-    mapped past the position window's end, so the card_0077 rebuild threw
-    the good window away and kept only the sentence's tail; on card 3 it
-    anchored the cap. With the bridge witnessing the seek (steady_at ->
-    False) the stamp must be ignored: the position window survives, both
-    clicks agree, and the card says why. steady=True keeps the old rebuild
-    (the gate, not the rebuild, is what changed)."""
-    def click(steady):
+def test_seek_landing_yields_to_logged_sighting():
+    """Cards 2-3 of 2026-07-07: a re-watched line's live stamp is the SEEK
+    LANDING, not the caption's pop. When this run's transcript logged the
+    real sighting, the earliest time wins and the clip opens at the true
+    pop; without one, the landing stamp is all anyone knows and the clip
+    opens there."""
+    def click(sighting):
         tmp = tempfile.mkdtemp()
         sentence = Sentence("LU GAK BAYAR DIA BUAT NEMENIN LU",
                             (0, 0, 10, 10), [("NEMENIN", (0, 0, 5, 5))])
-        sentence.appeared_at = 100.0    # maps to 201.313 — the seek landing,
-                                        # PAST the position window's end
-        pos = {"start": 196.76, "end": 201.26, "score": 0.0,
-               "text": "I didn't pay him to accompany Valoran,",
-               "by": "position"}
+        sentence.appeared_at = 100.0    # maps to 201.313 — the seek landing
         src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
-                                "caption_auto": True}, pos=pos,
-                         appear_t=201.313, steady=steady)
+                                "caption_auto": True},
+                         appear_t=201.313, sighting=sighting)
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src,
@@ -377,19 +401,19 @@ def test_unsteady_appearance_cannot_anchor():
                   encoding="utf-8") as f:
             return src.sliced, json.load(f)
 
-    sliced, m = click(steady=False)
+    # The first watch logged the row popping at 199.9 and leaving at 201.4:
+    # that life IS the window, the landing stamp adds nothing new.
+    sliced, m = click(sighting={"start": 199.9, "end": 201.4})
     start, end, _, _ = sliced
-    assert m["audio_window"]["matched_by"] == "position", m["audio_window"]
-    assert abs(end - 201.26) < 1e-6, sliced      # window end kept
-    assert start <= 199.0, sliced                # not the landing's tail
-    assert "anchored_at_appearance" not in m["video_source"], m["video_source"]
-    assert any("pause/seek" in n for n in m["notes"]), m["notes"]
+    assert abs(start - 199.9) < 1e-6, sliced
+    assert abs(end - 201.4) < 1e-6, sliced
+    assert m["video_source"]["start_seconds"] == 199.9, m["video_source"]
 
-    sliced2, m2 = click(steady=True)
-    assert m2["audio_window"]["matched_by"] == "onscreen", m2["audio_window"]
-    assert abs(sliced2[0] - (201.313 - 1.0)) < 1e-6, sliced2
-    print("PASS builder: a seek-landing appearance is refused — the "
-          "position window survives; a steady one still rebuilds")
+    # No history: the landing is the earliest known time.
+    sliced2, m2 = click(sighting=None)
+    assert m2["audio_window"]["matched_by"] == "block_life", m2["audio_window"]
+    assert sliced2[0] <= 201.313 + 1e-6, sliced2
+    print("PASS builder: a logged sighting outranks a seek-landing stamp")
 
 
 def test_recalled_sighting_anchors_rewatch():
@@ -399,7 +423,6 @@ def test_recalled_sighting_anchors_rewatch():
     the caption popped up'. The recalled sighting must anchor the clip's
     start and, with no live clear, bound its end."""
     from cappa.flashcard import timing as timing_mod
-    from cappa.flashcard.clip import APPEAR_BACKSHIFT, APPEAR_TRIM_GRACE
     old_min, old_max = timing_mod.MIN_CLIP, timing_mod.MAX_CLIP
     timing_mod.set_clip_bounds(max_clip=5.0)   # room to see the true window
     try:
@@ -407,62 +430,60 @@ def test_recalled_sighting_anchors_rewatch():
             sentence = Sentence("Muraji BIAR DIA DAPAT KILL!", (0, 0, 10, 10),
                                 [("DAPAT", (0, 0, 5, 5))])
             sentence.appeared_at = 100.0    # live stamp: the rewind landing
-            pos = {"start": 240.149, "end": 244.649, "score": 0.0,
-                   "text": "so he gets the kill", "by": "position"}
             src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
-                                    "caption_auto": True}, pos=pos,
-                             appear_t=244.507, steady=False,
+                                    "caption_auto": True},
+                             appear_t=244.507,
                              sighting={"start": 243.4, "end": 244.5})
             draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                                 translator=lambda t, s="": "tx:" + t,
                                 screenshot_note="no shot", source=src,
                                 near_t=244.249)
             start, end, _, _ = src.sliced
-            lead = APPEAR_BACKSHIFT + APPEAR_TRIM_GRACE
-            assert abs(start - (243.4 - lead)) < 1e-6, src.sliced  # not 240.1
-            assert abs(end - 244.5) < 1e-6, src.sliced  # the sighting's clear
+            assert abs(start - 243.4) < 1e-6, src.sliced  # not 244.5
+            assert abs(end - 244.5) < 1e-6, src.sliced
             with open(os.path.join(draft.folder_path, "metadata.json"),
                       encoding="utf-8") as f:
                 m = json.load(f)
-            assert m["video_source"]["anchored_at_sighting"] == 243.4, (
+            assert m["video_source"]["start_seconds"] == 243.4, (
                 m["video_source"])
-            assert m["video_source"]["sighting_cleared"] == 244.5
-            assert any("previous sighting" in n for n in m["notes"]), m["notes"]
+            assert m["video_source"]["end_seconds"] == 244.5
     finally:
         timing_mod.set_clip_bounds(min_clip=old_min, max_clip=old_max)
     print("PASS builder: a rewatched row anchors at its logged first "
           "sighting")
 
 
-def test_anchor_trims_runon_start():
-    """card_0005: paused mid-life and clicked; the ASR run-on walked the
-    position window 4s into the PREVIOUS sentences, and because the window
-    already sat at cap length the appearance only 'centred' it — no trim
-    ('started too early by a lot'). A trusted appearance must BOUND the
-    start: backshift + grace behind the pop, nothing older."""
+def test_rebirth_anchors_at_first_sighting():
+    """card_0002 (2026-07-09), real numbers: animated art next to the
+    glyphs churned the row — the ledger cleared and re-accepted the SAME
+    caption mid-life, and the reborn row's stamp mapped to 40.569 for a
+    caption whose logged sighting popped at 39.11 and cleared at 40.569.
+    Anchoring at the rebirth cut a clip that missed the clicked word
+    entirely. A live stamp preceded that closely by the same text's logged
+    clear is a rebirth: the sighting's start anchors, its clear ends."""
     with tempfile.TemporaryDirectory() as tmp:
-        sentence = Sentence('NGAPAIN KAU LIHAT "STREAM" AKU?', (0, 0, 10, 10),
-                            [("KAU", (0, 0, 5, 5))])
-        sentence.appeared_at = 100.0
-        pos = {"start": 65.659, "end": 70.159, "score": 0.0,
-               "text": "previous sentences plus this one", "by": "position"}
-        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
-                                "caption_auto": True}, pos=pos,
-                         appear_t=69.7, steady=True)
+        sentence = Sentence("tadi kucing saya melahirkan-I", (0, 0, 10, 10),
+                            [("melahirkan-I", (0, 0, 5, 5))])
+        sentence.appeared_at = 100.0    # live stamp: the rebirth
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "id",
+                                "caption_auto": True},
+                         appear_t=40.569,
+                         sighting={"start": 39.11, "end": 40.569})
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src,
-                            near_t=69.759)
+                            near_t=40.569)
         start, end, _, _ = src.sliced
-        from cappa.flashcard.clip import APPEAR_BACKSHIFT, APPEAR_TRIM_GRACE
-        lead = APPEAR_BACKSHIFT + APPEAR_TRIM_GRACE
-        assert abs(start - (69.7 - lead)) < 1e-6, src.sliced   # not 65.659
-        assert end <= 70.159 + 1e-6, src.sliced
+        assert abs(start - 39.11) < 1e-6, src.sliced   # the real pop
+        assert abs(end - 40.569) < 1e-6, src.sliced    # the real exit
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["video_source"]["anchored_at_appearance"] == 69.7
-        print("PASS builder: the seen start bounds a run-on position window")
+        assert m["video_source"]["start_seconds"] == 39.11, (
+            m["video_source"])
+        assert m["video_source"]["end_seconds"] == 40.569
+    print("PASS builder: a reborn row anchors at the same line's logged "
+          "sighting")
 
 
 def test_builder_waits_for_the_clear():
@@ -477,10 +498,8 @@ def test_builder_waits_for_the_clear():
         sentence = Sentence("KALO PAGI PILIH KOBO", (0, 0, 10, 10),
                             [("PAGI", (0, 0, 5, 5))])
         sentence.appeared_at = 100.0    # -> video 822.5 (fake mapping)
-        pos = {"start": 821.0, "end": 860.0, "score": 0.0,
-               "text": "giant blob cue", "by": "position"}
         src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
-                                "caption_auto": False}, pos=pos,
+                                "caption_auto": False},
                          appear_t=822.5, clear_t=823.4, paused=False)
 
         def clear_later():
@@ -493,11 +512,13 @@ def test_builder_waits_for_the_clear():
                             screenshot_note="no shot", source=src,
                             near_t=828.0)
         start, end, _, _ = src.sliced
-        assert abs(end - 823.4) < 1e-6, src.sliced   # the awaited clear
+        # ends at the awaited clear (provenance is exact; the clip may widen
+        # a touch past it to satisfy the min-clip floor), never at the click.
+        assert 823.4 - 1e-6 <= end <= 823.4 + 0.11, src.sliced
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["video_source"]["onscreen_end"] == 823.4, m["video_source"]
+        assert m["video_source"]["end_seconds"] == 823.4, m["video_source"]
         print("PASS builder: a playing video's clip waits for the clear "
               "and ends there")
 
@@ -536,11 +557,8 @@ def test_builder_life_outranks_auto_text():
         sentence.appeared_at = 100.0    # monotonic; fake maps it to 830.0
         match = {"start": 834.0, "end": 836.5, "score": 0.9,
                  "text": "kobo kanaeru main valo", "by": "text"}
-        pos = {"start": 829.5, "end": 831.9, "score": 0.0,
-               "text": "speech run", "by": "position"}
         src = FakeSource(match, {"video_id": "vid", "caption_lang": "id",
-                                 "caption_auto": True}, pos=pos,
-                         appear_t=830.0)
+                                 "caption_auto": True}, appear_t=830.0)
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src,
@@ -551,8 +569,8 @@ def test_builder_life_outranks_auto_text():
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["audio_window"]["matched_by"] == "position", m["audio_window"]
-        assert m["video_source"]["anchored_at_appearance"] == 830.0
+        assert m["audio_window"]["matched_by"] == "block_life", m["audio_window"]
+        assert m["video_source"]["start_seconds"] == 830.0
         print("PASS builder: the seen life beats a strong auto-track match")
 
 
@@ -575,54 +593,53 @@ def test_builder_onscreen_when_track_has_hole():
                             near_t=851.5)
         assert src.sliced is not None, "no source clip was cut"
         start, end, _, _ = src.sliced
-        # life = [849.2 (appearance - backshift), 851.9 (click + tail)]
-        assert start >= 849.2 - 1e-6 and end <= 851.9 + 1e-6, src.sliced
-        assert start <= 850.2 <= end, src.sliced
+        # life = [850.2 (no buffer), predicted spoken end]
+        assert abs(start - 850.2) < 1e-6, src.sliced
+        assert 850.2 <= end <= 851.9 + 1e-6, src.sliced
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["audio_window"]["matched_by"] == "onscreen", m["audio_window"]
-        assert m["video_source"]["matched_by"] == "onscreen"
-        assert m["video_source"]["onscreen_appeared"] == 850.2
-        assert any("on-screen timing" in n for n in m["notes"]), m["notes"]
+        assert m["audio_window"]["matched_by"] == "block_life", m["audio_window"]
+        assert m["video_source"]["start_seconds"] == 850.2
         print("PASS builder: a track hole still cuts source audio from the "
               "row's on-screen life")
 
 
-def test_builder_position_fallback():
-    """OCR text that isn't in the caption track (a translated burned-in sub, or
-    a garbled auto-caption at the real spot) must fall back to the playback
-    position: window_at at click-time near_t."""
+def test_builder_clip_always_covers_the_click():
+    """A block whose life outruns the clip cap: the cap must centre on the
+    CLICK, so the clicked word's moment stays inside whatever gets cut."""
     with tempfile.TemporaryDirectory() as tmp:
-        sentence = Sentence(
-            "english translation not in the track", (0, 0, 10, 10),
-            [("english", (0, 0, 5, 5)), ("track", (6, 0, 10, 10))])
-        pos = {"start": 40.0, "end": 42.5, "score": 0.0,
-               "text": "spoken words", "by": "position"}
-        src = FakeSource(None, {"video_id": "vid", "caption_lang": "ja",
-                                "caption_auto": True}, pos=pos)
+        sentence = Sentence("spoken words here", (0, 0, 10, 10),
+                            [("spoken", (0, 0, 5, 5)), ("here", (6, 0, 10, 10))])
+        sentence.appeared_at = 100.0    # -> video 6.0 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 16.0: a 10 s life
+        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
+                                "caption_auto": True},
+                         appear_t=6.0, clear_t=16.0)
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
-                            screenshot_note="no shot", source=src, near_t=42.0)
-        assert src.sliced is not None, "position window was not used"
+                            screenshot_note="no shot", source=src,
+                            near_t=13.5)
+        start, end, _, _ = src.sliced
+        assert abs((end - start) - 3.0) < 1e-6, src.sliced   # the cap
+        assert start <= 13.5 <= end, (
+            "clip %r does not contain the clicked word at 13.5" % (src.sliced,))
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["audio_window"]["source"] == "caption_track"
-        assert m["audio_window"]["matched_by"] == "position", m["audio_window"]
-        assert abs(m["audio_window"]["start"] - 40.0) < 1e-6
-        assert m["video_source"]["matched_by"] == "position"
-        print("PASS builder: position window used when text doesn't match")
+        assert m["audio_window"]["end"] >= 13.5, m["audio_window"]
+        print("PASS builder: the clip cap centres on the click "
+              "(%.2f-%.2f)" % (start, end))
 
 
 def test_builder_appearance_anchor():
-    """A position-matched clip centres BEHIND the caption's appearance
-    stamp, not around the playback position at card time: card_0061 was
-    paused past the line and the old near_t-centred cap cut the sentence's
-    start; cards 0069/0071 showed the stamp itself trails the speech by a
-    variable ~0.7-1.7s, so a window opened forward from it misses the
-    word. The window must reach the utterance's start and still contain
-    the stamped moment."""
+    """A position-matched clip anchors at the caption's appearance stamp,
+    not around the playback position at card time: card_0061 was paused
+    past the line and the old near_t-centred cap cut the sentence's start.
+    The stamp is already lag-corrected at mapping time (latency.py
+    APPEAR_LAG) — the window opens AT it, no blanket backshift (user call,
+    2026-07-09: the same row watched three times stamped within ~170 ms;
+    1.8s of worst-case padding put the previous sentence on most cards)."""
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence("korban pisang lagi kah", (0, 0, 10, 10),
                             [("korban", (0, 0, 5, 5))])
@@ -637,110 +654,45 @@ def test_builder_appearance_anchor():
                             screenshot_note="no shot", source=src,
                             near_t=227.0)
         start, end, _, _ = src.sliced
-        # centre = 225.4 - 1.0 backshift; the run starts at 223.2 and the
-        # cap is 2.5s, so the window hugs [223.2, 225.7]: it reaches the
-        # utterance's start AND keeps the stamped moment inside.
-        assert start <= 225.2 and end >= 225.4, src.sliced
-        assert end <= 227.6 + 1e-6, src.sliced
+        # start = the appearance (no buffer); the position cue is only
+        # consulted to predict a missing end, never to move the start.
+        assert abs(start - 225.4) < 1e-6, src.sliced
+        assert 225.4 <= end, src.sliced
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["video_source"]["anchored_at_appearance"] == 225.4, (
+        assert m["video_source"]["start_seconds"] == 225.4, (
             m["video_source"])
         assert m["video_source"]["click_position"] == 227.0
-        print("PASS builder: position clip centres behind the appearance")
-
-
-def test_builder_backshift_covers_late_stamp():
-    """cards 0069/0071 (VTT ground truth): the clicked row's cue ran
-    822.6-823.5 but its appearance stamped 823.3 on one watch and 824.3 on
-    the next. A forward window from the stamp held only the NEXT rows'
-    audio both times; the backshifted centre must keep the row's cue in
-    the clip even on the 824.3 (worst) stamp."""
-    with tempfile.TemporaryDirectory() as tmp:
-        text = "KALO PAGI PILIH KOBO KALO MALAM PILIH MIKU"
-        toks = text.split()
-        sentence = Sentence(text, (0, 0, 800, 10),
-                            [(w, (i * 100, 0, i * 100 + 90, 10))
-                             for i, w in enumerate(toks)])
-        sentence.appeared_at = 100.0    # monotonic; fake maps it to 824.28
-        pos = {"start": 818.0, "end": 860.0, "score": 0.0,
-               "text": "giant blob cue", "by": "position"}
-        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
-                                "caption_auto": False}, pos=pos,
-                         appear_t=824.28)
-        draft = build_draft(sentence.words[1], None, None, out_dir=tmp,
-                            translator=lambda t, s="": "tx:" + t,
-                            screenshot_note="no shot", source=src,
-                            near_t=825.0)
-        start, end, _, _ = src.sliced
-        # centre = 824.28 - 1.0 -> window [822.03, 824.53]: PAGI's real cue
-        # (822.6-823.5) sits wholly inside. The old forward window
-        # [824.28, 826.78] contained none of it.
-        assert start <= 822.6 and end >= 823.5, src.sliced
-        with open(os.path.join(draft.folder_path, "metadata.json"),
-                  encoding="utf-8") as f:
-            m = json.load(f)
-        assert m["video_source"]["anchored_at_appearance"] == 824.28
-        assert m["video_source"]["click_position"] == 825.0
-        print("PASS builder: backshifted centre survives a late row stamp")
+        print("PASS builder: the clip opens at the appearance stamp")
 
 
 def test_builder_seen_clear_ends_clip():
-    """A SEEN clear ends the clip exactly there — no buffer: the clear
-    stamp already trails the real vanish, so padding it just invites the
-    next line's audio (user call). Only the pause path, where the end is
-    unknown, keeps a small tail (the backshift test covers it)."""
+    """A SEEN clear ends the clip exactly there — no trim: the stamp is
+    already lag-corrected, and anything past it invites the next line's
+    audio (user call)."""
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence("KALO PAGI PILIH KOBO", (0, 0, 10, 10),
                             [("PAGI", (0, 0, 5, 5))])
         sentence.appeared_at = 100.0    # -> video 822.5 (fake mapping)
         sentence.cleared_at = 106.0     # -> video 823.4
-        pos = {"start": 821.0, "end": 860.0, "score": 0.0,
-               "text": "giant blob cue", "by": "position"}
         src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
-                                "caption_auto": False}, pos=pos,
+                                "caption_auto": False},
                          appear_t=822.5, clear_t=823.4)
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src,
                             near_t=828.0)
         start, end, _, _ = src.sliced
-        assert abs(end - 823.4) < 1e-6, src.sliced   # exactly the clear
-        assert start <= 822.5, src.sliced
+        # exact edges in provenance; the clip may widen symmetrically a touch
+        # to meet the min-clip floor (life here is 0.9s).
+        assert 823.4 - 0.06 <= end <= 823.4 + 0.06, src.sliced
+        assert 822.5 - 0.06 <= start <= 822.5 + 0.06, src.sliced
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["video_source"]["onscreen_end"] == 823.4, m["video_source"]
-        print("PASS builder: a seen clear ends the clip with no buffer")
-
-
-def test_builder_distrusts_impossible_stamp():
-    """An appearance mapped LATER than where the user paused is impossible
-    for a row they were reading (a re-read's stamp or a paused-seek mapping
-    artifact): the click position anchors the cap instead."""
-    with tempfile.TemporaryDirectory() as tmp:
-        sentence = Sentence("KALO PAGI PILIH KOBO", (0, 0, 10, 10),
-                            [("PAGI", (0, 0, 5, 5))])
-        sentence.appeared_at = 100.0    # monotonic; fake maps it to 830.0
-        pos = {"start": 818.0, "end": 860.0, "score": 0.0,
-               "text": "giant blob cue", "by": "position"}
-        src = FakeSource(None, {"video_id": "vid", "caption_lang": "en",
-                                "caption_auto": False}, pos=pos,
-                         appear_t=830.0)
-        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
-                            translator=lambda t, s="": "tx:" + t,
-                            screenshot_note="no shot", source=src,
-                            near_t=824.0)
-        start, end, _, _ = src.sliced
-        assert abs((start + end) / 2.0 - 824.0) < 1e-6, src.sliced
-        with open(os.path.join(draft.folder_path, "metadata.json"),
-                  encoding="utf-8") as f:
-            m = json.load(f)
-        assert "anchored_at_appearance" not in m["video_source"], (
-            m["video_source"])
-        assert m["video_source"]["click_position"] == 824.0
-        print("PASS builder: a stamp after the pause is distrusted")
+        assert m["video_source"]["end_seconds"] == 823.4, m["video_source"]
+        print("PASS builder: a seen clear ends the clip (no trim)")
 
 
 def test_builder_loopback_rescue():
@@ -768,26 +720,28 @@ def test_builder_loopback_rescue():
         sentence = Sentence(
             "ku bawa lagi nih", (0, 0, 10, 10),
             [("ku", (0, 0, 5, 5)), ("bawa", (6, 0, 10, 10))])
-        pos = {"start": 41.0, "end": 43.0, "score": 0.0,
-               "text": "spoken words", "by": "position"}
-        src = FakeSource(None, {"video_id": "vid"}, pos=pos,
+        sentence.appeared_at = 100.0    # -> video 41.5 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 42.8
+        src = FakeSource(None, {"video_id": "vid"},
+                         appear_t=41.5, clear_t=42.8,
                          mono=(700010.0, 700012.0), clip_fails=True)
         rec = FakeRecorder()
         draft = build_draft(sentence.words[1], None, rec, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src, near_t=42.0)
         assert rec.cut is not None, "loopback rescue never cut"
-        assert abs(rec.cut[0] - (700010.0 - 0.15)) < 1e-6, rec.cut
+        assert abs(rec.cut[0] - 700010.0) < 1e-6, rec.cut
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["audio_window"]["source"] == "loopback_caption_timed", (
+        assert m["audio_window"]["source"] == "loopback_block_timed", (
             m["audio_window"])
-        assert m["audio_window"]["matched_by"] == "position"
+        assert m["audio_window"]["matched_by"] == "block_life"
         assert any("source audio unavailable" in n for n in m["notes"]), (
             m["notes"])
-        assert any("loopback with caption timing" in n for n in m["notes"])
-        print("PASS builder: loopback rescue cuts caption-timed clock window")
+        assert any("loopback with on-screen timing" in n for n in m["notes"])
+        print("PASS builder: loopback rescue cuts the block-timed clock "
+              "window")
 
 
 def test_pick_subtitle_orig():
@@ -840,55 +794,23 @@ def test_pick_subtitle_orig():
     print("PASS pick_subtitle: language beats source; 'ab' never wins")
 
 
-def test_choose_window():
-    """The decision core: a strong, nearby text match is trusted for its
-    precision; a WEAK text match still wins when it overlaps the position
-    window (they agree on the moment, and the text match spans the whole
-    on-screen sentence where position is just the speech chunk around the
-    click — card_0044); a text match elsewhere loses to position."""
-    from cappa.flashcard.clip import choose_window
-    strong_near = {"start": 30.0, "end": 33.0, "score": 0.90, "by": "text"}
-    strong_far = {"start": 60.0, "end": 63.0, "score": 0.90, "by": "text"}
-    weak_near = {"start": 30.0, "end": 33.0, "score": 0.66, "by": "text"}
-    weak_off = {"start": 38.0, "end": 41.0, "score": 0.66, "by": "text"}
-    pos = {"start": 29.5, "end": 33.5, "score": 0.0, "by": "position"}
-    assert choose_window(strong_far, None, None) is strong_far   # no position
-    assert choose_window(strong_near, pos, 31.0) is strong_near  # strong+near
-    assert choose_window(strong_far, pos, 31.0) is pos           # strong but far
-    assert choose_window(weak_near, pos, 31.0) is weak_near      # weak, agrees
-    assert choose_window(weak_off, pos, 31.0) is pos             # weak, apart
-    assert choose_window(weak_near, None, 31.0) is weak_near     # weak, no pos
-    # The 2026-07-07 priority: a SEEN on-screen life outranks any AUTO-track
-    # match — even a strong one — while a human-made track keeps its rank.
-    assert choose_window(strong_near, pos, 31.0,
-                         auto=True, has_life=True) is pos
-    assert choose_window(strong_near, None, 31.0,
-                         auto=True, has_life=True) is None   # -> on-screen
-    assert choose_window(strong_near, pos, 31.0,
-                         auto=True, has_life=False) is strong_near
-    assert choose_window(strong_near, pos, 31.0,
-                         auto=False, has_life=True) is strong_near
-    print("PASS choose_window: strong+near wins; weak wins only when it "
-          "overlaps the position window; a seen life outranks auto matches")
-
-
 def test_builder_falls_back_when_no_match():
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence(
             "something not in the track", (0, 0, 10, 10),
             [("something", (0, 0, 5, 5)), ("track", (6, 0, 10, 10))])
-        src = FakeSource(None, {})   # window_for -> None: line isn't in track
+        src = FakeSource(None, {})   # no stamps, no sightings: no life
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src)
-        assert src.sliced is None, "should not have cut a clip on no match"
+        assert src.sliced is None, "should not have cut a clip with no life"
         with open(os.path.join(draft.folder_path, "metadata.json"),
                   encoding="utf-8") as f:
             m = json.load(f)
-        assert m["video_source"] is None, "no match must not set video_source"
+        assert m["video_source"] is None, "no life must not set video_source"
         assert m["audio_window"] is None, m["audio_window"]
         assert any("recorder" in n for n in m["notes"]), m["notes"]
-        print("PASS builder: no caption match -> loopback fallback path")
+        print("PASS builder: no mappable life -> loopback fallback path")
 
 
 def test_builder_snaps_ocr_to_track():
@@ -900,10 +822,12 @@ def test_builder_snaps_ocr_to_track():
         sentence = Sentence(
             "وغير معروفا", (0, 0, 200, 40),
             [("وغير", (0, 0, 90, 40)), ("معروفا", (100, 0, 200, 40))])
+        sentence.appeared_at = 100.0    # -> video 10.2 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 11.8
         match = {"start": 10.0, "end": 12.0, "score": 0.82,
                  "text": "وغير معروف", "by": "text"}
         meta = {"video_id": "x", "caption_lang": "ar", "caption_auto": False}
-        src = FakeSource(match, meta)
+        src = FakeSource(match, meta, appear_t=10.2, clear_t=11.8)
         calls = []
 
         def spy_translate(t, s=""):
@@ -1018,47 +942,49 @@ def test_builder_skips_audio_without_video():
         assert m["audio"] is None, m["audio"]
         assert any("no YouTube video detected" in n for n in m["notes"]), (
             m["notes"])
-        assert any("caption track unavailable" in n for n in m["notes"])
         print("PASS builder: no known video -> no audio recorded at all")
 
 
 def test_builder_max_clip():
-    """A long caption cue must not produce a long clip: the window is cut
-    down so the finished clip (window + pre/postroll) is MAX_CLIP, centred
-    on the click position so the clicked word stays inside."""
+    """A long block life must not produce a long clip: the window is cut
+    down to MAX_CLIP, centred on the click position so the clicked word
+    stays inside."""
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence("some long line", (0, 0, 10, 10),
                             [("some", (0, 0, 5, 5)), ("line", (6, 0, 10, 10))])
-        match = {"start": 10.0, "end": 20.0, "score": 0.9,
-                 "text": "a ten second monologue cue", "by": "text"}
-        src = FakeSource(match, {"video_id": "vid"})
+        sentence.appeared_at = 100.0    # -> video 10.0 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 20.0
+        src = FakeSource(None, {"video_id": "vid"},
+                         appear_t=10.0, clear_t=20.0)
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src, near_t=17.0)
         assert src.sliced is not None, "source clip was never cut"
-        start, end, pre, post = src.sliced
-        assert abs((end - start) + pre + post - 3.0) < 1e-6, src.sliced
+        start, end, _, _ = src.sliced
+        assert abs((end - start) - 3.0) < 1e-6, src.sliced
         assert abs((start + end) / 2.0 - 17.0) < 1e-6, src.sliced
-        assert start >= 10.0 and end <= 20.0, src.sliced
+        assert start >= 9.6 and end <= 19.8 + 1e-6, src.sliced
         assert draft.audio_window["start"] == start, draft.audio_window
-        print("PASS builder: long cue capped at 3s around the click position")
+        print("PASS builder: long life capped at 3s around the click position")
 
 
 def test_builder_min_clip():
-    """A one-word caption (a fraction of a second in the track) must still cut
-    a clip of at least one second, centred on the caption."""
+    """A one-word caption (a blink of on-screen life) must still cut a clip
+    of at least one second, centred on the caption."""
     with tempfile.TemporaryDirectory() as tmp:
         sentence = Sentence("ok then", (0, 0, 10, 10),
                             [("ok", (0, 0, 5, 5)), ("then", (6, 0, 10, 10))])
-        match = {"start": 20.0, "end": 20.3, "score": 0.9,
-                 "text": "ok then", "by": "text"}
-        src = FakeSource(match, {"video_id": "vid"})
+        sentence.appeared_at = 100.0    # -> video 20.0 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 20.3
+        src = FakeSource(None, {"video_id": "vid"},
+                         appear_t=20.0, clear_t=20.3)
         draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
                             translator=lambda t, s="": "tx:" + t,
                             screenshot_note="no shot", source=src, near_t=20.2)
         assert src.sliced is not None, "source clip was never cut"
-        start, end, pre, post = src.sliced
-        assert (end - start) + pre + post >= 1.0 - 1e-6, src.sliced
+        start, end, _, _ = src.sliced
+        assert (end - start) >= 1.0 - 1e-6, src.sliced
+        # life = [20.0, 20.3] (no buffer); the widen keeps its midpoint 20.15
         assert abs((start + end) / 2.0 - 20.15) < 1e-6, src.sliced
         assert draft.audio_window["start"] == start, draft.audio_window
         assert draft.audio_window["end"] == end, draft.audio_window
@@ -1076,23 +1002,21 @@ if __name__ == "__main__":
     test_window_for_near()
     test_window_for_caps_phantom_tail()
     test_window_for_rejects_shared_tail()
-    test_builder_prefers_caption_track()
-    test_builder_position_fallback()
+    test_builder_block_life_times_the_clip()
+    test_builder_track_extends_end_not_start()
+    test_builder_clip_always_covers_the_click()
     test_builder_waits_for_the_clear()
     test_live_end_prefers_fresh_position()
     test_builder_life_outranks_auto_text()
     test_builder_onscreen_when_track_has_hole()
     test_builder_rebuilds_from_onscreen_life()
-    test_unsteady_appearance_cannot_anchor()
+    test_seek_landing_yields_to_logged_sighting()
     test_recalled_sighting_anchors_rewatch()
-    test_anchor_trims_runon_start()
     test_builder_appearance_anchor()
-    test_builder_backshift_covers_late_stamp()
+    test_rebirth_anchors_at_first_sighting()
     test_builder_seen_clear_ends_clip()
-    test_builder_distrusts_impossible_stamp()
     test_builder_loopback_rescue()
     test_pick_subtitle_orig()
-    test_choose_window()
     test_builder_falls_back_when_no_match()
     test_builder_snaps_ocr_to_track()
     test_snap_guards()

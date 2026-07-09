@@ -42,8 +42,8 @@ def include(field):
 
 def layout():
     """The configured card faces, {"front": [...], "back": [...]} in display
-    order -- written into each card's metadata so the future .apkg export
-    renders the card the way it was configured when it was made."""
+    order -- written into each card's metadata as provenance of how the
+    card was configured when it was made."""
     return {
         side: [key for key, _, _ in CARD_FIELDS if _placements[key] == side]
         for side in (CARD_FRONT, CARD_BACK)

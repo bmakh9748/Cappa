@@ -17,7 +17,8 @@ from cappa.detection.sentence import (Sentence, Word, caption_block,
 from cappa.flashcard import build_draft, prefs
 from cappa.flashcard.template import default_template, infer_placements
 from cappa.flashcard.timing import (MAX_CLIP, MIN_CLIP, audio_window,
-                                    shrink_to_max, widen_to_min)
+                                    shrink_to_max, spoken_duration,
+                                    widen_to_min)
 from cappa.settings import DEFAULT_CARD_FIELDS
 
 
@@ -186,6 +187,19 @@ t0, t1 = audio_window(_Lingering(), 110.0)
 assert abs((t1 - t0) - MAX_CLIP) < 1e-9, (t0, t1)
 print("PASS: a lingering line's clip is capped at 3s")
 
+
+# spoken_duration: a line still on screen takes words × pace to say — a long
+# line clicked the instant it popped needs far more tail than a short one
+# (user call). The pace is clamped so a nonsense estimate can't run away.
+assert spoken_duration(4, 0.30) == 1.2                 # 4 words at 0.30s each
+assert spoken_duration(15, 0.30) == 4.5                # 15 words: much longer
+assert spoken_duration(0, 0.30) == 0.0                 # nothing to say
+assert spoken_duration(10, None) == 10 * 0.30          # default pace stands in
+assert spoken_duration(10, 0.01) == 10 * 0.12          # clamped fast floor
+assert spoken_duration(10, 5.0) == 10 * 0.60           # clamped slow ceiling
+assert spoken_duration(15, 0.30) > spoken_duration(4, 0.30)   # the whole point
+print("PASS: spoken_duration scales the tail by words × this video's pace")
+
 # The settings sliders retune the bounds live: the window functions read the
 # module globals at call time, not import-time copies.
 import cappa.flashcard.timing as timing_mod
@@ -205,17 +219,18 @@ finally:
 print("PASS: set_clip_bounds retunes min/max/fallback windows live")
 
 # Auto length: the user's cap steps aside so the clip fits the sentence,
-# bounded only by the 5s safety ceiling.
+# bounded only by the safety ceiling (8s: p90 of a real spoken sentence is
+# 7.0s, so 5s truncated one sentence in five).
 timing_mod.set_clip_bounds(auto=True)
 try:
-    assert timing_mod.max_clip() == timing_mod.AUTO_MAX_CLIP == 5.0
+    assert timing_mod.max_clip() == timing_mod.AUTO_MAX_CLIP == 8.0
     t0, t1 = shrink_to_max(10.0, 20.0)
-    assert abs((t1 - t0) - 5.0) < 1e-9, (t0, t1)
-    assert shrink_to_max(10.0, 14.0) == (10.0, 14.0)   # 4s sentence fits
+    assert abs((t1 - t0) - 8.0) < 1e-9, (t0, t1)
+    assert shrink_to_max(10.0, 17.0) == (10.0, 17.0)   # 7s sentence fits
 finally:
     timing_mod.set_clip_bounds(auto=False)
 assert timing_mod.max_clip() == MAX_CLIP
-print("PASS: auto clip length fits the sentence up to the 5s ceiling")
+print("PASS: auto clip length fits the sentence up to the 8s ceiling")
 
 
 class _Blip:
@@ -297,8 +312,8 @@ block = caption_block(line2.words[1].sentence, [line1, line2, chat, hud])
 assert block == [line1, line2], block
 
 # A block never grows past 3 lines (subtitles don't render more): a taller
-# same-height stack (a chat column that slipped past the classifier) is cut
-# back to the clicked line and its nearest rows.
+# same-height stack (a chat column) is cut back to the clicked line and its
+# nearest rows.
 stack = []
 for i in range(5):
     top = 100 + i * 70
@@ -308,6 +323,26 @@ for i in range(5):
 tall = caption_block(stack[1], stack)
 assert tall == stack[:3], [s.text for s in tall]   # clicked row 1 + neighbours
 print("PASS: caption blocks cap at 3 lines around the clicked one")
+
+# card_0028: the channel's watermark sits one row above the caption, matches
+# its glyph height, and joined the card's sentence ('@korrathetaymi DIED
+# ON-THE'). Detection keeps it CLICKABLE -- it must never join someone
+# else's block. Geometry is the real card's, scaled to this frame.
+caption = Sentence("DIED ON-THE", (244, 510, 432, 547),
+                   [("DIED", (244, 510, 318, 547)),
+                    ("ON-THE", (330, 510, 432, 547))])
+mark = Sentence("@korrathetaymi", (220, 454, 430, 494),
+                [("@korrathetaymi", (220, 454, 430, 494))])
+for s in (caption, mark):
+    s.appeared_at = 100.0
+assert caption_block(caption, [caption, mark]) == [mark, caption], \
+    "unstamped, the watermark stacks (this is the bug)"
+mark.junk = "url/handle '@korrathetaymi'"
+assert caption_block(caption, [caption, mark]) == [caption], \
+    "a junk row must not join the caption's block"
+# ...but clicking the watermark ITSELF is a deliberate act and still works.
+assert caption_block(mark, [caption, mark])[0] is mark
+print("PASS: a stamped watermark stays clickable but never joins a card")
 
 # Rows whose boxes BLEED into each other are still one block. Geometry is
 # card_0052's: an outline/glow hardsub whose detector boxes overlap 18px
@@ -343,11 +378,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert meta["word_index"] == 4, meta["word_index"]
     assert meta["sentence_box"] == [217, 351, 1061, 480], meta["sentence_box"]
     assert meta["sentence_verified"] is True, meta["notes"]
-    # The DISPLAYED sentence is the plain join; the string sent to the
-    # translator joins rows with commas (they usually break at clause
-    # boundaries, and Google garbles the flat join — card_0074).
+    # The sentence is translated FLAT (space-joined, as displayed): a two-row
+    # caption is one sentence wrapped for width, so the line break is noise.
+    # The old comma-join wrecked mid-clause wraps ("the cat, I gave birth").
     assert meta["sentence_translation"] == (
-        "tx:AKU AKAN MENGHANCURKAN, FOKUS NYA MEREKA!")
+        "tx:AKU AKAN MENGHANCURKAN FOKUS NYA MEREKA!")
     print("PASS: a two-line caption joins whole onto the card, "
           "unrelated text stays out")
 

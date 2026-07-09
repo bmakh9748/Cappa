@@ -16,9 +16,38 @@ MIN_CLIP = 1.0       # no card audio shorter than this, however brief the line
 
 # The Auto length setting: instead of the user's fixed cap, let the clip
 # fit whatever window the sentence actually needs (its caption cue or its
-# on-screen life), bounded only by this safety ceiling.
-AUTO_MAX_CLIP = 5.0
+# on-screen life), bounded only by this safety ceiling. 8s, not the old 5s:
+# measured over every punctuated caption track in source/.cache, a real
+# spoken sentence runs 2.12s at the median, 6.96s at p90 and 9.29s at p95 --
+# a 5s ceiling silently truncated one sentence in five, which is the wrong
+# trade now that a card aims at the whole sentence.
+AUTO_MAX_CLIP = 8.0
 AUTO_CLIP = False    # module state like MIN/MAX_CLIP; set from settings
+
+# A caption still on screen has not finished being SPOKEN, and how much is
+# left depends on how many of its words are still to come -- a 15-word line
+# that popped 100ms ago needs far more tail than a 4-word one (user call,
+# 2026-07-08). The rate is measured from the video's own captions
+# (source.seconds_per_word()); these bound a nonsense estimate, and the
+# default stands in until enough rows have been watched.
+SECONDS_PER_WORD = 0.30      # ~3.3 words/s: unhurried speech
+MIN_SECONDS_PER_WORD = 0.12  # nobody speaks faster than ~8 words/s
+MAX_SECONDS_PER_WORD = 0.60  # ...nor slower than ~1.7 words/s, sustained
+MIN_LIVE_TAIL = 0.15         # a line whose last word is already out still
+                             # needs its tail to ring out
+
+
+def spoken_duration(words, seconds_per_word=None):
+    """How long a caption of `words` words takes to say, at this video's
+    measured pace. The clip end for a line still on screen is its APPEARANCE
+    plus this -- which is equivalent to 'the words not yet spoken, times the
+    pace', without pretending the clicked word is the one being spoken (it
+    rarely is: the user reads the line, then clicks)."""
+    if not words:
+        return 0.0
+    rate = seconds_per_word or SECONDS_PER_WORD
+    rate = min(max(rate, MIN_SECONDS_PER_WORD), MAX_SECONDS_PER_WORD)
+    return words * rate
 
 
 def set_clip_bounds(min_clip=None, max_clip=None, auto=None):
@@ -39,13 +68,6 @@ def max_clip():
     """The cap in force: the Auto ceiling when Auto length is on (the clip
     fits the sentence), the user's slider otherwise."""
     return AUTO_MAX_CLIP if AUTO_CLIP else MAX_CLIP
-
-# Padding for the caption-track path. Timestamps there are exact, so this is
-# small; a touch of pre/postroll only guards word onsets (auto captions can tag
-# a word slightly late) and lets the last word's tail ring out.
-SOURCE_PREROLL = 0.15
-SOURCE_POSTROLL = 0.35
-
 
 def audio_window(sentence, now):
     """Return the monotonic window to cut from the loopback buffer."""

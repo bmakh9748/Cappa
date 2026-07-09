@@ -1,36 +1,66 @@
 """Choose the audio window and cut one card's clip.
 
-The builder hands this module a clicked sentence and everything known about
-the moment (recorder, SourceSession, playback position); it decides WHERE the
-audio lives and writes audio.wav. The ladder, best source first:
+THE WINDOW RULE (user spec, 2026-07-09 — 'it is not complicated'): the clip
+is the clicked caption BLOCK's on-screen life. Every row of the block is
+looked up in this run's transcript (plus its live ledger stamps); the
+EARLIEST appearance is the start and the LATEST clear is the end, used as-is
+— those stamps are already detector-lag-corrected, so no buffer is added
+(HEAD_BUFFER/TAIL_TRIM are 0; user call 2026-07-09c, card_0006). Taking the
+earliest logged sighting absorbs detection churn: a row the ledger cleared
+and re-accepted mid-life (card_0002: animated art next to the glyphs)
+anchors at the caption's real pop, not its rebirth.
 
-    1. caption-track window cut from the DOWNLOADED source audio
+THE CAPTION TRACK FILLS AND EXTENDS THE END (user amend, 2026-07-09b/c):
+when the track's own words strongly match the sentence, its window fills an
+edge we never observed, and extends the END outward when our clear came
+early (churn / a quick click loses the tail). The START, though, is floored
+at our observed appearance — the words weren't on screen before we saw the
+caption pop, so an earlier track tag is just ASR lead and must not pull the
+clip onto the previous sentence (card_0006). window_for gives the word-exact,
+de-phantomed span of THIS sentence, matched to the same occurrence, so it
+can't wander into a neighbour. (The one case this gets wrong — our OWN
+appearance being a churn/pause fragment, card_0004 — is the deferred
+reconciliation in PLAN.md.) The track is still also _snap_to_track's ground
+truth for OCR misreads. The user's min/max clip settings clamp last, the cap
+centring on the click.
+
+Where the audio itself comes from, best first:
+
+    1. the window cut from the DOWNLOADED source audio
        (works paused and on any past line)
-    2. no caption near the click at all (ASR holes run 20s+): a window built
-       from the row's ON-SCREEN life, still cut from the source audio
-    3. the same window cut from the LOOPBACK ring buffer via the
+    2. the same window cut from the LOOPBACK ring buffer via the
        bridge's video-time -> clock-time mapping (download not ready)
-    4. OCR-timed loopback (no video source at all)
+    3. OCR-timed loopback (no video source at all)
 
-Window choice within 1/2 is `choose_window`: the playback position is the
-boss, a text match must be strong and near it (or overlap the position
-window) to win. Every degradation writes a draft note, never raises.
-
-Qt-free; the window maths (lags, pre/postroll, min/max clip) live in
-timing.py."""
+Every degradation writes a draft note, never raises. Qt-free; the window
+maths (lags, min/max clip) live in timing.py."""
 
 import os
 import time
 
 from . import timing
-from .timing import (SOURCE_POSTROLL, SOURCE_PREROLL, audio_window,
-                     shrink_to_max, widen_to_min)
+from .timing import audio_window, shrink_to_max, widen_to_min
 
-# A text match is trusted over the raw playback position only when it is both
-# strong and lands near where we actually are -- otherwise a wrong auto-caption
-# nearby could still shift the clip. Below that, the position window wins.
+# A track text match at or above this is trusted as ground truth for what
+# the caption SAID (never for timing): _snap_to_track corrects OCR misreads
+# from it when the track is human-made (card_0018).
 SOURCE_STRONG_SCORE = 0.75
-SOURCE_POS_TOL = 6.0   # seconds a trusted text match may sit from near_t
+
+# No buffer around the block's on-screen life (user call, 2026-07-09c,
+# card_0006): the transcript's appeared/cleared are ALREADY corrected for
+# the detector's reaction time (ocr_transcript writes appeared_video with
+# APPEAR_LAG subtracted; the live-stamp path subtracts it too), so a head
+# buffer starts the clip too early and a tail trim chops the last word.
+# Kept as named constants so a deliberate ring-out lead/tail can be dialed
+# back in later without hunting the arithmetic.
+HEAD_BUFFER = 0.0
+TAIL_TRIM = 0.0
+
+# Slack when deciding whether a track match is the SAME occurrence as the
+# on-screen life it would extend (vs. a duplicate line elsewhere). A
+# fragment we detected sits inside the true window, so a real match always
+# overlaps; this only forgives a small gap when one edge is a single point.
+SAME_OCCURRENCE_TOL = 1.0
 
 # A loopback clip whose int16 peak is at or under this is silence, not speech
 # (card_0027 came out at peak 1 of 32767: the bound endpoint wasn't the one
@@ -38,24 +68,12 @@ SOURCE_POS_TOL = 6.0   # seconds a trusted text match may sit from near_t
 # no audio — and the note says what happened.
 SILENT_CLIP_PEAK = 100
 
-# A position-matched clip CENTERS this far before the clicked row's
-# appearance stamp. The stamp trails the row's actual speech by a variable
-# lag — settle debounce, scan interval, clock-mapping slack — measured on
-# the same row watched twice: card_0069 stamped 823.3 and card_0071 stamped
-# 824.3 for a row whose cue ran 822.6-823.5. So the clicked word's audio
-# lies BEFORE the stamp far more often than after; a window centred a
-# second behind it covers both watches, where a forward window missed the
-# word entirely both times.
-APPEAR_BACKSHIFT = 1.0
-# When a trusted appearance exists, the position window's START is cut back
-# to backshift + this grace behind it: speech begins just before the row
-# pops and stamps run late, but everything earlier belongs to the PREVIOUS
-# sentences the ASR run-on dragged in (cards 3/5, 2026-07-07).
-APPEAR_TRIM_GRACE = 0.8
-# An appearance mapped LATER than where the user paused is impossible for a
-# row they were reading — it's a re-read's stamp or a paused-seek mapping
-# artifact; past this slack the click position anchors the clip instead.
-APPEAR_PAST_CLICK_TOL = 1.0
+# NOTE on stamps: a mapped appearance/clear is ALREADY corrected for the
+# pipeline's measured reaction time (detection/latency.py APPEAR_LAG /
+# CLEAR_LAG, subtracted before the bridge mapping). Those measured numbers
+# plus the user's HEAD_BUFFER/TAIL_TRIM are the ONLY time ever added or
+# taken — no worst-case padding (deleted 2026-07-09, user call: the same
+# row watched three times stamped within ~170 ms).
 # Hardsubs leave with their speech: nothing past the sentence's on-screen
 # END belongs on the card. A SEEN clear needs no buffer — its stamp already
 # trails the real vanish (user call); only the pause path, where the line
@@ -136,183 +154,170 @@ def _await_clear(sentence, source, timeout=CLEAR_WAIT):
         time.sleep(_WAIT_STEP)
 
 
-def _live_end(source, near_t):
-    """The spoken-so-far bound for a row STILL on screen after the wait:
-    playback moved past the click while _await_clear listened, so the
-    freshest position — not the click — marks how much of the line has
-    been heard. The click stays the bound when the bridge can't say, or
-    reports something implausible (a seek away)."""
+def _live_end(source, near_t, sentence=None, t_appear=None):
+    """Where a row STILL on screen after the wait finishes being SPOKEN.
+
+    The old bound was 'the freshest playback position, plus a flat 0.4s'.
+    That treats a fifteen-word line that popped 100 ms ago exactly like a
+    four-word one, and it quietly assumes the clicked word is the word being
+    spoken — it rarely is, since the user reads the line first and clicks
+    after (user call, 2026-07-08). Instead: a line takes `words × this
+    video's measured pace` to say, so it ends that long after it APPEARED,
+    whenever the click landed inside it. Playback's own position is still the
+    floor — audio already heard is audio the line covered.
+
+    Falls back to the flat tail when the line's appearance or word count is
+    unknown. Cutting PAST the click is legal because the clip comes from the
+    downloaded source file; the loopback rescue clamps itself (see
+    _loopback_rescue), since a ring buffer cannot hold audio not yet played."""
     try:
         t = getattr(source, "play_time", lambda: None)()
     except Exception:
         t = None
     if t is None or not (near_t <= t <= near_t + CLEAR_WAIT + 3.0):
         t = near_t
-    return t + PAUSE_TAIL
+    heard = t + timing.MIN_LIVE_TAIL       # everything up to now was the line
+    words = len(getattr(sentence, "words", ()) or ())
+    if t_appear is None or not words:
+        return t + PAUSE_TAIL
+    rate = getattr(source, "seconds_per_word", lambda: None)()
+    predicted = t_appear + timing.spoken_duration(words, rate)
+    return max(heard, predicted)
 
 
-def _appearance(sentence, source, near_t, draft=None):
-    """The clicked row's appearance stamp mapped to video time, or None when
-    the bridge can't say — or when the stamp maps AFTER the click plus
-    tolerance (a re-read's stamp or a paused-seek mapping artifact, not the
-    row the user was reading: APPEAR_PAST_CLICK_TOL). This is the priority
-    signal: when it exists, the row's SEEN life outranks the auto track.
-
-    A stamp only means "the sentence starts here" if the row popped in
-    during CONTINUOUS playback. A row that appeared because the user paused
-    or seeked was already mid-life — its true start was never seen, and
-    nothing may be assumed about it (user rule; cards 2-3 of 2026-07-07
-    clicked one re-watched line twice: the seek-landing stamp hijacked a
-    good position window into a tail-only clip on one card and anchored the
-    cap on the other). The bridge's playback history is the witness; when
-    it can't vouch either way (no extension), the stamp keeps its old
-    trust."""
-    appeared = getattr(sentence, "appeared_at", 0.0) or 0.0
-    if appeared <= 0.0:
-        return None
-    if getattr(source, "steady_at", lambda m: None)(
-            appeared - timing.APPEAR_LAG) is False:
-        if draft is not None:
-            draft.notes.append(
-                "the row was already on screen after a pause/seek — its "
-                "appearance can't anchor the clip")
-        return None
-    t = getattr(source, "video_time_at", lambda m: None)(
-        appeared - timing.APPEAR_LAG)
-    if t is None or (near_t is not None
-                     and t > near_t + APPEAR_PAST_CLICK_TOL):
-        return None
-    return t
-
-
-def _onscreen_match(sentence, source, near_t, t_appear, recalled=None):
-    """A window built purely from the clicked row's on-screen life, for when
-    the caption track offers NOTHING trustworthy near the click. card_0080:
-    the track was ready (green dot) but its ASR had a hole wider than
-    window_at's reach right at the click, so text and position matches both
-    came up empty — and the card lost its audio to a silent loopback even
-    though the source audio and the bridge's time mapping were both sitting
-    right there. Requires a click position (the stamp was sanity-checked
-    against it in _appearance). `recalled` is the row's previous logged
-    sighting, whose clear bounds the end when no live clear exists. Same
-    dict shape as the Transcript windows, by='onscreen'."""
-    if near_t is None or t_appear is None:
-        return None
-    cleared = getattr(sentence, "cleared_at", 0.0) or 0.0
-    t_end = None
-    if cleared > 0.0:
-        t_end = getattr(source, "video_time_at", lambda m: None)(
-            cleared - timing.CLEAR_LAG)
-    if t_end is None and recalled is not None:
-        t_end = recalled.get("end")
-    if t_end is None:
-        t_end = _live_end(source, near_t)
-    start = max(0.0, t_appear - APPEAR_BACKSHIFT)
-    end = max(t_end, t_appear + PAUSE_TAIL)
-    return {"start": start, "end": end, "score": 0.0, "text": "",
-            "by": "onscreen", "t_appear": t_appear}
-
-
-def choose_window(text_match, pos_match, near_t, auto=False, has_life=False):
-    """Decide which caption window to trust. The row's OBSERVED on-screen
-    life outranks anything an AUTO track says (user call, 2026-07-07: the
-    start/end you SAW is the priority, ASR only the fallback — it kept
-    picking neighbor lines and had 20s holes at the exact clicks, cards
-    0077/0080/0082). So with a mapped appearance (has_life), a text match
-    wins only from a HUMAN-made track, strong and near — precision plus the
-    OCR-snap ground truth; auto matches yield to the position/on-screen
-    machinery. WITHOUT a mapped life the track is all there is: a strong
-    text match near the click, then a weaker one that overlaps the position
-    window (the two agree on the moment, and the text match spans the
-    on-screen SENTENCE where the position window is just the speech chunk
-    around the click — card_0044), then the position window alone. Returning
-    None hands the choice to the caller's on-screen fallback."""
-    if near_t is None:
-        return text_match
-    if text_match is not None:
-        inside = text_match["start"] - SOURCE_POS_TOL <= near_t <= (
-            text_match["end"] + SOURCE_POS_TOL)
-        strong = text_match.get("score", 0.0) >= SOURCE_STRONG_SCORE
-        if inside and strong and not auto:
-            return text_match
-        if not has_life:
-            if inside and strong:
-                return text_match
-            if pos_match is not None and (
-                    text_match["start"] < pos_match["end"]
-                    and pos_match["start"] < text_match["end"]):
-                return text_match
-    if pos_match is not None:
-        return pos_match
-    # A SEEN life must not be overridden by a leftover auto-track text match
-    # that the position search couldn't even corroborate.
-    return None if (has_life and auto) else text_match
+def _same_occurrence(track, seen_start, seen_end, near_t):
+    """True when `track` (a window_for match) describes the SAME on-screen
+    caption we timed, not a duplicate of the line elsewhere in the video.
+    The anchor is the on-screen life when we have it, else the click; the
+    track must overlap it within SAME_OCCURRENCE_TOL."""
+    if seen_start is not None:
+        lo = seen_start
+        hi = seen_end if seen_end is not None else seen_start
+    elif near_t is not None:
+        lo = hi = near_t
+    else:
+        return True   # nothing to anchor against; trust the text match
+    return (track["start"] - SAME_OCCURRENCE_TOL <= hi
+            and lo <= track["end"] + SAME_OCCURRENCE_TOL)
 
 
 def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
-    """Cut the card's audio with the caption track's timing.
-
-    Playback position is the boss: the text search is confined to captions near
-    `near_t`, and a text match is used only when it is strong and lands close to
-    where you are. Otherwise the position window (the line playing at `near_t`)
-    is used -- correct timing even when the auto-caption text is garbled, which
-    is what put earlier cards in the wrong part of the video.
-
-    The clip itself prefers the downloaded source audio (waiting briefly for an
-    in-flight download / retrying a failed one); if that's still unavailable,
-    the caption window is mapped to clock time and cut from the LOOPBACK buffer
-    instead -- the line just played through the speakers, so it's in there.
-    Returns True on success; False falls back to OCR-timed loopback, and every
-    skip leaves a note so a degraded card is never silent about why."""
-    if not getattr(source, "transcript_ready", True):
-        status = getattr(source, "status", "") or "idle"
-        draft.notes.append("caption track unavailable (yt: %s)" % status)
-        return False
-    # Before any window is chosen: a row clicked mid-life may be about to
-    # vanish — its clear stamp is the truest clip end there is.
-    _await_clear(sentence, source)
-    text = getattr(sentence, "text", "") or ""
-    try:
-        text_match = source.window_for(text, near_t=near_t) if text else None
-    except Exception as exc:
-        draft.notes.append("caption match failed: %s" % exc)
-        text_match = None
-    pos_match = source.window_at(near_t) if near_t is not None else None
-
+    """Cut the card's audio from the clicked block's ON-SCREEN LIFE (the
+    window rule in the module docstring). Returns True on success; False
+    falls back to OCR-timed loopback, and every skip leaves a note so a
+    degraded card is never silent about why."""
     meta = {}
     try:
         meta = source.meta()
     except Exception:
         pass
-    t_appear = _appearance(sentence, source, near_t, draft)
-    # No live anchor (the row appeared off a seek, or on a paused frame)?
-    # The OCR transcript log may have seen this exact row pop during an
-    # EARLIER steady watch — 'you should have saved where the caption
-    # popped up' (card_0009: watch, rewind, pause, click). It did; this
-    # reads it back.
-    recalled = None
-    if t_appear is None and text:
-        recalled = getattr(source, "sighting_window",
-                           lambda t, near_t=None: None)(text, near_t)
-        if recalled and recalled.get("start") is not None:
-            t_appear = recalled["start"]
-            draft.notes.append(
-                "clip anchored at the row's previous sighting (its live "
-                "appearance was off a pause/seek)")
-        else:
-            recalled = None
-    match = choose_window(text_match, pos_match, near_t,
-                          auto=bool(meta.get("caption_auto")),
-                          has_life=t_appear is not None)
-    if not match:
-        match = _onscreen_match(sentence, source, near_t, t_appear, recalled)
-    if not match:
-        draft.notes.append(
-            "caption track: no match for this line"
-            + ("" if near_t is not None else " (no browser position)"))
-        return False
 
-    matched_by = match.get("by", "text")
+    # The caption track's window for THIS sentence's text (window_for =
+    # the exact matched words, not the run-on position blob). When it
+    # strongly matches it IS the spoken sentence, and it's the fallback the
+    # on-screen life leans on for any edge detection missed (user call,
+    # 2026-07-09b). Also _snap_to_track's ground truth for OCR misreads.
+    track = None
+    text = getattr(sentence, "text", "") or ""
+    if text:
+        try:
+            track = source.window_for(text, near_t=near_t)
+        except Exception:
+            track = None
+    strong_track = bool(track) and track.get("score", 0.0) >= SOURCE_STRONG_SCORE
+
+    assembled = getattr(draft, "assembled", None)
+    if assembled is not None:
+        # The builder already rebuilt the full word-at-a-time sentence and
+        # its span (our transcript's timings first, the track's for what we
+        # missed): that span IS the block's life. No clear to await — the
+        # sentence's end is known even if the last chunk hasn't shown yet.
+        t_start, t_end = assembled["start"], assembled["end"]
+        start_from = end_from = "assembled"
+    else:
+        # A row clicked mid-life may be about to vanish — its clear stamp
+        # is the truest clip end there is (card_0077).
+        _await_clear(sentence, source)
+        # Every row of the clicked block: its logged sightings this run
+        # (which recall the caption's REAL pop when the live row is a
+        # churn rebirth, card_0002, or a seek landing, card_0009) plus its
+        # live ledger stamps, all mapped to video time. Earliest in,
+        # latest out — that's the ON-SCREEN life.
+        rows = list(getattr(sentence, "lines", None) or [sentence])
+        starts, ends = [], []
+        for row in rows:
+            row_text = getattr(row, "text", "") or ""
+            seen = None
+            if row_text:
+                try:
+                    seen = getattr(source, "sighting_window",
+                                   lambda t, near_t=None: None)(
+                        row_text, near_t)
+                except Exception:
+                    seen = None
+            if seen and seen.get("start") is not None:
+                starts.append(seen["start"])
+                if seen.get("end") is not None:
+                    ends.append(seen["end"])
+            appeared = getattr(row, "appeared_at", 0.0) or 0.0
+            if appeared > 0.0:
+                t = getattr(source, "video_time_at", lambda m: None)(
+                    appeared - timing.APPEAR_LAG)
+                if t is not None:
+                    starts.append(t)
+            cleared = getattr(row, "cleared_at", 0.0) or 0.0
+            if cleared > 0.0:
+                t = getattr(source, "video_time_at", lambda m: None)(
+                    cleared - timing.CLEAR_LAG)
+                if t is not None:
+                    ends.append(t)
+        seen_start = min(starts) if starts else None
+        seen_end = max(ends) if ends else None
+
+        # On-screen life is primary. The matched track fills an edge we
+        # never saw, and EXTENDS the END outward — our clear is often lost
+        # early (churn, a quick click, a re-detection), so the sentence can
+        # keep being spoken past it. But the START is floored at our own
+        # observed appearance: the caption's words weren't on screen before
+        # we saw it pop, so an EARLIER track start is just the ASR's lead
+        # and must not pull the clip back (card_0006: we cleanly saw the
+        # line appear at 49.05, the auto track's 'jangan' tag sat at 48.42,
+        # and the clip opened on the previous sentence).
+        #
+        # (When our own appearance is ITSELF a fragment — a churn/pause hid
+        # the real pop, card_0004 — this floor is wrong and the track's
+        # earlier start was right; telling the two apart is the deferred
+        # reconciliation logged in PLAN.md. For now the clean-appearance
+        # case wins.)
+        #
+        # Only the SAME occurrence extends: window_for can return a DUPLICATE
+        # of this line elsewhere in the video, and that far window must not
+        # hijack the clip. "Same" = the track overlaps the on-screen life
+        # (or, with no life, sits around the click).
+        t_start, start_from = seen_start, "onscreen"
+        t_end, end_from = seen_end, "onscreen"
+        if strong_track and _same_occurrence(track, seen_start, seen_end,
+                                             near_t):
+            if t_start is None:                       # fill only, never earlier
+                t_start, start_from = track["start"], "track"
+            if t_end is None or track["end"] > t_end:  # fill or extend later
+                t_end, end_from = track["end"], "track"
+
+        if t_start is None:
+            draft.notes.append(
+                "the block's on-screen life could not be mapped to video "
+                "time, and the caption track had no match"
+                + ("" if near_t is not None else " (no browser position)"))
+            return False
+        if t_end is None:
+            # No clear and no track: predict where the line finishes being
+            # spoken (words × this video's measured pace).
+            t_end = _live_end(source, near_t, sentence, t_start)
+            end_from = "predicted"
+
+    match = {"start": t_start, "end": t_end,
+             "by": "assembled" if assembled is not None else "block_life"}
+
     draft.source_meta = {
         "video_id": meta.get("video_id"),
         "url": meta.get("url"),
@@ -320,127 +325,43 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         "channel": meta.get("channel"),
         "caption_lang": meta.get("caption_lang"),
         "caption_auto": meta.get("caption_auto"),
-        "matched_by": matched_by,
-        "match_score": round(match.get("score", 0.0), 3),
-        "caption_text": match.get("text", ""),
+        "matched_by": match["by"],
+        "match_score": round((track or {}).get("score", 0.0), 3),
+        "caption_text": (track or {}).get("text", ""),
+        "start_seconds": round(match["start"], 3),
+        "start_from": start_from,
+        "end_seconds": round(match["end"], 3),
+        "end_from": end_from,
     }
-    if recalled is not None:
-        draft.source_meta["anchored_at_sighting"] = round(t_appear, 3)
-        if recalled.get("end") is not None:
-            draft.source_meta["sighting_cleared"] = round(recalled["end"], 3)
-
-    # A one-word caption can be a fraction of a second: widen the window so
-    # the finished clip (window + pre/postroll) is never under MIN_CLIP. And
-    # a long cue is cut down to MAX_CLIP around the click position (near_t) —
-    # the cue's midpoint without one — so the clicked word stays inside.
-    # Bounds read through the module: the settings sliders retune them live.
-    start, end = widen_to_min(
-        match["start"], match["end"],
-        timing.MIN_CLIP - SOURCE_PREROLL - SOURCE_POSTROLL, floor=0.0)
-    cap = timing.max_clip() - SOURCE_PREROLL - SOURCE_POSTROLL
-    # A POSITION match knows the surrounding speech run but not the word's
-    # moment inside it, and near_t is wherever playback sits at card time —
-    # often paused PAST the line, which anchored the cap at the sentence's
-    # tail and cut its start off (card_0061). The clicked ROW's on-screen
-    # appearance is the best anchor there is: hardsub rows stack in sync
-    # with speech, so the row carrying the clicked word appeared just as
-    # its words were being spoken. That stamp marks a moment to open the
-    # window AROUND (with APPEAR_LEAD behind it — stamps run late, and the
-    # row's speech begins just before), never a moment to open a forward
-    # window FROM: card_0069's clip did that and held only the NEXT rows'
-    # audio, the clicked word already over. A stamp mapped later than the
-    # user's pause is an artifact (see APPEAR_PAST_CLICK_TOL) and the
-    # click position anchors instead.
-    center = near_t
-    if matched_by == "onscreen":
-        # The window IS the row's on-screen life (built in _onscreen_match);
-        # cap around its midpoint — nothing is known about the word's moment
-        # inside the sentence.
-        center = None
-        draft.source_meta["anchored_at_appearance"] = round(
-            match["t_appear"], 3)
-        draft.source_meta["onscreen_appeared"] = round(match["t_appear"], 3)
-        draft.source_meta["onscreen_end"] = round(match["end"], 3)
-        draft.notes.append(
-            "caption track has no text for this line — audio cut from "
-            "its on-screen timing")
-    elif matched_by == "position":
-        if t_appear is not None:
-            draft.source_meta["onscreen_appeared"] = round(t_appear, 3)
-        # The sentence's on-screen life bounds the clip's END: the clear
-        # (mapped to video time) or, for a line still up at click time,
-        # just past the click — the words spoken SO FAR are the sentence;
-        # what follows is the next line's audio (card_0069/0071 clips were
-        # full of it).
-        cleared = getattr(sentence, "cleared_at", 0.0) or 0.0
-        t_end = None
-        if cleared > 0.0:
-            t_end = getattr(source, "video_time_at", lambda m: None)(
-                cleared - timing.CLEAR_LAG)
-            if t_end is not None:
-                draft.source_meta["onscreen_cleared"] = round(t_end, 3)
-        if t_end is None and recalled is not None:
-            t_end = recalled.get("end")   # the previous sighting's clear
-        if t_end is None and near_t is not None:
-            t_end = _live_end(source, near_t)
-        # _appearance already rejected stamps mapping past the click; the
-        # remaining sanity check is against this window's own span.
-        plausible = t_appear is not None and start - 3.0 <= t_appear
-        if plausible and t_appear > end:
-            # The row APPEARED after the position window's last word ended:
-            # the track never heard this sentence at all (card_0077 — the
-            # ASR skipped the line, a neighbor's phantom end swallowed its
-            # span, and every track window nearby is some OTHER line's
-            # speech). The row's on-screen life is the only timing that
-            # exists for it: open a stamp-lag behind the appearance, close
-            # at the clear/click bound, and cap around the life's midpoint
-            # — nothing is known about the word's place in the sentence.
-            matched_by = "onscreen"
-            draft.source_meta["matched_by"] = matched_by
-            draft.source_meta["anchored_at_appearance"] = round(t_appear, 3)
-            start = max(0.0, t_appear - APPEAR_BACKSHIFT)
-            end = t_end if (t_end is not None and t_end > t_appear) else (
-                t_appear + PAUSE_TAIL)
-            draft.source_meta["onscreen_end"] = round(end, 3)
-            start, end = widen_to_min(
-                start, end,
-                timing.MIN_CLIP - SOURCE_PREROLL - SOURCE_POSTROLL, floor=0.0)
-            center = None
-            draft.notes.append(
-                "caption track has no text for this line — audio cut from "
-                "its on-screen timing")
-        elif plausible:
-            center = t_appear - APPEAR_BACKSHIFT
-            draft.source_meta["anchored_at_appearance"] = round(t_appear, 3)
-            # The seen start BOUNDS the window, not just centres the cap:
-            # an ASR run-on walks the position window back into the
-            # PREVIOUS sentences, and a window already at cap length
-            # ignores the centre entirely (cards 3/5: 'started too early
-            # by a lot' — 4s of the neighbours' speech on the card).
-            start = max(start, t_appear - APPEAR_BACKSHIFT - APPEAR_TRIM_GRACE)
-            if t_end is not None and start + 0.8 < t_end < end:
-                end = t_end
-                draft.source_meta["onscreen_end"] = round(t_end, 3)
+    if strong_track:
+        draft.source_meta["track_window"] = [round(track["start"], 3),
+                                             round(track["end"], 3)]
     if near_t is not None:
         draft.source_meta["click_position"] = round(near_t, 3)
-    start, end = shrink_to_max(start, end, cap, center=center)
+
+    # The user's buffers, then the user's min/max clip settings — the cap
+    # centres on the click so the clicked word stays inside a long block.
+    start = max(0.0, match["start"] - HEAD_BUFFER)
+    end = match["end"] - TAIL_TRIM
+    start, end = widen_to_min(start, end, timing.MIN_CLIP, floor=0.0)
+    start, end = shrink_to_max(start, end, timing.max_clip(), center=near_t)
 
     wav_path = os.path.join(draft.folder_path, "audio.wav")
     window = {
-        "source": "caption_track",
-        "matched_by": matched_by,
+        "source": "source_audio",
+        "matched_by": match["by"],
         "start": start,
         "end": end,
-        "preroll": SOURCE_PREROLL,
-        "postroll": SOURCE_POSTROLL,
+        "head_buffer": HEAD_BUFFER,
+        "tail_trim": TAIL_TRIM,
         "score": draft.source_meta["match_score"],
-        "caption_text": match.get("text", ""),
+        "caption_text": draft.source_meta["caption_text"],
         "lang": meta.get("caption_lang"),
         "auto": meta.get("caption_auto"),
     }
 
-    # First choice: the downloaded source audio. ensure_audio waits briefly for
-    # an in-flight download and retries a previously failed one.
+    # First choice: the downloaded source audio. ensure_audio waits briefly
+    # for an in-flight download and retries a previously failed one.
     ensure = getattr(source, "ensure_audio", None)
     if ensure is not None:
         try:
@@ -448,8 +369,7 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         except Exception:
             pass
     try:
-        secs = source.clip_wav(wav_path, start, end,
-                               preroll=SOURCE_PREROLL, postroll=SOURCE_POSTROLL)
+        secs = source.clip_wav(wav_path, start, end)
     except Exception as exc:
         draft.notes.append("source audio unavailable: %s" % exc)
         secs = 0.0
@@ -459,17 +379,17 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         draft.audio_window = window
         return True
 
-    # Rescue: same (widened) caption window, cut from the loopback buffer at
-    # the clock times the line actually played -- it just left the speakers.
+    # Rescue: the same window, cut from the loopback buffer at the clock
+    # times the line actually played -- it just left the speakers.
     secs = _loopback_rescue(draft, source, recorder, window, wav_path)
     if secs > 0.0:
-        window["source"] = "loopback_caption_timed"
+        window["source"] = "loopback_block_timed"
         draft.audio_window = window
         if not _drop_if_silent(draft, recorder, wav_path):
             draft.audio_path = wav_path
             draft.audio_seconds = secs
-            draft.notes.append("audio cut from loopback with caption timing "
-                               "(source download unavailable)")
+            draft.notes.append("audio cut from loopback with on-screen "
+                               "timing (source download unavailable)")
         # Silent or not, the loopback buffer is the only audio there is:
         # an OCR-timed cut of the same buffer would be just as silent.
         return True
@@ -508,8 +428,7 @@ def _loopback_rescue(draft, source, recorder, window, wav_path):
         return 0.0
     t0, t1 = clock
     try:
-        return recorder.save_wav(wav_path, t0 - SOURCE_PREROLL,
-                                 t1 + SOURCE_POSTROLL)
+        return recorder.save_wav(wav_path, t0, t1)
     except Exception as exc:
         draft.notes.append("loopback rescue failed: %s" % exc)
         return 0.0

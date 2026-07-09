@@ -1,8 +1,8 @@
-"""Flashcard draft creation.
+"""Flashcard draft creation, plus putting each saved card into Anki.
 
-This package gathers the pieces for a future Anki card: the clicked word, its
-OCR sentence, translations, a click-time screenshot, and an audio clip. It
-does not export .apkg files yet.
+This package gathers the pieces for an Anki card: the clicked word, its OCR
+sentence, translations, a click-time screenshot, and an audio clip -- then
+puts the finished card into Anki, all riding the one Create Anki card button.
 
 The map (one ingredient per file):
 
@@ -21,13 +21,20 @@ The map (one ingredient per file):
     screenshot.py  click-time PNG capture/write
     writer.py      card_NNNN folders + metadata.json (the card's provenance
                    record -- add keys, never rename them)
+    anki_sync.py   sync(): puts the new card into Anki -- live via the
+                   AnkiConnect add-on when Anki is open (visible instantly),
+                   straight into its collection file when closed (visible
+                   next launch). A per-folder anki_synced.txt receipt means
+                   a delivered card is never touched again.
 
-Qt-free; the UI calls build_draft from a worker thread. Every missing piece
-becomes a draft note, never an exception."""
+Qt-free; the UI calls build_draft/sync_to_anki from a worker thread. Every
+missing piece becomes a draft note, never an exception."""
 
 from . import prefs
+from .anki_sync import SyncError, sync as sync_to_anki
 from .builder import CARDS_DIR, build_draft
 from .model import CardDraft
 from .screenshot import capture_png
 
-__all__ = ["CARDS_DIR", "CardDraft", "build_draft", "capture_png", "prefs"]
+__all__ = ["CARDS_DIR", "CardDraft", "SyncError", "build_draft",
+          "capture_png", "prefs", "sync_to_anki"]

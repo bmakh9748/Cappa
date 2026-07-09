@@ -11,8 +11,8 @@ default_template() GENERATES the default design from the user's field
 placements: flip a field to the other side (or off) in the settings and
 the default follows. A custom template saved in the advanced editor is
 used verbatim instead (cappa.flashcard.prefs decides which one applies).
-The future .apkg export reads the template stamped into each card's
-metadata."""
+anki_sync.sync() creates the Anki notetype from the current design the
+first time a card needs it."""
 
 import re
 

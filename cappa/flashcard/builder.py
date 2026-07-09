@@ -30,6 +30,18 @@ TRACK_SNAP_SIM = 0.66
 # confident-looking garbage card.
 OCR_SHAKY_CONF = 0.8
 
+# Sentence completion (word-at-a-time hardsubs): how far a transcript row's
+# stamps may sit from a track word's start and still count as OUR sighting
+# of that word — appear/clear stamps run ~0.3s late (detection/latency.py).
+FILL_SLACK = 0.45
+# Two logged rows of the same text within this are one sighting (a re-read),
+# not two words.
+FILL_DEDUP = 0.5
+# A row claims a track word only when one of its own words is at least this
+# character-similar — loose enough for OCR misreads ('pbyed' ~ 'played'),
+# tight enough that a watermark never claims a real word.
+FILL_TEXT_SIM = 0.5
+
 
 def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
                 screenshotter=write_region_png, screenshot_png=None,
@@ -68,6 +80,12 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
             "OCR was unsure of this text (confidence %.2f) — the word and "
             "sentence are probably misread" % conf)
 
+    # Word-at-a-time hardsubs: the clicked "sentence" may be one chunk of a
+    # longer spoken sentence — complete it BEFORE translation and audio, so
+    # both see the real sentence (fail-soft; leaves other captions alone).
+    if source is not None and draft.sentence:
+        _complete_sentence(draft, sentence, source, near_t)
+
     if prefs.include("screenshot"):
         _write_screenshot(draft, region, screenshotter, screenshot_png,
                           screenshot_note)
@@ -91,9 +109,171 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
             t_clear = getattr(source, "video_time_at", lambda m: None)(
                 cleared - timing.CLEAR_LAG)
             if t_clear is not None:
-                draft.source_meta["onscreen_cleared"] = round(t_clear, 3)
+                # Audit only: the row's FULL clear, if it vanished after the
+                # audio was already cut. The clip's own end is end_seconds.
+                draft.source_meta["final_onscreen_cleared"] = round(t_clear, 3)
     write_artifacts(draft)
     return draft
+
+
+def _norm_word(text):
+    return (clean_word(text) or text or "").casefold()
+
+
+def _boxes_overlap(ref, other):
+    """Do two (l, t, r, b) rectangles share any area? True when `other` is
+    unknown (None / malformed) — the spatial gate only ever EXCLUDES on a
+    confirmed non-overlap, never on missing information (user rule)."""
+    if not other or not ref or len(other) < 4 or len(ref) < 4:
+        return True
+    al, at, ar, ab = ref[:4]
+    bl, bt, br, bb = other[:4]
+    return al < br and bl < ar and at < bb and bt < ab
+
+
+def _fill_sentence(rows, sent, low_conf=OCR_SHAKY_CONF):
+    """Merge OUR transcript rows with the track SENTENCE they sit in — the
+    word-at-a-time fix (user spec, 2026-07-09): our transcript's words are
+    always taken first; the track only reveals that the sentence extends
+    beyond what OCR caught and fills the words OCR missed; a low-confidence
+    row loses its say and the track speaks there instead. Timing likewise:
+    ours where a row exists at an edge, the track's otherwise.
+
+    rows: transcript records (text/appeared_video/cleared_video/ocr_conf).
+    sent: Transcript.sentence_for's dict. Returns {text, start, end,
+    filled} or None when there is nothing to merge."""
+    kept = []
+    for r in rows:
+        conf = r.get("ocr_conf")
+        if conf is not None and conf < low_conf:
+            continue                      # unsure read: the track speaks here
+        if any(_norm_word(r["text"]) == _norm_word(k["text"])
+               and abs(r["appeared_video"] - k["appeared_video"]) < FILL_DEDUP
+               for k in kept):
+            continue                      # a re-read of the same sighting
+        kept.append(r)
+    if not kept:
+        return None                       # nothing of OURS: don't build a
+                                          # pure-ASR sentence
+    kept.sort(key=lambda k: k["appeared_video"])
+
+    # Which track words did OUR rows actually say? A row claims a word only
+    # when it is BOTH time-near (within slack of the row's span) and
+    # text-similar to one of the row's own words, at most as many words as
+    # the row holds, nearest first. Both legs matter: time alone let a
+    # one-word row swallow its neighbour's word, and let a watermark row
+    # ('COMEDY PANTHEON' spans the whole sentence) claim real words; text
+    # alone would match a repeated word minutes away.
+    words = sent["words"]
+    claimed = set()
+    for k in kept:
+        a, c = k["appeared_video"], k["cleared_video"]
+        own = [_norm_word(x) for x in k["text"].split() if _norm_word(x)]
+        k["own_n"] = len(own)
+        cand = []
+        for i, w in enumerate(words):
+            if i in claimed or not (a - FILL_SLACK <= w[1]
+                                    <= c + FILL_SLACK):
+                continue
+            tw = _norm_word(w[0])
+            if not tw or not own:
+                continue
+            if max(SequenceMatcher(None, tw, x).ratio()
+                   for x in own) < FILL_TEXT_SIM:
+                continue
+            cand.append((max(0.0, a - w[1], w[1] - c), i))
+        k["claimed_idx"] = [i for _, i in sorted(cand)[:len(own)]]
+        claimed.update(k["claimed_idx"])
+
+    # A row belongs to this sentence only when MOST of its own words line up
+    # with the track — the sentence-level bar, not a single lucky word. A
+    # real caption line matches a run of the track; a stray row that merely
+    # shares one word does not (card_0031: the video TITLE 'Watch Over And
+    # Over Again', five words, matched only the spoken 'what' at 0.67 and
+    # spliced itself into the middle of the sentence). A one/two-word row
+    # still needs its one word; a five-word row needs three. This also drops
+    # a row that said NO word of the sentence at all (a neighbour's line,
+    # chrome the track never heard — 'Inter Miami' on the g4erZWrKEjQ data).
+    kept = [k for k in kept
+            if len(k["claimed_idx"]) >= max(1, (k["own_n"] + 1) // 2)]
+    if not kept:
+        return None
+    # Rebuild the claimed set from the SURVIVORS only: a rejected row (the
+    # title) must not keep the track words it falsely grabbed out of the fill
+    # — otherwise the spoken 'what' it stole would vanish from the sentence
+    # instead of being filled back in from the track.
+    claimed = set()
+    for k in kept:
+        claimed.update(k["claimed_idx"])
+
+    # One time-ordered stream: our rows, plus only the track words no row
+    # of ours claimed. (t, tiebreak, text, t_end) — rows sort before a track
+    # word at the same instant.
+    events = [(k["appeared_video"], 0, k["text"], k["cleared_video"])
+              for k in kept]
+    filled = [w for i, w in enumerate(words) if i not in claimed]
+    events += [(w[1], 1, w[0], w[2]) for w in filled]
+    events.sort(key=lambda e: (e[0], e[1]))
+    return {
+        "text": " ".join(e[2] for e in events),
+        "start": events[0][0],
+        "end": max(e[3] for e in events),
+        "filled": len(filled),
+    }
+
+
+def _complete_sentence(draft, sentence, source, near_t):
+    """A word-at-a-time hardsub shows one caption chunk while the SENTENCE
+    spans many (the transcript for g4erZWrKEjQ caught 'RESPECT' alone while
+    'I don't respect you at all' was being spoken). Find the track sentence
+    containing the clicked text (the text match is the gate: burned-in
+    translation subs don't match and are left alone), then rebuild the full
+    sentence — our rows first, track filling the gaps — and hand the span
+    to the audio cut. Fail-soft: any miss leaves the card exactly as it
+    was."""
+    sent = getattr(source, "sentence_for", lambda *a, **k: None)(
+        draft.sentence, near_t)
+    if not sent:
+        return
+    rows = getattr(source, "rows_between", lambda *a: [])(
+        sent["start"] - 0.75, sent["end"] + 0.75)
+    # Spatial gate (user rule): a row is part of the clicked sentence only if
+    # its on-screen box OVERLAPS the clicked caption's — a caption elsewhere
+    # on screen (the title band up top, a watermark) is definitely not part
+    # of it, no matter how the words happen to line up. One-directional: no
+    # overlap EXCLUDES; overlap alone doesn't include (the text tests in
+    # _fill_sentence still decide). An unknown box on either side fails open,
+    # so older logs and mapping gaps keep their old behaviour.
+    ref_box = getattr(sentence, "box", None)
+    if ref_box is not None:
+        rows = [r for r in rows if _boxes_overlap(ref_box, r.get("box"))]
+    # The clicked block itself may still be on screen (not yet in the log):
+    # stand it in as a row at its matched spot so OUR read of it wins.
+    block_row = {"text": draft.sentence,
+                 "appeared_video": sent["match_start"],
+                 "cleared_video": sent["match_end"],
+                 "ocr_conf": getattr(sentence, "ocr_conf", None)}
+    got = _fill_sentence([block_row] + list(rows), sent)
+    if not got:
+        return
+    old_words = [_norm_word(w) for w in draft.sentence.split()]
+    new_words = [_norm_word(w) for w in got["text"].split()]
+    if new_words == old_words:
+        return                            # the block already IS the sentence
+    draft.assembled = {
+        "start": round(got["start"], 3),
+        "end": round(got["end"], 3),
+        "score": round(sent["score"], 3),
+        "ocr_sentence": draft.sentence,
+        "filled_from_track": got["filled"],
+    }
+    draft.sentence = got["text"]
+    target = _norm_word(draft.word)
+    draft.word_index = next(
+        (i for i, w in enumerate(new_words) if w == target), -1)
+    draft.notes.append(
+        "sentence completed from this run's transcript + caption track "
+        "(%d word(s) filled from the track)" % got["filled"])
 
 
 def _snap_to_track(draft):
@@ -101,13 +281,14 @@ def _snap_to_track(draft):
     glyph read as an alif turned معروف into معروفا and poisoned the word's
     translation). Only from a HUMAN-MADE track — auto captions are speech
     recognition, often wrong, and must never rewrite a burned-in subtitle a
-    person wrote. Only when the audio window came from a STRONG text match —
-    then the track's words are what the caption really said — and only for
-    OCR words that ALMOST equal their aligned track word; dissimilar pairs
-    are left alone."""
+    person wrote. Only when the track's text match is STRONG — then the
+    track's words are what the caption really said (the match is recorded
+    as provenance; it never times the clip) — and only for OCR words that
+    ALMOST equal their aligned track word; dissimilar pairs are left
+    alone."""
     win = draft.audio_window or {}
     if (win.get("auto")
-            or win.get("matched_by") != "text"
+            or not win.get("caption_text")
             or win.get("score", 0.0) < SOURCE_STRONG_SCORE):
         return
     ocr_words = (draft.sentence or "").split()
@@ -163,17 +344,18 @@ def _translate_fields(draft, translator, sentence=None):
             draft.notes.append("word translation: %s" % exc)
 
     if draft.sentence and prefs.include("sentence_translation"):
-        # Screen rows usually break at clause boundaries: joined with
-        # commas Google parses them as clauses, where the flat space-join
-        # fused them into one garbled parse (card_0074: "kalo pagi pilih
-        # kobo" became "If you choose Kobo in the morning"). A mid-clause
-        # wrap tolerates the stray comma (card_0031's block translates
-        # identically). The card still DISPLAYS the plain-joined sentence.
-        lines = getattr(sentence, "lines", None)
-        to_translate = (", ".join(s.text for s in lines if s.text)
-                        if lines else draft.sentence)
+        # Translate the sentence FLAT (space-joined, exactly as the card
+        # displays it). A caption wrapping across two rows is almost always
+        # one sentence broken for visual WIDTH, not at a clause boundary, so
+        # the line break is noise. An earlier version glued the rows with a
+        # comma to help one clause-boundary card (card_0074); it wrecked the
+        # far more common mid-clause wrap — "tadi kucing" / "saya melahirkan"
+        # became "tadi kucing, saya melahirkan" -> "the cat, I gave birth"
+        # instead of the correct "my cat gave birth" (user-reported). Google
+        # parses the natural flat sentence correctly; the stray comma was the
+        # whole problem.
         try:
-            draft.sentence_translation = translator(to_translate)
+            draft.sentence_translation = translator(draft.sentence)
         except TranslationError as exc:
             draft.notes.append("sentence translation: %s" % exc)
 
