@@ -34,6 +34,8 @@ class SourceSession:
         self._video_mapper = None        # monotonic seconds -> video_t, or None
         self._steady_prober = None       # mono -> True/False/None (bridge)
         self._sighting_lookup = None     # (text, near_t) -> logged window
+        self._rate_lookup = None         # () -> seconds per spoken word
+        self._rows_lookup = None         # (t0, t1) -> this run's rows there
         self._audio_retry = threading.Lock()  # one download retry at a time
         self.transcript_ready = False   # captions fetched + aligned-ready
         self.audio_ready = False        # audio downloaded, clips can be cut
@@ -145,17 +147,34 @@ class SourceSession:
     def set_sighting_lookup(self, lookup):
         """Supply a callable (text, near_t) -> previous-sighting window from
         the OCR transcript log. Lets a card whose row appeared off a
-        seek/pause anchor at the moment an earlier watch SAW it pop."""
+        seek/pause anchor at the moment this run of the app SAW it pop."""
         self._sighting_lookup = lookup
 
     def sighting_window(self, text, near_t=None):
-        """A previous logged sighting's {'start','end'} for this text, or
-        None. See flashcard.clip for the caller."""
+        """A {'start','end'} for a sighting of this text earlier in THIS
+        run, or None. See flashcard.clip for the caller."""
         lookup = self._sighting_lookup
         if lookup is None or not text:
             return None
         try:
             return lookup(text, near_t)
+        except Exception:
+            return None
+
+    def set_rate_lookup(self, lookup):
+        """Supply a callable () -> seconds per spoken word in this video (or
+        None), measured from the captions watched so far. Lets a clip whose
+        line hasn't finished being spoken predict where it ends."""
+        self._rate_lookup = lookup
+
+    def seconds_per_word(self):
+        """This video's measured speaking pace, or None. See
+        flashcard.timing.spoken_duration for the caller."""
+        lookup = self._rate_lookup
+        if lookup is None:
+            return None
+        try:
+            return lookup()
         except Exception:
             return None
 
@@ -181,6 +200,35 @@ class SourceSession:
         if transcript is None:
             return None
         return transcript.window_for(ocr_text, near_t=near_t)
+
+    def sentence_for(self, ocr_text, near_t=None):
+        """The track SENTENCE containing this on-screen text (see
+        Transcript.sentence_for), or None -- no track, or no confident
+        match (which is the burned-in-translation guard)."""
+        with self._lock:
+            transcript = self._transcript
+        if transcript is None:
+            return None
+        try:
+            return transcript.sentence_for(ocr_text, near_t=near_t)
+        except Exception:
+            return None
+
+    def set_rows_lookup(self, lookup):
+        """Supply a callable (t0, t1) -> this run's OCR transcript rows in
+        that video-time window. Lets the sentence assembler merge what WE
+        saw with what the track heard."""
+        self._rows_lookup = lookup
+
+    def rows_between(self, t0, t1):
+        """This run's watched caption rows in video-time [t0, t1], or []."""
+        lookup = self._rows_lookup
+        if lookup is None:
+            return []
+        try:
+            return lookup(t0, t1) or []
+        except Exception:
+            return []
 
     def play_time(self):
         """The browser's current playback position in seconds, or None."""

@@ -8,6 +8,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from cappa.detection.latency import APPEAR_LAG
 from cappa.detection.sentence import Sentence
 from cappa.source.ocr_transcript import OcrTranscriptLog
 
@@ -61,6 +62,71 @@ def test_row_still_up_logged_from_stamp():
         with open(path, encoding="utf-8") as f:
             assert len(f.read().strip().splitlines()) == 1, "double-logged"
         print("PASS ledger: stamped-but-listed rows log once, monos always")
+
+
+def test_stamped_junk_never_enters_the_transcript():
+    """A watermark/clock/URL is on screen but is not a caption, and this
+    file is a transcript of captions (card_0028: '@korrathetaymi', read at
+    confidence 1.000). Detection keeps such rows clickable; the worker
+    stamps them, and the ledger passes them by."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        caption = _row("DIED ON-THE", 100.0)
+        mark = _row("@korrathetaymi", 100.0)
+        mark.junk = "url/handle '@korrathetaymi'"
+        log.observe("vidJ", [caption, mark])
+        caption.cleared_at = mark.cleared_at = 101.0
+        log.observe("vidJ", [])
+        with open(os.path.join(tmp, "vidJ.jsonl"), encoding="utf-8") as f:
+            recs = [json.loads(l) for l in f]
+        assert [r["text"] for r in recs] == ["DIED ON-THE"], recs
+        print("PASS ledger: a stamped watermark never enters the transcript")
+
+
+def test_no_video_id_logs_nothing():
+    """observe() only records when given a live video id. A paused/hidden/
+    closed tab yields None (decided by source_wiring.live_video_id), and
+    then a frozen or off-screen frame can't be logged as caption life."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        s = _row("NOT THE VIDEO", 100.0)
+        s.cleared_at = 100.6
+        log.observe(None, [s], lambda m: 5.0)      # no live video
+        log.observe(None, [], lambda m: 5.0)
+        assert not os.listdir(tmp), "no video id -> nothing logged"
+
+        s2 = _row("REALLY PLAYING", 200.0)
+        s2.cleared_at = 200.8
+        log.observe("vidX", [s2], lambda m: 10.0 + (m - 200.0))
+        log.observe("vidX", [], lambda m: 10.0 + (m - 200.0))
+        with open(os.path.join(tmp, "vidX.jsonl"), encoding="utf-8") as f:
+            assert [json.loads(l)["text"] for l in f] == ["REALLY PLAYING"]
+        print("PASS ledger: no live video id -> nothing logged")
+
+
+def test_seconds_per_word_measures_this_videos_pace():
+    """A line still on screen hasn't finished being spoken; how much is left
+    depends on this video's pace, not a constant (user call). The pace is the
+    median of life/words over the rows watched — no speaker identification,
+    one video one pace."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        assert log.seconds_per_word("vidP") is None, "nothing watched yet"
+        for k in range(6):                     # 4 words in 1.2s -> 0.30 s/word
+            s = _row("satu dua tiga empat %d" % k, 100.0 + k * 10)
+            s.cleared_at = s.appeared_at + 1.5      # 5 words, 1.5s
+            log.observe("vidP", [s])
+            log.observe("vidP", [])
+        rate = log.seconds_per_word("vidP")
+        assert abs(rate - 0.30) < 1e-9, rate
+        # One-word chunks measure the detector's lag, not speech: ignored.
+        for k in range(6):
+            s = _row("halo", 300.0 + k * 10)
+            s.cleared_at = s.appeared_at + 3.0      # would imply 3.0 s/word
+            log.observe("vidP", [s])
+            log.observe("vidP", [])
+        assert abs(log.seconds_per_word("vidP") - 0.30) < 1e-9
+        print("PASS ledger: the video's own pace, from multi-word rows only")
 
 
 def test_silent_vanish_and_junk_not_logged():
@@ -131,13 +197,62 @@ def test_window_hint_recalls_first_sighting():
         assert log.window_hint("vidX", "Muraji BIAR DIA DAPAT KILL!",
                                near_t=500.0) is None
         assert log.window_hint("vidX", "never seen text") is None
-        # And a fresh log object reads the file back from disk.
-        log2 = OcrTranscriptLog(root=tmp)
-        hint2 = log2.window_hint("vidX", "muraji biar dia dapat kill",
-                                 near_t=244.2)
-        assert hint2 and abs(hint2["start"] - (99.7 + 143.4)) < 1e-6, hint2
         print("PASS ledger: window_hint recalls the earliest sighting, "
               "fuzzy on punctuation, bounded near the click")
+
+
+def test_window_hint_never_reads_a_past_run():
+    """A card's timing may only cite a caption THIS run watched (user call,
+    2026-07-08: "when i reopen, taking from the past times its been open is
+    bad"). The transcript file is a record, not an oracle: a fresh log over
+    the very same file knows nothing until it watches something itself."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        s = _row("SUDAH SELESAI", 100.0)
+        s.cleared_at = 101.45
+        log.observe("vidR", [s], lambda m: m + 143.4)
+        log.observe("vidR", [], lambda m: m + 143.4)
+        assert log.window_hint("vidR", "SUDAH SELESAI", near_t=244.2)
+        assert os.path.isfile(os.path.join(tmp, "vidR.jsonl")), "still logged"
+
+        reopened = OcrTranscriptLog(root=tmp)      # the app restarts
+        assert reopened.window_hint("vidR", "SUDAH SELESAI",
+                                    near_t=244.2) is None
+        print("PASS ledger: a reopened app recalls nothing from the file")
+
+
+def test_window_hint_closes_at_the_sighting_s_last_row():
+    """card_0025: a hardsub that TYPES ON is re-read as it grows, logging a
+    chain of rows ('NUMPANG' -> 'NUMPANG DI HELIKOPTER' -> '... KEBALIK').
+    The first row's clear is only the moment it grew; closing there ended
+    the clip 1.1 s early. The sighting closes at its LAST row — but a
+    genuine re-watch, seconds of wall clock later, must not extend it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        # (text, appeared_mono, cleared_mono, appeared_video, cleared_video)
+        # — the real chain from transcripts/xnvk1jTAcX4.jsonl.
+        chain = [("NUMPANG", 431.656, 432.140, 205.518, 205.983),
+                 ("NUMPANG DI HELIKOPTER ..", 432.296, 432.843, 206.189, 206.666),
+                 ("NUMPANG DI HELIKOPTER KEBALIK .", 432.937, 433.250, 206.810, 207.073),
+                 # a separate viewing 465 s later: same line, never the same
+                 # sighting, and its clear may not stretch the one above.
+                 ("NUMPANG DI HELIKOPTER KEBALIK", 898.781, 900.203, 207.205, 209.900)]
+        for text, m0, m1, v0, v1 in chain:
+            s = _row(text, m0)
+            s.cleared_at = m1
+            # The rows of one chain are ~0.4 s apart, so the appear and clear
+            # stamps must be told apart exactly, not by a threshold.
+            mapping = (lambda m, a=m0 - APPEAR_LAG, v0=v0, v1=v1:
+                       v0 if abs(m - a) < 1e-9 else v1)
+            log.observe("vidTyped", [s], mapping)
+            log.observe("vidTyped", [], mapping)
+
+        hint = log.window_hint("vidTyped", "NUMPANG DI HELIKOPTER KEBALIK",
+                               near_t=207.205)
+        assert hint and abs(hint["start"] - 205.518) < 1e-6, hint
+        assert abs(hint["end"] - 207.073) < 1e-6, hint   # not 205.983, not 209.9
+        print("PASS ledger: a typed-on line closes at its last row, and a "
+              "re-watch never extends the sighting")
 
 
 def test_window_hint_matches_block_rows_and_drops_inverted_ends():
@@ -174,9 +289,11 @@ def test_window_hint_matches_block_rows_and_drops_inverted_ends():
         # Only the seek-spanning sighting available: start survives, the
         # impossible end is dropped.
         log2 = OcrTranscriptLog(root=tmp)
-        log2._read["vidC"] = [{"text": "BSie DITONTON, LHO!",
+        log2._seen["vidC"] = [{"text": "BSie DITONTON, LHO!",
                                "appeared_video": 249.65,
-                               "cleared_video": 227.915}]
+                               "cleared_video": 227.915,
+                               "appeared_monotonic": 150.0,
+                               "cleared_monotonic": 154.4}]
         h2 = log2.window_hint("vidC", "AKU CUMA BSie DITONTON, LHO!",
                               near_t=249.5)
         assert h2 and abs(h2["start"] - 249.65) < 1e-6, h2
@@ -188,8 +305,13 @@ def test_window_hint_matches_block_rows_and_drops_inverted_ends():
 if __name__ == "__main__":
     test_row_logged_on_clear()
     test_row_still_up_logged_from_stamp()
+    test_stamped_junk_never_enters_the_transcript()
+    test_no_video_id_logs_nothing()
+    test_seconds_per_word_measures_this_videos_pace()
     test_silent_vanish_and_junk_not_logged()
     test_blip_loop_logs_once_rewatch_logs_again()
     test_window_hint_recalls_first_sighting()
+    test_window_hint_never_reads_a_past_run()
+    test_window_hint_closes_at_the_sighting_s_last_row()
     test_window_hint_matches_block_rows_and_drops_inverted_ends()
     print("ALL PASS")

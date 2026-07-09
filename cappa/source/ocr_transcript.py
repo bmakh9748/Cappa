@@ -8,8 +8,15 @@ appear/clear moments and mapped through the bridge to video time — ARE a
 transcript of the video as watched. This module records them: one JSONL file
 per video under transcripts/, a line appended the moment a row leaves the
 screen. It is the durable answer to "the line lived 24:23-24:24, what did
-you record?" — and the base a future re-watch/re-click feature can align
-against instead of the holey official track.
+you record?".
+
+The files are a RECORD, never an oracle. window_hint() — the recall a card
+leans on when its own appearance was born of a pause or a seek — answers
+only from what THIS run of the app watched, and that memory dies with the
+process (user call, 2026-07-08: "you can take from only this instance of
+the app being open... when i reopen, taking from the past times its been
+open is bad"). A card's timing may cite a caption this run saw pop; never
+one a file remembers.
 
 Best-effort by design: no video id means the row isn't logged (nothing to
 file it under), a mapping the bridge can't make leaves the video-time fields
@@ -35,6 +42,17 @@ REPEAT_GAP = 10.0   # the same text clearing again within this many seconds
 HINT_RADIUS = 120.0  # window_hint only trusts sightings this close to the
                      # click: a stock phrase repeated elsewhere in the video
                      # must not lend its timing to this row
+SIGHTING_GAP = 2.0   # wall-clock seconds separating one sighting of a row
+                     # from the next. A caption that types on is re-read as
+                     # it grows and logs a CHAIN of rows ('NUMPANG' ->
+                     # 'NUMPANG DI HELIKOPTER' -> '... KEBALIK'); in
+                     # card_0025's log those follow each other within
+                     # 0.03-1.13 s, while the nearest re-watch of the same
+                     # line sits 3.3 s away. 2 s tells the two apart.
+MIN_RATE_LIFE = 0.25  # a row on screen for less than this measures detector
+                      # lag, not speech: it lends no pace to seconds_per_word
+MIN_RATE_ROWS = 5     # ...and one video needs this many before its own pace
+                      # is trusted over the default
 
 
 class OcrTranscriptLog:
@@ -47,14 +65,22 @@ class OcrTranscriptLog:
         self._live = {}    # id(sentence) -> (sentence, video_id)
         self._done = set() # ids written but still listed: never write twice
         self._recent = {}  # video_id -> deque of (text, cleared_monotonic)
-        self._read = {}    # video_id -> records read back for window_hint
+        self._seen = {}    # video_id -> rows THIS RUN watched: window_hint's
+                           # only source, gone when the process is
 
     def observe(self, video_id, sentences, video_at=lambda m: None):
+        # A falsy video_id means there is no live video to attribute these
+        # rows to -- paused, tab hidden/closed, or no bridge (the caller,
+        # source_wiring.live_video_id, decides). Nothing is logged then, so
+        # a frozen or off-screen frame can't lie about a caption's life.
         current = set()
         for s in sentences:
             current.add(id(s))
             if (id(s) not in self._live and id(s) not in self._done
-                    and video_id and (getattr(s, "text", "") or "").strip()):
+                    and video_id and (getattr(s, "text", "") or "").strip()
+                    # A watermark/clock/URL is on screen, but it is not a
+                    # caption and this file is a transcript of captions.
+                    and not getattr(s, "junk", None)):
                 self._live[id(s)] = (s, video_id)
         for key in list(self._live):
             s, vid = self._live[key]
@@ -76,12 +102,26 @@ class OcrTranscriptLog:
 
     def _write(self, video_id, s, cleared, video_at):
         appeared = getattr(s, "appeared_at", 0.0) or 0.0
+        conf = getattr(s, "ocr_conf", None)
+        box = getattr(s, "box", None)
         rec = {
             "text": s.text,
+            # The row's on-screen rectangle (region-local physical px), so the
+            # sentence assembler can tell a caption in the SAME place from one
+            # elsewhere on screen: a row whose box doesn't overlap the clicked
+            # caption is not part of its sentence (user rule — the title up top
+            # is not the caption at the bottom, however the words line up).
+            "box": [int(v) for v in box] if box is not None else None,
             "appeared_video": _mapped(video_at, appeared - APPEAR_LAG),
             "cleared_video": _mapped(video_at, cleared - CLEAR_LAG),
             "appeared_monotonic": round(appeared, 3),
             "cleared_monotonic": round(cleared, 3),
+            # The read's confidence, so "was OCR unsure?" can be checked
+            # against a row's on-screen LIFE (cleared-appeared): the open
+            # question is whether captions too quick to read come back
+            # low-confidence (a usable trigger) or just confidently wrong /
+            # missing entirely (not one). An added key, never a renamed one.
+            "ocr_conf": round(conf, 3) if conf is not None else None,
         }
         vid = _safe_vid(video_id)
         if not vid:
@@ -91,8 +131,10 @@ class OcrTranscriptLog:
                for txt, at in recent):
             return                          # blip loop, not a re-watch
         recent.append((s.text, cleared))
-        if vid in self._read:
-            self._read[vid].append(rec)     # keep the hint cache current
+        # This run's in-memory record -- what window_hint and
+        # seconds_per_word read back. Deduped like the file: a paused frame's
+        # flicker must not lend a phantom pace or a phantom sighting.
+        self._seen.setdefault(vid, []).append(rec)
         try:
             os.makedirs(self._root, exist_ok=True)
             path = os.path.join(self._root, "%s.jsonl" % vid)
@@ -103,58 +145,91 @@ class OcrTranscriptLog:
 
     # ------------------------------------------------------------- read-back
     def window_hint(self, video_id, text, near_t=None, radius=HINT_RADIUS):
-        """The video-time window of a previous SIGHTING of `text` on this
-        video — {'start': appeared, 'end': cleared-or-None} — or None. This
-        is the payoff of keeping our own transcript ('you should have saved
-        where the caption popped up' — card_0009: watch, rewind, pause,
-        click): when the row's LIVE appearance is worthless because it was
-        born of a seek or a pause, an earlier watch already wrote down its
-        real pop. The EARLIEST mapped sighting near the click wins — a seek
+        """The video-time window {'start', 'end'} of a sighting of `text`
+        THIS RUN watched, or None. Only this process's own observations
+        count — the transcripts/ files are never read back (see the module
+        docstring); a fresh app knows nothing until it watches something.
+
+        Used when a row's LIVE appearance is worthless because it was born
+        of a pause or a seek (card_0009: watch, rewind, pause, click). The
+        EARLIEST mapped sighting near the click supplies the start: a seek
         landing mid-row logs a later appearance, never an earlier one, so
-        the minimum is the closest thing to the row's true start the log
-        holds."""
+        the minimum is the closest thing to the row's true pop."""
         vid = _safe_vid(video_id)
         key = _norm_hint(text)
         if not vid or not key:
             return None
-        best = None
-        for rec in self._records(vid):
-            start = rec.get("appeared_video")
-            if start is None or not _hint_match(key, rec.get("text")):
-                continue
-            if near_t is not None and abs(start - near_t) > radius:
-                continue
-            if best is None or start < best.get("appeared_video"):
-                best = rec
-        if best is None:
+        seen = [rec for rec in self._seen.get(vid, ())
+                if rec.get("appeared_video") is not None
+                and _hint_match(key, rec.get("text"))
+                and (near_t is None
+                     or abs(rec["appeared_video"] - near_t) <= radius)]
+        if not seen:
             return None
-        end = best.get("cleared_video")
-        if end is not None and end < best["appeared_video"]:
-            # A row that stayed up ACROSS a seek logs its clear at the
-            # landing — an end before its own start (card_0016's log:
-            # appeared 249.65, 'cleared' 227.9). The appearance is still
-            # the earliest sighting's truth; the end is not.
-            end = None
-        return {"start": best["appeared_video"], "end": end}
+        best = min(seen, key=lambda rec: rec["appeared_video"])
+        start = best["appeared_video"]
+        return {"start": start, "end": _sighting_end(seen, best, start)}
 
-    def _records(self, vid):
-        """All records logged for `vid`, read back once and kept current as
-        new rows are written. Disk trouble just means no hints."""
-        if vid in self._read:
-            return self._read[vid]
-        recs = []
-        try:
-            with open(os.path.join(self._root, "%s.jsonl" % vid),
-                      encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        recs.append(json.loads(line))
-                    except ValueError:
-                        continue
-        except OSError:
-            pass
-        self._read[vid] = recs
-        return recs
+    def rows_between(self, video_id, t0, t1):
+        """This run's rows whose on-screen life touches video-time [t0, t1],
+        time-ordered — the raw material the sentence assembler merges with
+        the caption track. Same session-only source as window_hint."""
+        out = [rec for rec in self._seen.get(_safe_vid(video_id), ())
+               if rec.get("appeared_video") is not None
+               and rec.get("cleared_video") is not None
+               and rec["cleared_video"] >= t0
+               and rec["appeared_video"] <= t1]
+        out.sort(key=lambda rec: rec["appeared_video"])
+        return out
+
+    def seconds_per_word(self, video_id):
+        """How long one spoken word lasts in THIS video, or None until
+        enough rows have been watched. The median of (a row's on-screen
+        life / its word count) over the rows this run saw: self-calibrating
+        per video, so a fast talker and a slow one each get their own pace
+        without anyone naming a speaker (we cannot tell them apart, and do
+        not need to -- one video, one pace).
+
+        Only multi-word rows count: a one-word chunk's life is dominated by
+        the detector's own lags, not by speech."""
+        rows = self._seen.get(_safe_vid(video_id), ())
+        rates = []
+        for rec in rows:
+            words = len((rec.get("text") or "").split())
+            life = rec["cleared_monotonic"] - rec["appeared_monotonic"]
+            if words >= 2 and life > MIN_RATE_LIFE:
+                rates.append(life / words)
+        if len(rates) < MIN_RATE_ROWS:
+            return None
+        rates.sort()
+        return rates[len(rates) // 2]
+
+
+def _sighting_end(seen, best, start):
+    """When the caption `best` began actually LEFT the screen: the last
+    clear of the sighting `best` opened. A line that types on is re-read as
+    it grows, so one sighting logs a chain of rows within SIGHTING_GAP of
+    each other, and the first row's clear is merely the moment it grew
+    (card_0025 closed there and lost 1.1 s — the clip ended before 'DI
+    HELIKOPTER KEBALIK' was ever spoken). Rows of a stacked block appear
+    together and belong to the same chain for the same reason.
+
+    A clear mapped BEFORE its own start spans a seek (card_0016's log:
+    appeared 249.65, 'cleared' 227.9) and is no clear at all. None when the
+    sighting has no usable end -- the caller then bounds the clip itself."""
+    edge = best.get("cleared_monotonic", 0.0)
+    end = None
+    for rec in sorted(seen, key=lambda r: r.get("appeared_monotonic", 0.0)):
+        appeared = rec.get("appeared_monotonic", 0.0)
+        if appeared < best.get("appeared_monotonic", 0.0):
+            continue                      # an earlier viewing of the row
+        if appeared - edge > SIGHTING_GAP:
+            break                         # the screen moved on; a re-watch
+        edge = max(edge, rec.get("cleared_monotonic", 0.0))
+        cleared = rec.get("cleared_video")
+        if cleared is not None and cleared >= start:
+            end = cleared if end is None else max(end, cleared)
+    return end
 
 
 def _safe_vid(video_id):

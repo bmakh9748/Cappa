@@ -16,6 +16,7 @@ simply wrong at the real spot: we look only where you actually are.
 
 Pure and Qt-free."""
 
+import html
 import re
 from difflib import SequenceMatcher
 
@@ -146,6 +147,90 @@ class Transcript:
             "j": j + 1,
             "by": "position",
         }
+
+    def sentence_for(self, ocr_text, near_t=None):
+        """The whole track SENTENCE containing the caption `ocr_text`, or
+        None when the text doesn't confidently match the track (a burned-in
+        translation sub, garbage) — the match IS the safety gate. Returns
+        {start, end, score, words: [(text, start, capped_end), ...]} with
+        boundary markers ('>>') dropped from the words."""
+        m = self.window_for(ocr_text, near_t=near_t)
+        if m is None:
+            return None
+        i0, j0, capped = sentence_slice(self.tokens, m["i"], m["j"])
+        if capped:
+            # The sentence grew to the SENTENCE_MAX runaway cap without ever
+            # hitting a real boundary: an unpunctuated auto-caption track has
+            # no sentence structure here, so "the sentence containing this
+            # line" became the whole neighbourhood. Completing against that
+            # merges unrelated sentences into the card (card_0032: a clean
+            # 7-word line ballooned to 40 words spanning the first 15s). No
+            # confident sentence -> the caller keeps the clean on-screen line.
+            return None
+        words = [(t.text, t.start, _capped_end(t))
+                 for t in self.tokens[i0:j0] if not _marker(t)]
+        if not words:
+            return None
+        return {"start": words[0][1], "end": words[-1][2],
+                "score": m["score"], "words": words,
+                # where the MATCHED on-screen text sits inside the sentence,
+                # so the caller can stand it in as a row of its own
+                "match_start": m["start"], "match_end": m["end"]}
+
+
+_TERMINAL = ".?!…"     # a token ending with one of these ends a sentence
+SENTENCE_GAP = 1.5     # no punctuation? a silence this long splits sentences
+SENTENCE_MAX = 15.0    # a "sentence" longer than this is a runaway, stop
+
+
+def _marker(tok):
+    """A token with no letters or digits (the auto track's '>>' speaker
+    change — kept HTML-escaped as '&gt;&gt;' in the VTT — stray symbols):
+    a sentence boundary, never a word of one."""
+    return not any(ch.isalnum() for ch in html.unescape(tok.text or ""))
+
+
+def _ends_sentence(tok):
+    return _marker(tok) or (tok.text or "").rstrip("\"'»)")[-1:] in tuple(
+        _TERMINAL)
+
+
+def sentence_slice(tokens, i, j):
+    """Token range [i, j) grown to the whole SENTENCE it sits in: back to
+    just after the previous terminal punctuation / speaker marker / big
+    silence, forward until one. This is how a matched on-screen fragment
+    learns 'there is more sentence' — the track is punctuated (or at least
+    silence-split) where the word-at-a-time hardsub is not.
+
+    Returns (i0, j0, capped). `capped` is True when growth stopped ONLY
+    because the span reached SENTENCE_MAX — i.e. no real boundary
+    (punctuation or silence) was ever found. That means the track has no
+    sentence structure here (continuous unpunctuated auto-captions), and the
+    'sentence' is really the whole neighbourhood; callers use it to refuse a
+    runaway rather than merge unrelated lines."""
+    i0 = i
+    capped = False
+    while i0 > 0:
+        prev = tokens[i0 - 1]
+        if (_ends_sentence(prev)
+                or tokens[i0].start - _capped_end(prev) > SENTENCE_GAP):
+            break
+        if _capped_end(tokens[j - 1]) - prev.start > SENTENCE_MAX:
+            capped = True
+            break
+        i0 -= 1
+    j0 = j
+    while j0 < len(tokens):
+        if _ends_sentence(tokens[j0 - 1]):
+            break
+        nxt = tokens[j0]
+        if nxt.start - _capped_end(tokens[j0 - 1]) > SENTENCE_GAP:
+            break
+        if _capped_end(nxt) - tokens[i0].start > SENTENCE_MAX:
+            capped = True
+            break
+        j0 += 1
+    return i0, j0, capped
 
 
 def _capped_end(tok):
