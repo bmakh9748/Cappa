@@ -1515,6 +1515,54 @@ Three user calls on the day-old drag interaction, one bug found under them:
 tests/test_jmdict.py grows selection_word legs (forward/backward/single/
 'hello w'); test_word_popup.py gains the single-character preview leg.
 
+### 2026-07-10b — vertical text; the id a card must always know (card_0001)
+
+The first card made after the preview shipped was garbage end to end:
+word/sentence 执数单, translations "Number of books" / "number of plates",
+no audio. The user's read was "the fallbacks didn't run"; the card's own
+provenance says otherwise, and the two real failures were elsewhere.
+
+**The text: a VERTICAL column.** The screenshot shows 抜山蓋世 written
+top-to-bottom in a brush font (a game title card); the word box is 286×857.
+The rec model reads horizontal lines, so upright it produced 执数单 at conf
+0.31 (the card's shaky-OCR note fired correctly). Measured on the REAL crop:
+
+    upright (as shipped)   执验单       0.47
+    rotated 90° cw         (nothing)    0.00
+    rotated 90° ccw        拔山蓋世      0.99
+    per-character cells    拔芸世        mixed
+
+So `ocr.read` now tries a tall box (height ≥ 1.6× width,
+`VERTICAL_MIN_ASPECT`) BOTH ways — upright and laid on its side
+(`_read_vertical`, 90° ccw; cw reads nothing) — and the better score wins.
+Cost: one extra ~20 ms rec pass on tall boxes only; a tall-but-horizontal
+box can never LOSE accuracy, since upright still competes. The span maths is
+the same midpoint tiling with the axes swapped, so hotspots come back as
+cells stacked DOWN the column — click 山 in the column and jmdict answers
+'mountain; hill'; drag down it and the selection grows character by
+character. Verified on card_0001's real screenshot (0.99) and pinned in
+test_ocr_read with a rendered column. Not handled yet: MULTI-column vertical
+blocks (columns read right-to-left) — caption_block only stacks horizontal
+rows.
+
+**The fallbacks the user asked for already ran** — that half of the card
+was correct: no caption track, yet `matched_by: block_life`,
+`start_from: onscreen` (6.211 s), `end_from: predicted` (words × pace), and
+the loopback rescue cut the 8 s window. The clip died at the SILENCE gate:
+peak 1 over the whole window (card_0027's rule — a silent wav is worse than
+none). Digital silence means the default output device genuinely carried no
+sound: video muted, or audio routed to a non-default device. The bridge was
+alive (click_position present, transcript rows seconds earlier), so the
+privacy gate was open and the recorder running. Nothing to fix in the
+ladder; if this recurs unmuted, instrument the recorder's pause intervals so
+the discard note can say WHICH it was.
+
+**The id a card must always know.** The card stamped `video_id: null` while
+the transcript file on disk was NAMED by the id — `session.meta()` was empty
+until the yt-dlp fetch landed, and this card was made 6 s into a fresh
+video. meta() now floors on the session's own id/url and overlays fetched
+metadata when it arrives.
+
 ### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
 
 Turning the browser's own captions (CC) on or off makes a block of text

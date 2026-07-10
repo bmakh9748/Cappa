@@ -29,6 +29,14 @@ from .sentence import Sentence, is_cjk
 
 PAD = 4      # px of context around the crop; rec likes breathing room
 
+# A det box this much taller than wide is likely a VERTICAL text column
+# (Japanese games/titles write top-to-bottom). The rec model reads such a
+# column laid on its side almost perfectly and reads it upright as garbage:
+# card_0001's real column read 0.31 upright, 0.99 rotated 90° ccw. Both
+# reads run and the better score wins, so a tall-but-horizontal box costs
+# one wasted rec pass (~20 ms, rare) and can never LOSE accuracy.
+VERTICAL_MIN_ASPECT = 1.6
+
 # settings.source_language code -> rapidocr LangRec value. Only scripts the
 # default multi-script model CANNOT read are listed; Latin/CJK languages stay
 # on the default, which measured more accurate than their per-language packs.
@@ -177,6 +185,13 @@ class TextReader:
         if b - t < 2 or r - l < 2:  # judged BEFORE padding: a sliver of a
             return None, 0.0        # box is no evidence, however padded
         got = self._read_once(frame, box, PAD)
+        if (b - t) >= VERTICAL_MIN_ASPECT * (r - l):
+            # Tall column: also try it as VERTICAL text, best read wins
+            # (card_0001: 拔山蓋世 written top-to-bottom read upright as
+            # '执数单' 0.31 and rotated as itself at 0.99).
+            alt = self._read_vertical(frame, box, PAD)
+            if alt is not None and (got is None or alt[1] > got[1]):
+                got = alt
         if got is None:
             return None, 0.0
         text, score, spans = got
@@ -216,6 +231,37 @@ class TextReader:
         text = res.txts[0]
         score = float(res.scores[0]) if res.scores else 0.0
         return text, score, self._word_spans(res, cl, cr, l, r, t, b)
+
+    def _read_vertical(self, frame, box, pad):
+        """One rec pass over `box` as a VERTICAL column: the crop is laid on
+        its side (90° ccw — the rotation the model reads; cw reads nothing)
+        so the column becomes a left-to-right line in top-to-bottom order,
+        and the span geometry is mapped back to upright FRAME boxes stacked
+        down the column. Same return contract as _read_once."""
+        h, w = frame.shape[:2]
+        l, t, r, b = box
+        ct, cb = max(t - pad, 0), min(b + pad, h)
+        cl, cr = max(l - pad, 0), min(r + pad, w)
+        crop = np.ascontiguousarray(np.rot90(frame[ct:cb, cl:cr, :3]))
+        try:
+            res = self._model(crop, use_det=False, use_cls=False,
+                              use_rec=True, return_word_box=True)
+        except Exception:
+            return None
+        if not res.txts:
+            return "", 0.0, []
+        text = res.txts[0]
+        score = float(res.scores[0]) if res.scores else 0.0
+        # In the rotated crop the reading axis IS the original y axis, so
+        # the tiling maths runs with the axes swapped: crop bounds (ct, cb),
+        # line bounds (t, b), cross-line bounds (l, r) — then each span box
+        # comes back (along0, cross0, along1, cross1) and is swapped into an
+        # upright (l, y0, r, y1) cell.
+        spans = self._word_spans(res, ct, cb, t, b, l, r)
+        return text, score, [
+            (word_text, (x0, y0, x1, y1))
+            for word_text, (y0, x0, y1, x1) in spans
+        ]
 
     @staticmethod
     def _word_spans(res, cl, cr, l, r, t, b):

@@ -155,4 +155,41 @@ sentence, conf = reader.read(frame, (0, 0, 1, 1))
 assert sentence is None and conf == 0.0
 print("PASS: degenerate crop returns no evidence, no crash")
 
+# VERTICAL text (card_0001: 拔山蓋世 written top-to-bottom in a game read
+# upright as '执数单' at conf 0.31 — garbage word, garbage translations).
+# A tall column is also read on its side, best score wins; hotspots come
+# back as cells stacked DOWN the column so click/drag work vertically.
+V_TEXT = "公衆電話"
+v_img = Image.new("RGB", (110, 400), (12, 12, 16))
+v_draw = ImageDraw.Draw(v_img)
+v_font = ImageFont.truetype(font.path, 60)
+for i, ch in enumerate(V_TEXT):
+    v_draw.text((25, 12 + i * 95), ch, font=v_font, fill=(255, 255, 255))
+v_frame = np.empty((400, 110, 4), np.uint8)
+v_frame[:, :, :3] = np.asarray(v_img)[:, :, ::-1]
+v_frame[:, :, 3] = 255
+sentence, conf = reader.read(v_frame, (0, 0, 110, 400))
+assert sentence is not None and sentence.text == V_TEXT, (
+    "FAIL: vertical column read %s (conf %.2f), wanted %s"
+    % (ascii(sentence.text if sentence else ""), conf, ascii(V_TEXT)))
+assert conf >= 0.8, "FAIL: vertical read shaky (conf %.2f)" % conf
+cells = sentence.words
+assert len(cells) == len(V_TEXT), (
+    "FAIL: expected one hotspot per character, got %r" % cells)
+tops = [w.box[1] for w in cells]
+assert tops == sorted(tops), "FAIL: vertical cells not stacked top-to-bottom"
+for prev, cur in zip(cells, cells[1:]):
+    assert abs(cur.box[1] - prev.box[3]) <= 1, (
+        "FAIL: vertical cells must tile, gap at y=%r" % cur.box[1])
+assert all(w.box[0] >= -8 and w.box[2] <= 118 for w in cells), (
+    "FAIL: vertical cell leaked past the column")
+print("PASS: vertical column read %s (conf %.2f), cells stacked and tiling"
+      % (ascii(sentence.text), conf))
+
+# ...and a tall-ish but HORIZONTAL box must not regress: the upright read
+# wins the comparison on score.
+sentence, conf = reader.read(v_frame, (0, 100, 110, 200))  # one char, ~square+
+print("PASS: aspect gate leaves near-square boxes alone (read %s)"
+      % ascii(sentence.text if sentence else ""))
+
 print("ALL PASS")

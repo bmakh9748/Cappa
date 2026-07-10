@@ -269,8 +269,19 @@ class SourceSession:
         return transcript.window_at(t)
 
     def meta(self):
+        """What is known about the active video RIGHT NOW. The session's own
+        id/url are the floor — a card made seconds into a fresh video, before
+        the yt-dlp fetch lands, must still record WHICH video it came from
+        (card_0001 stamped video_id null while the transcript file sat on
+        disk named by that very id). Fetched metadata overlays when it
+        arrives."""
         with self._lock:
-            return dict(self._transcript.meta) if self._transcript else {}
+            base = {}
+            if self._video_id:
+                base = {"video_id": self._video_id, "url": self._url}
+            if self._transcript:
+                base.update(self._transcript.meta)
+            return base
 
     def monotonic_window(self, start, end):
         """Map a caption window (video seconds) to the monotonic window when it
