@@ -57,12 +57,18 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
    free REST API, senses ordered so the one agreeing with the in-context
    translation comes first; cards 65/66: Google's contextual trick mistranslates
    grammatical glue), falling back to deep-translator's free Google endpoint with
-   the word translated IN its sentence. **NO LLM in the translation/dictionary
+   the word translated IN its sentence. For JAPANESE the popup is a reader's
+   dictionary entry instead — headword 【reading】, part-of-speech tags, numbered
+   senses, the inflection chain — resolved offline from the JMdict pack
+   (`cappa/jmdict.py`), no network call at all. **NO LLM in the translation/dictionary
    path — hard user rule.**
+   In Japanese a hotspot is one CHARACTER and the WORD is whatever the dictionary
+   says the character belongs to; dragging across characters forces a span by hand.
 3. "Create Anki card" gathers the rest off the UI thread. The card's sentence is the whole
    stacked caption BLOCK (a two-line subtitle is ONE sentence, card_0031), assembled from
    the click-time snapshot reconciled with the live list at card time (`click_pool`,
    card_0045 — a sibling line detection was still re-reading at the click still joins).
+   The gathered draft goes NOWHERE by itself — it opens the preview (step 6).
 4. Audio: the row's OBSERVED on-screen life is the timing backbone (inverted
    2026-07-07 — the YouTube track is only a precision bonus when strong, near and
    human-made; auto-ASR kept picking neighbour lines and had 20s holes). Anchors
@@ -73,7 +79,11 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
    Silent clips are discarded (card_0027); every degradation leaves a note.
 5. The draft saves to `cards/card_NNNN/` — word, sentence, translations, screenshot,
    audio, and `metadata.json` with full provenance (boxes, timing windows, match scores,
-   video source, notes) — and goes straight into Anki in the same pass.
+   video source, notes).
+6. The PREVIEW opens on it (`ui/card_preview.py`): every piece the card will carry,
+   on the front/back faces the Flashcards settings chose, with the draft's notes and a
+   playable clip. **Add to Anki** delivers it; **Discard** deletes the draft folder.
+   Nothing reaches Anki until the user says so.
 
 ---
 
@@ -81,8 +91,9 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
 
 - Every saved card is a complete draft folder under `cards/card_NNNN/` (word,
   sentence, translations, screenshot, audio, `metadata.json` provenance).
-- **No separate export step.** Clicking **Create Anki card** saves the
-  draft AND puts it into Anki in the same background-thread pass
+- **No separate export step.** Clicking **Create Anki card** saves the draft
+  and shows it in the preview; **Add to Anki** there puts it into Anki in one
+  background-thread pass
   (`cappa/flashcard/anki_sync.py` — the whole feature in one module). Anki
   OPEN: the card goes through the AnkiConnect add-on's localhost API
   (2055492159) and is visible in the running app the moment the button
@@ -97,6 +108,8 @@ Place transparent clickable hotspots over each word in the detected subtitle. Th
   delivery leaves no receipt and rides the next save; a card already in
   Anki (found by its `cappa::card_NNNN` tag) is adopted, not re-added. One
   deck per learning language ("Cappa \<Language\>", get-or-create by name).
+  This sweep is why **Discard deletes the draft folder** (`writer.discard_draft`):
+  a rejected card left on disk would ride the next save into Anki.
 - Each card contains: word, translation, sentence, screenshot, audio clip —
   whichever of those the Flashcards settings tab has switched on, on
   whichever side, in the design configured when that card was made
@@ -186,12 +199,14 @@ Also requires:
 9. **Audio extraction** — caption-track windows from source audio, loopback fallbacks **[done]**
 10. **Screenshot capture** — frame frozen at word click **[done]**
 11. **Flashcard export** — per-card Anki delivery riding the Create card button **[done]**
-12. **Card draft review (user correction)** — before a card is saved/synced, a DRAFT
+12. **Card draft review (user correction)** — before a card is synced, a DRAFT
     popup shows exactly what the card will contain (word, sentence, both translations,
     the screenshot, the audio clip) so the user can SEE it and fix what the pipeline got
     wrong — the wrong-word OCR read, a sentence polluted by on-screen furniture, a clip
     that landed off the word. The human-in-the-loop that makes the automatic mistakes
-    recoverable instead of silently shipped to Anki. **[planned — next]**
+    recoverable instead of silently shipped to Anki.
+    **[preview done 2026-07-09 — see the entry below; EDITING the fields is the next
+    slice]**
 
 ---
 
@@ -209,7 +224,11 @@ cappa/
   translate.py          # word -> translation (deep-translator/Google; no Qt; cached;
                         #   the word is translated IN its sentence via a marked span)
   dictionary.py         # word -> MEANING: Wiktionary definitions, contextual
-                        #   translation as hint + fallback (no Qt, no LLM)
+                        #   translation as hint + fallback (no Qt, no LLM);
+                        #   Japanese goes to jmdict.py instead
+  jmdict.py             # Japanese: JMdict pack (sqlite) + deinflection rules.
+                        #   word_at(line, char) resolves the character under the
+                        #   cursor to the whole word — the tokeniser Japanese needs
   lexicon.py            # per-language word list (downloadable ~50k pack) + the
                         #   splitter that un-glues OCR'd words (CANALWAYS->CAN ALWAYS)
   settings.py           # tiny persisted settings holder (settings.json; no Qt)
@@ -226,6 +245,8 @@ cappa/
     template_dialog.py  # advanced card-design editor (front/back HTML + CSS)
     logo.py             # the Cappa logo as paint code; window/taskbar icons
     word_popup.py       # the box a clicked word opens: word · divider · meaning · Anki btn
+    card_preview.py     # what the built card holds, before delivery: front/back faces,
+                        #   notes, playable clip; Add to Anki | Discard (deletes draft)
   detection/            # everything that FINDS captions (see its __init__ for the map)
     capture.py          # screen grab (mss -> numpy BGRA)     every frame  ~10ms   [done]
     diff.py             # what changed since last frame       every frame  <1ms    [done]
@@ -236,8 +257,10 @@ cappa/
     worker.py           # background QThread chaining the stages, emits results
     ocr.py              # read text in accepted boxes (PP-OCRv6 ONNX + per-script
                         #   packs picked by the video-language setting)  ~20ms      [done]
-    sentence.py         # Sentence/Word model, caption BLOCKS (stacked lines), and
-                        #   click_pool (click-time vs card-time caption reconcile)  [done]
+    sentence.py         # Sentence/Word model (a CJK Word is one CHARACTER; span_word
+                        #   fuses the range a dictionary lookup spanned), caption
+                        #   BLOCKS (stacked lines), click_pool (click-time vs
+                        #   card-time caption reconcile)                           [done]
     latency.py          # the pipeline's measured reaction times (appear/clear lags)
   flashcard/            # gathers one card's pieces into cards/card_NNNN, and
                         #   puts each new card into Anki (anki_sync.py)
@@ -250,7 +273,8 @@ cappa/
     provenance.py       # verify the clicked word really belongs to its sentence
     screenshot.py       # click-time PNG capture/write
     timing.py           # audio window maths (pre/postroll, min/max clip)
-    writer.py           # card_NNNN folders + metadata.json
+    writer.py           # card_NNNN folders + metadata.json; discard_draft deletes a
+                        #   draft the preview rejected (else the sweep would sync it)
     anki_sync.py        # sync(): put the new card into Anki -- live (AnkiConnect)
                         #   when open, collection file when closed; per-folder
                         #   anki_synced.txt receipts, delivered once, never re-swept  [done]
@@ -275,9 +299,12 @@ tests/
   test_flashcard.py, test_audio.py                 # card drafts, timing, loopback recorder
   test_youtube_source.py, test_bridge.py           # VTT/alignment/session, browser bridge
   test_settings.py, test_translate.py              # settings roundtrip, word cleanup
+  test_jmdict.py        # Japanese: deinflection, longest match, the screenshot's clicks
+  test_word_popup.py    # the live drag preview commits nothing; the release commits
   test_overlay_*.py, test_captions_live.py         # live overlay behaviour
   test_browser_sim.py, test_realistic_video.py     # end-to-end sims (draw what they detect)
   test_anki_sync.py     # per-card Anki delivery (fake add-on + throwaway collection)
+  test_card_preview.py  # preview contents; Discard deletes, a receipted card survives
 ```
 
 Boundary rules:
@@ -530,7 +557,9 @@ Boundary rules:
 > per-word geometry alongside the text — the rec model's own word grouping, CTC column
 > spans mapped back to frame px (mapping verified visually on rendered lines): real words
 > for spaced scripts, kanji-block/kana-run groups for Japanese — the PROVISIONAL click
-> unit until the tokeniser-vs-Claude-call decision is made. The ledger carries words with
+> unit until the tokeniser-vs-Claude-call decision is made. (**Superseded 2026-07-09f**:
+> the CJK grouping was the bug, not the click unit — hotspots are per character now and
+> `jmdict.word_at` finds the word.) The ledger carries words with
 > each live caption (`captions()`; the worker emits payload[1] = [(box, words)], words
 > survive blip resurrection). Overlay: hovering a word highlights it (translucent cyan,
 > pointing cursor), clicking opens `ui/word_popup.py` — dark box above the word (below if
@@ -559,10 +588,10 @@ Boundary rules:
 > `detection/sentence.py`: a read caption line is now a `Sentence` (text, box, words) of
 > `Word`s (text, box, back-ref to its sentence) — ocr.read returns (Sentence, conf), the
 > ledger stores Sentences (`captions()` returns them, payload[1] = [Sentence]), overlay
-> hotspots carry Word instances, and the popup keeps `popup.word` — so the Claude call
+> hotspots carry Word instances, and the popup keeps `popup.word` — so the meaning lookup
 > (#7) gets word + full sentence straight off the clicked Word, and the Japanese
-> word-unit decision (tokeniser vs Claude) swaps in at exactly one place: how
-> Sentence.words is built.
+> word-unit decision swaps in at exactly one place: how Sentence.words is built.
+> (It did, 2026-07-09f: for CJK a Word became one character.)
 >
 > **Stylised/off-centre captions in a user area (done, screenshot-driven).** A user
 > screenshot (Indonesian gaming video: big yellow italic caption + blue "APA?" shout,
@@ -773,8 +802,12 @@ Boundary rules:
 > caption-track timing is visible at a glance. The popup reports degraded saves on the
 > button itself ("Saved card_0046 · 2 notes") instead of a silent thumbs-up.
 >
-> **Next step:** the Japanese word-unit decision (local tokeniser vs resolving
-> the clicked segment), then VAD clip-edge snapping (polish item 4).
+> **Next step:** EDITING in the card preview (build-order #12's second half —
+> the preview itself shipped, see 2026-07-09e), then the deferred timing
+> reconciliation. (Correction, same day: an earlier edit of this line called
+> the Japanese word-unit decision "closed, its other option was a Claude
+> call". Wrong — the LOCAL half was always live, and it landed hours later
+> as `cappa/jmdict.py`. See 2026-07-09f.)
 >
 > _Deferred / known limits:_ multi-DPI across
 > mixed-scaling monitors may be slightly off (uses primary-screen DPR); tracking a
@@ -1323,6 +1356,128 @@ mid-clause wrap. Now the sentence is translated FLAT (space-joined, exactly
 as the card displays it). card_0074 reads a touch more awkwardly flat but is
 still correct; every mid-clause wrap is fixed. NO change to the no-LLM rule —
 Google was never the problem. (`builder._translate_fields`.)
+
+### 2026-07-09e — the card preview (build-order #12, first slice)
+
+`ui/card_preview.py`. Create Anki card no longer delivers anything: it builds
+the draft as before, then opens a preview of it and stops. The window shows
+every piece the card will carry, grouped under FRONT and BACK exactly as the
+Flashcards settings placed them — word, both translations, the sentence, the
+click-time screenshot, the clip (a ▶ Play button, `winsound`, no new
+dependency) — with a dim "— no audio" / "— no screenshot" line where a piece
+is missing and the draft's notes as ⚠ lines. That absence is the point: a
+silent clip dropped by card_0027's rule, or a shaky-OCR note, is now visible
+BEFORE the card ships. Two exits: **Add to Anki** (the old sync, moved here)
+and **Discard**.
+
+**Discard has to delete the folder.** `anki_sync.sync()` delivers every
+`card_*` folder without an `anki_synced.txt` receipt, so a previewed-then-
+rejected draft left on disk would ride the NEXT card's save into Anki —
+silently resurrecting exactly what the user just rejected, which is the bug
+the per-card receipts were introduced to kill (2026-07-08). `writer.discard_draft`
+deletes it, and REFUSES a folder that already carries a receipt: that card is
+in Anki, and Anki's copy is the user's. Same reason there is no "leave it for
+later" exit — the ✕ discards, and a draft superseded by another Create click
+is discarded rather than abandoned. A FAILED delivery still keeps the old
+behaviour (no receipt, rides the next save) and keeps Discard reachable.
+
+Structure: the preview is a TOP-LEVEL window, not an overlay child like the
+word popup — a Select area can be far narrower than a screenshot needs. It is
+excluded from capture like the overlay and launcher (detection must never read
+our own UI), and the overlay counts its hwnd as "ours" (`popup.roots()` →
+`preview.roots()`) so opening it doesn't park the tracking border. The
+`_built` signal carries the draft with NO request-id guard, deliberately: a
+built draft exists on disk and must be resolved whatever the popup moved on
+to. Editing the fields — the half of #12 that lets the user FIX a wrong read —
+is the next slice. `tests/test_card_preview.py`.
+
+### 2026-07-09f — the Japanese word unit: the DICTIONARY is the tokeniser
+
+The oldest open question in this file, answered. A Persona 5 screenshot: the
+card came out for the fragment 戻, the translations were nonsense, and the
+user asked for highlight-to-select or "words that just didn't get split up
+like that". Measured on the real frame, the OCR was **innocent** — 戻るのも面倒
+なんで read at conf 1.00. The hotspots were the crime:
+
+    戻 | るのも | 面倒 | なんで          (script-run grouping)
+    オマエやっといてくれ | 。            (one 11-char hotspot: all kana)
+
+The recogniser groups characters by SCRIPT RUN, and the kanji→kana boundary
+is where okurigana lives. It is not approximately wrong; it is
+anti-correlated with word boundaries, cutting 戻る, 面白い, 食べる at exactly
+the one place a Japanese word never breaks. A kana-only line has no boundary
+at all, hence the 11-character blob.
+
+**What YomiNinja actually does** (the tool the user pointed at) is not
+segment. It renders the OCR text as selectable text and lets Yomitan/10ten
+do the work; those do rule-based deinflection with many dictionary queries
+per word, scanning forward from the cursor. The `~ru Godan/u-verb, intrans.`
+line in the user's screenshot IS the deinflection result. So: **stop
+splitting at OCR time, resolve the word at LOOKUP time.**
+
+- `detection/ocr.py` emits ONE SPAN PER CHARACTER on CJK lines (the
+  midpoint-tiling maths was already per-character; the grouping step was
+  simply deleted). Spaced scripts keep real words. Hangul is spaced, so
+  `_spaceless` (respace/lexicon guard) still covers it while `is_cjk`
+  (per-character hotspots) does not.
+- `cappa/jmdict.py` — the whole feature in one file: the pack, ~100
+  deinflection rules, and the scan. `resolve(text, i)` tries substrings from
+  `i` longest-first, each raw AND through every form it could be an
+  inflection of, first type-consistent JMdict hit wins. `word_at(text, i)`
+  additionally looks BACK up to 8 characters and keeps the longest match
+  COVERING `i` — Yomitan can't do that (it has no character hotspots), and
+  without it a click on 倒 in 面倒 answers "reverse; inversion".
+- `sentence.span_word()` fuses the matched character range into one Word
+  carrying `.lemma`; `script_span()` reproduces the old grouping as the
+  no-pack fallback, so nothing gets worse without a download.
+- The popup is a reader's entry now: headword 【reading】, POS tags, numbered
+  senses, and the inflection chain (食べられなかった — past negative,
+  negative). **Zero network calls on the Japanese path.**
+- The card studies the DICTIONARY FORM (`draft.word` = 戻る) and records what
+  was on screen (`word_surface` = 戻って, additive metadata key). Provenance
+  matches the resolved span by (line, char offset) since it is no longer
+  identity-present in `sentence.words`.
+- Drag across characters to force a span (the user's ask) — the hand-picked
+  surface is still deinflected, so dragging 戻って teaches 戻る. Clicks now
+  open the popup on RELEASE, since a press is also the start of a drag.
+- **The definition follows the drag, live** (`popup.preview_for`, user ask):
+  every time the selected span changes, the popup re-renders the entry for
+  it. The preview is deliberately side-effect free — it never freezes the
+  click moment (no screenshot, no playback position, no caption snapshot),
+  never touches the network, and leaves Create Anki card DISABLED
+  (`popup.word = None`): only the release commits, through show_for. A
+  Japanese hit is a cached sqlite lookup (0.6 ms), so it is affordable per
+  tick; a span the dictionary has no entry for says so and waits, because
+  a translation per drag tick would be a network call per pixel. The popup
+  anchors to where the drag STARTED, so it doesn't chase the cursor, and
+  click-through is pinned OFF for the whole drag (like a region resize) so
+  a selection dragged off the caption can't scrub the video underneath.
+  Selections are always ≥2 characters — dragging back onto the first one
+  collapses the selection and previews the resolved word again.
+
+Three ranking bugs found by testing every character of the screenshot's
+lines, each fixed in the pack build: (1) わかった resolved to 分かつ ('to
+divide') because the ambiguous godan past った was tried つ before る — the
+ambiguous rules (って/った/んで/んだ) are now ordered by row frequency and the
+first that HITS the dictionary wins, so 待った still finds 待つ; (2) オマエ
+found nothing until katakana was folded to hiragana; (3) 本 answered 元
+('origin') and に answered 荷 ('baggage') until entries were ranked by
+whether the queried form is their HEADWORD, and 「の」 displayed as 乃 until
+the headword preferred kana over kanji spellings JMdict tags rare/sK.
+
+DATA: JMdict, © the Electronic Dictionary Research and Development Group,
+used under their licence — attribution required, and it is in README.md. The
+jmdict-simplified JSON release (11.4 MB) is downloaded once by the detection
+worker beside `lexicon.ensure_pack` and converted to a 48 MB stdlib sqlite3
+database (217,768 entries, 496,335 keys, ~9 s), so lookups are indexed and
+memory stays flat. Free, key-less, offline afterwards, **no LLM** — the same
+rule translate.py and dictionary.py live by. Uncached `word_at` is 0.6 ms;
+the overlay caches per (line, char).
+
+Not done: JMnedict (proper names — 10ten's third tab; 佐倉 in that scene
+resolves as common nouns); pitch accent; a Settings toggle while the pack
+downloads. `tests/test_jmdict.py` pins all 16 screenshot clicks and SKIPS
+cleanly when no pack is present.
 
 ### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
 
