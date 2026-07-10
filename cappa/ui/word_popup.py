@@ -1,9 +1,17 @@
 """The box that opens when a caption word is clicked.
 
-Shows the word (edge punctuation stripped), a divider line, and the
-translation. The translation is fetched on a helper thread so the UI never
-blocks: the popup opens instantly with "Translating…" and fills in when the
-call returns — or shows the failure (no network) as a ⚠ line. Below sits the
+Shows the word (edge punctuation stripped), a divider line, and what it
+means. For JAPANESE that is a real dictionary entry, resolved offline from
+the JMdict pack the overlay already looked the word up in: the headword and
+its reading, the part-of-speech tags, the numbered senses, and — when the
+word on screen was inflected — the chain that led back to the dictionary
+form (戻って, -te → 戻る). No network call at all on that path.
+
+Every other language keeps the old route: `dictionary.meaning` (Wiktionary
+definitions, contextual Google translation as hint and fallback), fetched on
+a helper thread so the UI never blocks — the popup opens instantly with
+"Translating…" and fills in when the call returns, or shows the failure (no
+network) as a ⚠ line. NO LLM on either path. Below sits the
 Create Anki card button: the screenshot is captured immediately when the word
 is clicked, then clicking the button gathers the card's remaining ingredients
 (word + sentence translations and the audio clip cut from the rolling recorder
@@ -29,14 +37,15 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
                                QWidget)
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
-from .. import flashcard
+from .. import flashcard, jmdict
 from ..detection.sentence import caption_block, click_pool
 from ..dictionary import meaning
 from ..translate import TranslationError, clean_word
 from .card_preview import CardPreview
 
 MARGIN = 10           # gap between the word and the popup
-MAX_TEXT_WIDTH = 300  # translation wraps instead of growing off-screen
+MAX_TEXT_WIDTH = 320  # meanings wrap instead of growing off-screen
+MAX_SENSES = 5        # a common verb has a dozen; a reader wants the top few
 
 _STYLE = """
     #wordPopup {
@@ -49,6 +58,22 @@ _STYLE = """
         font-size: 17px;
         font-weight: bold;
         padding: 2px 4px;
+    }
+    QLabel#reading {
+        color: #8a8fa2;
+        font-size: 12px;
+        padding: 6px 0 0 0;
+    }
+    QLabel#tags {
+        color: #9fd6a6;
+        font-size: 11px;
+        padding: 0 2px;
+    }
+    QLabel#inflection {
+        color: #8a8fa2;
+        font-size: 11px;
+        font-style: italic;
+        padding: 0 2px;
     }
     #divider {
         background: rgba(255, 255, 255, 36);
@@ -131,6 +156,8 @@ class WordPopup(QWidget):
 
         self._word_label = QLabel("", self)
         self._word_label.setObjectName("word")
+        self._reading = QLabel("", self)   # 【もどる】, Japanese only
+        self._reading.setObjectName("reading")
         close = QPushButton("✕", self)
         close.setObjectName("popupClose")
         close.setCursor(Qt.PointingHandCursor)
@@ -139,6 +166,14 @@ class WordPopup(QWidget):
         divider.setObjectName("divider")
         divider.setAttribute(Qt.WA_StyledBackground, True)
         divider.setFixedHeight(1)
+        self._tags = QLabel("", self)      # Godan verb (-ru) · intransitive
+        self._tags.setObjectName("tags")
+        self._tags.setWordWrap(True)
+        self._tags.setMaximumWidth(MAX_TEXT_WIDTH)
+        self._inflection = QLabel("", self)  # 戻って → 戻る (-te)
+        self._inflection.setObjectName("inflection")
+        self._inflection.setWordWrap(True)
+        self._inflection.setMaximumWidth(MAX_TEXT_WIDTH)
         self._trans = QLabel("", self)
         self._trans.setObjectName("translation")
         self._trans.setWordWrap(True)
@@ -150,16 +185,20 @@ class WordPopup(QWidget):
         self._anki.clicked.connect(self._create_card)
 
         head = QHBoxLayout()
-        head.setSpacing(10)
+        head.setSpacing(6)
         head.addWidget(self._word_label)
+        head.addWidget(self._reading, alignment=Qt.AlignBottom)
         head.addStretch(1)
         head.addWidget(close, alignment=Qt.AlignTop)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 12, 12)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
         lay.addLayout(head)
+        lay.addWidget(self._inflection)
         lay.addWidget(divider)
+        lay.addWidget(self._tags)
         lay.addWidget(self._trans)
+        lay.addSpacing(2)
         lay.addWidget(self._anki, alignment=Qt.AlignLeft)
         self.setStyleSheet(_STYLE)
         self._translated.connect(self._fill)
@@ -174,8 +213,9 @@ class WordPopup(QWidget):
     def show_for(self, word, anchor):
         """Open for a detection Word, above `anchor` (a QRect in the
         parent's logical px), clamped inside the parent; below the anchor
-        if there's no room. Kicks off the translation fetch. The Word stays
-        on self.word — its .sentence is what the Anki card needs later."""
+        if there's no room. The Word stays on self.word — its .sentence is
+        what the Anki card needs later, and its .lemma (set by the overlay's
+        dictionary lookup) is the form the card studies."""
         self.word = word
         self._anchor = QRect(anchor)
         self._snapshot_png, self._snapshot_note = self._capture_click_image()
@@ -183,9 +223,7 @@ class WordPopup(QWidget):
         self._snapshot_captions = (
             self._captions_provider() if self._captions_provider else None
         ) or []
-        shown = clean_word(word.text) or word.text
-        self._word_label.setText(shown)
-        self._trans.setText("Translating…")
+        surface = clean_word(word.text) or word.text
         self._anki.setText("Create Anki card")
         self._anki.setEnabled(False)
         self._req += 1
@@ -199,13 +237,57 @@ class WordPopup(QWidget):
             sentence = ", ".join(s.text for s in lines if s.text)
         else:
             sentence = ""
-        threading.Thread(
-            target=self._fetch, args=(self._req, shown, sentence),
-            daemon=True,
-        ).start()
+
+        entry = self._entry_for(word)
+        if entry is not None:
+            # Japanese: the dictionary already has the answer, offline.
+            self._show_entry(word, surface, entry)
+        else:
+            self._show_lookup(surface)
+            threading.Thread(
+                target=self._fetch, args=(self._req, surface, sentence),
+                daemon=True,
+            ).start()
         self._place()
         self.show()
         self.raise_()
+
+    def _entry_for(self, word):
+        """The JMdict entry for this word, or None when it isn't a resolved
+        Japanese word (the overlay sets .lemma only when the pack answered)."""
+        lemma = getattr(word, "lemma", None)
+        if not lemma:
+            return None
+        entries = jmdict.lookup(lemma)
+        return entries[0] if entries else None
+
+    def _show_entry(self, word, surface, entry):
+        """A reader's entry: headword, reading, tags, numbered senses — and
+        how the inflected surface on screen got back to the headword."""
+        self._word_label.setText(entry.headword)
+        self._reading.setText(
+            "【%s】" % entry.reading
+            if entry.reading and entry.reading != entry.headword else "")
+        # How the form ON SCREEN got back to the headword. Read off the
+        # surface itself, so a hand-dragged span explains itself too.
+        match = jmdict.word_at(word.text, 0) if word.text else None
+        reasons = (match.reasons if match and match.end == len(word.text)
+                   and match.base == word.lemma else ())
+        self._inflection.setText(
+            "%s — %s" % (surface, ", ".join(reasons)) if reasons else "")
+        self._tags.setText(" · ".join(entry.tags()))
+        senses = []
+        for i, (_pos, glosses) in enumerate(entry.senses[:MAX_SENSES], 1):
+            senses.append("%d. %s" % (i, "; ".join(glosses[:3])))
+        self._trans.setText("\n".join(senses))
+        self._anki.setEnabled(True)
+
+    def _show_lookup(self, surface):
+        self._word_label.setText(surface)
+        self._reading.setText("")
+        self._inflection.setText("")
+        self._tags.setText("")
+        self._trans.setText("Translating…")
 
     # ------------------------------------------------------------ internals
     def _capture_click_image(self):

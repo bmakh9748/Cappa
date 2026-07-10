@@ -1,0 +1,119 @@
+"""Japanese word lookup: deinflection, longest match, and the word_at scan.
+
+Ground truth is the user's own screenshot (a Persona 5 clip, 2026-07-09) —
+the lines whose script-run hotspots came apart as 戻 | るのも and produced a
+card for the fragment 戻. Every assertion below is a click that used to be
+wrong.
+
+Needs the JMdict pack (~11 MB, downloaded once into jmdict_packs/). Without
+it the whole file SKIPS: the pack is a runtime download like the OCR models,
+not something a checkout carries.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from cappa import jmdict
+from cappa.detection.sentence import (Sentence, is_cjk, script_span,
+                                      span_word)
+
+# ---- pure, no pack needed: the deinflection engine ---------------------
+forms = {f for f, _r, _t in jmdict._deinflect("戻って")}
+assert "戻る" in forms, forms
+forms = {f for f, _r, _t in jmdict._deinflect("食べた")}
+assert "食べる" in forms, forms
+# The five-rule chain: やっといてくれ -> やっといてくる -> やっといて ->
+# やっとく -> やって -> やる.
+forms = {f for f, _r, _t in jmdict._deinflect("やっといてくれ")}
+assert "やる" in forms, sorted(forms)[:20]
+# Katakana emphasis is folded to the kana JMdict keys words under.
+assert jmdict._to_hiragana("オマエ") == "おまえ"
+assert jmdict._to_hiragana("戻るノ") == "戻るの"
+print("PASS: deinflection unwinds te-forms, contractions and katakana")
+
+# ---- the script-run fallback IS the old, wrong grouping ----------------
+# Kept only for when no pack is present; the test pins what it does so the
+# fallback is never mistaken for a fix.
+assert script_span("戻るのも面倒なんで", 0) == (0, 1)      # 戻 alone
+assert script_span("戻るのも面倒なんで", 1) == (1, 4)      # るのも
+assert is_cjk("戻") and is_cjk("る") and not is_cjk("a")
+assert not is_cjk("한")   # hangul IS spaced: never per-character hotspots
+print("PASS: script_span reproduces the kanji/kana grouping it replaced")
+
+# ---- Sentence gives every hotspot its character offset -----------------
+line = "戻るのも面倒なんで"
+spans = [(ch, (i * 40, 0, i * 40 + 40, 44)) for i, ch in enumerate(line)]
+sentence = Sentence(line, (0, 0, len(line) * 40, 44), spans)
+assert [w.index for w in sentence.words] == list(range(len(line)))
+# ...and for a spaced line the offsets skip the spaces.
+spaced = Sentence("hello world", (0, 0, 200, 44),
+                  [("hello", (0, 0, 90, 44)), ("world", (100, 0, 190, 44))])
+assert [w.index for w in spaced.words] == [0, 6]
+
+fused = span_word(sentence, 4, 6)          # 面倒
+assert fused.text == "面倒" and fused.index == 4
+assert fused.box == (160, 0, 240, 44), fused.box   # union of both characters
+print("PASS: Word carries its char offset; span_word fuses a character range")
+
+if not jmdict.ensure_pack("ja", timeout=180.0):
+    print("\nSKIP: no JMdict pack (offline?) — dictionary assertions skipped")
+    sys.exit(0)
+
+# ---- the screenshot, character by character ----------------------------
+# (clicked char, expected surface, expected headword)
+CASES = [
+    ("戻るのも面倒なんで", 0, "戻る", "戻る"),      # was 戻 alone
+    ("戻るのも面倒なんで", 1, "戻る", "戻る"),      # was 'るのも'
+    ("戻るのも面倒なんで", 2, "の", "の"),          # was 'るのも'; not 乃
+    ("戻るのも面倒なんで", 4, "面倒", "面倒"),
+    ("戻るのも面倒なんで", 5, "面倒", "面倒"),      # mid-word: look back
+    ("戻るのも面倒なんで", 6, "なんで", "何で"),
+    ("戻るのも面倒なんで", 8, "なんで", "何で"),
+    ("オマエやっといてくれ。", 0, "オマエ", "お前"),  # katakana emphasis
+    # Five deinflection rules deep; headword is the kana やる, because its
+    # only kanji spelling 遣る is tagged rare.
+    ("オマエやっといてくれ。", 3, "やっといてくれ", "やる"),
+    ("何で公衆電話に?", 0, "何で", "何で"),
+    ("何で公衆電話に?", 5, "公衆電話", "公衆電話"),  # last char of a compound
+    ("わかった", 0, "わかった", "分かる"),          # NOT 分かつ 'to divide'
+    ("面倒くさい", 2, "面倒くさい", "面倒くさい"),
+    ("本を食べられなかった", 0, "本", "本"),         # 'book', not 元 'origin'
+    ("本を食べられなかった", 1, "を", "を"),         # the particle
+    ("本を食べられなかった", 2, "食べられなかった", "食べられる"),
+]
+for text, index, surface, headword in CASES:
+    match = jmdict.word_at(text, index)
+    assert match is not None, (text, index, "no match")
+    assert match.surface == surface, (text, index, match.surface, surface)
+    assert match.entry.headword == headword, (
+        text, index, match.entry.headword, headword)
+print("PASS: %d clicks from the screenshot resolve to the right word"
+      % len(CASES))
+
+# 戻る's senses are the ones the reference popup showed.
+match = jmdict.word_at("戻るのも面倒なんで", 0)
+assert "Godan verb (-ru)" in match.entry.tags(), match.entry.tags()
+assert "intransitive" in match.entry.tags()
+assert "to turn back" in match.entry.senses[0][1][0]
+assert not match.reasons                       # dictionary form already
+
+# An inflected surface reports how it got home.
+match = jmdict.word_at("食べられなかった", 0)
+assert match.base == "食べられる" and match.reasons, match.reasons
+print("PASS: entries carry reading, POS tags, senses and the inflection chain")
+
+# ---- resolve() alone only scans FORWARD; word_at looks back ------------
+assert jmdict.resolve("面倒", 1).surface == "倒"      # the lone kanji
+assert jmdict.word_at("面倒", 1).surface == "面倒"    # the word it is inside
+print("PASS: word_at finds the word a mid-word character belongs to")
+
+# ---- a word the pack has never heard of resolves to nothing ------------
+# (Not fullwidth latin: JMdict really does list Ｚ, 'Z; z'.)
+assert jmdict.word_at("", 0) is None
+assert jmdict.resolve("", 0) is None
+assert jmdict.word_at("戻る", 99) is None
+print("PASS: unknown text resolves to None (the caller falls back)")
+
+print("\nALL PASS")

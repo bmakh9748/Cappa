@@ -8,7 +8,8 @@ class CardDraft:
     """The gathered ingredients of one card draft."""
 
     __slots__ = (
-        "word", "word_translation", "sentence", "sentence_translation",
+        "word", "word_surface", "word_translation", "sentence",
+        "sentence_translation",
         "folder_path", "metadata_path", "image_path", "audio_path",
         "audio_seconds", "audio_window", "screenshot_source", "word_box",
         "sentence_box", "word_index", "sentence_verified", "appeared_at",
@@ -17,6 +18,9 @@ class CardDraft:
 
     def __init__(self, word, sentence):
         self.word = word
+        # What was actually ON SCREEN when the word is an inflected form the
+        # dictionary resolved (戻って for the card's 戻る); "" when the same.
+        self.word_surface = ""
         self.word_translation = ""
         self.sentence = sentence
         self.sentence_translation = ""

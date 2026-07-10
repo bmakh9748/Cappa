@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 from .. import lexicon
-from .sentence import Sentence
+from .sentence import Sentence, is_cjk
 
 PAD = 4      # px of context around the crop; rec likes breathing room
 
@@ -61,13 +61,12 @@ def _fix_rtl(word_text):
     return word_text[::-1]
 
 
-def _is_cjk(ch):
-    o = ord(ch)
-    return (0x3040 <= o <= 0x30FF        # hiragana + katakana
-            or 0x3400 <= o <= 0x9FFF     # CJK ideographs
-            or 0xF900 <= o <= 0xFAFF     # compatibility ideographs
-            or 0xFF66 <= o <= 0xFF9F     # halfwidth katakana
-            or 0xAC00 <= o <= 0xD7AF)    # hangul
+def _spaceless(ch):
+    """Text whose spacing the recogniser must not be second-guessed on:
+    sentence.is_cjk plus hangul. Korean DOES put spaces between words, so
+    it never wants per-character hotspots (is_cjk excludes it) — but its
+    syllable blocks must never be re-spaced or lexicon-split either."""
+    return is_cjk(ch) or 0xAC00 <= ord(ch) <= 0xD7AF
 
 
 def _respace(text, spans):
@@ -80,7 +79,7 @@ def _respace(text, spans):
     naturally guarded: their spans sit in visual order, so a genuinely
     reordered join fails the ignore-whitespace equality and the raw text
     stays."""
-    if len(spans) < 2 or any(_is_cjk(ch) for ch in text):
+    if len(spans) < 2 or any(_spaceless(ch) for ch in text):
         return text
     joined = " ".join(t for t, _ in spans)
     if joined != text and joined.replace(" ", "") == text.replace(" ", ""):
@@ -185,7 +184,7 @@ class TextReader:
             text = _respace(text, spans)
         elif text:
             spans = [(text, box)]  # no geometry: the line is one hotspot
-        if text and not any(_is_cjk(ch) for ch in text):
+        if text and not any(_spaceless(ch) for ch in text):
             # A word the recogniser GLUED to its neighbour is split back
             # apart by the lexicon -- but only into pieces that are every
             # one a real word, so a genuine word is never torn and an OCR
@@ -220,13 +219,19 @@ class TextReader:
 
     @staticmethod
     def _word_spans(res, cl, cr, l, r, t, b):
-        """Partition the line into word spans at the MIDPOINTS between
-        adjacent words' edge-character columns. The recogniser emits each
+        """Partition the line into hotspot spans at the MIDPOINTS between
+        adjacent spans' edge-character columns. The recogniser emits each
         character at one CTC column, but the emission point drifts within
         the glyph — fixed margins around it made boxes slide into the gaps
         between words. Midpoints instead tile the whole line: every pixel
-        belongs to exactly one word, so a hover can never land 'between'
-        words or on a shifted box."""
+        belongs to exactly one span, so a hover can never land 'between'
+        them or on a shifted box.
+
+        A span is a WORD for spaced scripts. For CJK it is a single
+        CHARACTER: the recogniser's own grouping is by script run, which is
+        exactly the okurigana boundary (戻|るのも, 面白|い) — the one place a
+        Japanese word never breaks. The word is found later, by dictionary
+        lookup from the character under the cursor (cappa.jmdict)."""
         info = res.word_results[0] if res.word_results else None
         if info is None or not getattr(info, "line_txt_len", 0):
             return []
@@ -235,6 +240,9 @@ class TextReader:
                   in zip(info.words, info.word_cols) if chars and cols]
         if not groups:
             return []
+        if any(is_cjk(ch) for chars, _cols in groups for ch in chars):
+            groups = [([ch], [col]) for chars, cols in groups
+                      for ch, col in zip(chars, cols)]
         # first/last character centre of each word, in crop-x px
         centres = [((cols[0] + 0.5) * unit, (cols[-1] + 0.5) * unit)
                    for _, cols in groups]

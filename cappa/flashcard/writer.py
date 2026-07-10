@@ -81,6 +81,9 @@ def _metadata(draft, folder):
     return {
         "created_at": draft.created_at,
         "word": draft.word,
+        # The inflected form on screen, when the card's word is the
+        # dictionary form a lookup resolved it to ("" when identical).
+        "word_surface": draft.word_surface,
         "sentence": draft.sentence,
         "word_translation": draft.word_translation,
         "sentence_translation": draft.sentence_translation,

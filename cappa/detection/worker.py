@@ -31,7 +31,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .. import lexicon
+from .. import jmdict, lexicon
 from .capture import ScreenCapture
 from .classifier import text_verdict
 from .detector import TextDetector
@@ -98,6 +98,7 @@ class CaptureWorker(QObject):
         detector.warm()  # pay the model loads now, not on the first caption
         reader.warm()
         lexicon.ensure_pack(self._ocr_lang)  # download the word-split pack
+        jmdict.ensure_pack(self._ocr_lang)   # ja: the word-lookup dictionary
         self.detector_ok.emit(detector.ready)
         print("[cappa] detector %s | reader %s"
               % ("ready" if detector.ready else "FAILED TO LOAD",
@@ -118,6 +119,7 @@ class CaptureWorker(QObject):
                     reader.set_language(self._ocr_lang)
                     reader.warm()
                     lexicon.ensure_pack(self._ocr_lang)
+                    jmdict.ensure_pack(self._ocr_lang)
                     self._refresh = True
 
                 region = self._region()

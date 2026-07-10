@@ -67,9 +67,17 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
         lines = caption_block(sentence, captions)
         if len(lines) > 1:
             sentence = CaptionBlock(lines, sentence)
-    raw_word = getattr(word, "text", "") or ""
+    # The card studies the DICTIONARY form when the lookup found one: the
+    # screen said 戻って, the word to learn is 戻る. The surface is kept for
+    # the provenance check (it, not the lemma, is what is in the sentence)
+    # and recorded on the card.
+    surface = getattr(word, "text", "") or ""
+    raw_word = getattr(word, "lemma", None) or surface
     draft = CardDraft(clean_word(raw_word) or raw_word,
                       getattr(sentence, "text", "") or "")
+    cleaned_surface = clean_word(surface) or surface
+    if cleaned_surface != draft.word:
+        draft.word_surface = cleaned_surface
     draft.appeared_at = getattr(sentence, "appeared_at", 0.0)
     draft.cleared_at = getattr(sentence, "cleared_at", 0.0)
     draft.folder_path = next_card_dir(out_dir)

@@ -23,6 +23,7 @@ UNIT = [
     "test_watcher.py",       # instant caption-vanished detection
     "test_translate.py",     # popup word cleanup (pure, no network)
     "test_dictionary.py",    # Wiktionary defs: format, ordering, fallback
+    "test_jmdict.py",        # Japanese: deinflection + longest-match word_at
     "test_lexicon.py",       # per-language word list: splits glued OCR runs
     "test_settings.py",      # settings load/save + translate target switch
     "test_audio.py",         # loopback ring buffer: clip math, device rebind

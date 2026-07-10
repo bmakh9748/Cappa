@@ -4,24 +4,93 @@ Detection produces these (ocr.py builds them, the ledger keeps them per
 live caption), the UI consumes them: each hotspot IS a Word, so a click
 hands the popup a Word that already knows its text, its place on screen,
 and — through .sentence — the full line it came from. That is exactly the
-payload the popup's translation (and the Anki card later) needs, and the
-single place to change when the Japanese word-unit decision lands (today a
-Word is the recogniser's grouping: real words for spaced scripts, kanji/
-kana runs for CJK; a tokeniser would swap in here without touching the UI).
+payload the popup's meaning lookup (and the Anki card) needs.
+
+The Japanese word-unit decision landed here (2026-07-09). For SPACED
+scripts a Word is still a word. For CJK a Word is one CHARACTER, because
+nothing at OCR time knows where a Japanese word ends: the recogniser's own
+kanji-run/kana-run grouping cuts at the okurigana boundary, tearing 戻る
+into 戻 | るのも. The word is found at LOOKUP time instead — `cappa.jmdict`
+resolves the character under the cursor to the whole word it belongs to —
+and `span_word()` fuses that character range back into one Word for the
+popup and the card. Without a dictionary pack `script_span()` reproduces
+the old kanji/kana grouping, so nothing gets worse.
 
 Plain data, no Qt. Boxes are (l, t, r, b) region-local physical px."""
 
 
-class Word:
-    __slots__ = ("text", "box", "sentence")
+def is_cjk(ch):
+    """A character written without spaces around it."""
+    o = ord(ch)
+    return (0x3040 <= o <= 0x30FF        # hiragana + katakana
+            or 0x3400 <= o <= 0x9FFF     # CJK ideographs
+            or 0xF900 <= o <= 0xFAFF     # compatibility ideographs
+            or 0xFF66 <= o <= 0xFF9F)    # halfwidth katakana
 
-    def __init__(self, text, box, sentence):
+
+def _script_class(ch):
+    o = ord(ch)
+    if 0x3040 <= o <= 0x309F:
+        return "hiragana"
+    if 0x30A0 <= o <= 0x30FF or 0xFF66 <= o <= 0xFF9F:
+        return "katakana"
+    if 0x3400 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF:
+        return "kanji"
+    return "other"
+
+
+def script_span(text, index):
+    """(start, end) of the run of same-script characters around `index`.
+
+    The fallback when no dictionary can say where the word ends — it is the
+    grouping the recogniser used to do, and it is wrong at exactly the
+    okurigana boundary. Only used when the JMdict pack is absent or has
+    nothing for this character."""
+    if not text or not (0 <= index < len(text)):
+        return (index, index + 1)
+    want = _script_class(text[index])
+    start = index
+    while start > 0 and _script_class(text[start - 1]) == want:
+        start -= 1
+    end = index + 1
+    while end < len(text) and _script_class(text[end]) == want:
+        end += 1
+    return (start, end)
+
+
+class Word:
+    __slots__ = ("text", "box", "sentence", "index", "lemma")
+
+    def __init__(self, text, box, sentence, index=-1, lemma=None):
         self.text = text
         self.box = box
         self.sentence = sentence  # the Sentence this word belongs to
+        # Character offset of `text` within sentence.text (-1 if unknown).
+        # For CJK this is what the dictionary lookup scans from.
+        self.index = index
+        # The dictionary form, when a lookup resolved one (戻って -> 戻る).
+        # None for a plain word; the card studies the lemma, the screen and
+        # the provenance check keep the surface.
+        self.lemma = lemma
 
     def __repr__(self):
         return "Word(%r, %r)" % (self.text, self.box)
+
+
+def span_word(sentence, start, end):
+    """One Word covering characters [start, end) of `sentence`.
+
+    The clicked word, fused back together out of the per-character hotspots
+    the dictionary lookup spanned. Its box is their union, so the highlight
+    and the card's word_box cover the whole word."""
+    inside = [w for w in sentence.words
+              if w.index >= 0 and start <= w.index < end]
+    if not inside:
+        return None
+    boxes = [w.box for w in inside]
+    box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+           max(b[2] for b in boxes), max(b[3] for b in boxes))
+    return Word(sentence.text[start:end], box, sentence, index=start)
 
 
 class Sentence:
@@ -32,7 +101,16 @@ class Sentence:
         """word_spans: [(word_text, word_box), ...] left to right."""
         self.text = text
         self.box = box
-        self.words = [Word(t, b, self) for t, b in word_spans]
+        self.words = []
+        cursor = 0
+        for t, b in word_spans:
+            # Where this hotspot's text sits in the line. Found forward from
+            # the last one, since _respace may have put spaces between them.
+            at = text.find(t, cursor) if t else -1
+            if at < 0:
+                at = cursor
+            self.words.append(Word(t, b, self, index=at))
+            cursor = at + max(len(t), 1)
         # Recognition confidence of the read that produced this line (0-1),
         # or None when unknown. A card built from a shaky read says so
         # (card_0060: an unsupported page read at conf 0.45 made a

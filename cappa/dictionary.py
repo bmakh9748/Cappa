@@ -30,6 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import jmdict
 from . import translate as translate_mod
 from .translate import TranslationError
 
@@ -125,6 +126,25 @@ def _enrich_form_of(entries, lang):
     return out
 
 
+def _japanese(word):
+    """A JMdict entry as card text, or "" when the pack has nothing (or
+    isn't downloaded yet — then the caller falls through to translate())."""
+    entries = jmdict.lookup(word)
+    if not entries:
+        return ""
+    entry = entries[0]
+    head = entry.headword
+    if entry.reading and entry.reading != head:
+        head = "%s 【%s】" % (head, entry.reading)
+    lines = [head]
+    tags = entry.tags()
+    if tags:
+        lines.append(" · ".join(tags))
+    for i, (_pos, glosses) in enumerate(entry.senses[:MAX_SENSES], 1):
+        lines.append("%d. %s" % (i, "; ".join(glosses[:3])))
+    return "\n".join(lines)
+
+
 def _hint_tokens(hint):
     return set(_WORDISH.findall((hint or "").casefold()))
 
@@ -164,6 +184,13 @@ def meaning(word, sentence="", translate_fn=None):
     if translate_fn is None:
         translate_fn = translate_mod.translate
     lang = translate_mod.SOURCE_LANGUAGE
+    if lang == jmdict.LANG:
+        # Japanese has its own dictionary, offline and already downloaded:
+        # Wiktionary has no useful per-word Japanese section and Google would
+        # be handed a word the caller already resolved to its dictionary form.
+        text = _japanese(word)
+        if text:
+            return text
     if lang == "auto" or translate_mod.TARGET_LANGUAGE != "en":
         # No section to read / definitions would be in the wrong language.
         return translate_fn(word, sentence)

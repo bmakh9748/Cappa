@@ -11,4 +11,5 @@ transcripts/
 recordings/
 cappa/source/.cache/
 lexicon_packs/
+jmdict_packs/
 settings.json

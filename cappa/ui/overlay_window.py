@@ -11,7 +11,9 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import Qt, QRect, QTimer, QThread
 from PySide6.QtGui import QPainter, QColor, QPen, QCursor, QFont
 
-from .. import winapi
+from .. import jmdict, winapi
+from .. import translate as translate_mod
+from ..detection.sentence import is_cjk, script_span, span_word
 from ..detection.worker import CaptureWorker
 from ..screen_recorder import RegionRecorder
 from .launcher import Launcher
@@ -57,8 +59,13 @@ class OverlayWindow(QMainWindow):
         self._base_status = ""        # status text before the fps suffix
         self._fps = 0.0
         self._captions = []           # live Sentences, boxes region-local physical px
-        self._hover_word = None       # (QRect logical, Word) under the cursor
+        self._hover_word = None       # (QRect logical, Word) — the whole WORD
+                                      # under the cursor, not the character
         self._word_prev_down = False  # LBUTTON edge detection for word clicks
+        self._drag_from = None        # character Word the press landed on
+        self._drag_to = None          # character Word the cursor has reached,
+                                      # while the button is held (a selection)
+        self._span_cache = {}         # (id(sentence), char index) -> Word
         self._detector_ok = None      # None until the model load resolves
 
         # The launcher is its own top-level window (screen corner), not a
@@ -215,6 +222,7 @@ class OverlayWindow(QMainWindow):
         self._resize_edges = ""
         self._captions = []
         self._hover_word = None
+        self._drag_from = self._drag_to = None
         self._popup.hide()
         self._apply_edge_cursor("")
         self.launcher.show()
@@ -231,6 +239,7 @@ class OverlayWindow(QMainWindow):
         self._target_hwnd = None
         self._popup.hide()
         self._hover_word = None
+        self._drag_from = self._drag_to = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Click the window to track   ·   Esc to cancel"
         self._apply_edge_cursor("")
@@ -256,6 +265,7 @@ class OverlayWindow(QMainWindow):
         self._target_hwnd = hwnd
         self._captions = []
         self._hover_word = None
+        self._drag_from = self._drag_to = None
         self._popup.hide()
         self.launcher.show()
         self._show()  # idle keeps the overlay hidden; tracking needs it up
@@ -284,6 +294,7 @@ class OverlayWindow(QMainWindow):
         self._sel_active = False
         self._popup.hide()
         self._hover_word = None
+        self._drag_from = self._drag_to = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Drag a box over the video / subtitle area   ·   Esc to cancel"
         self._resize_edges = ""
@@ -393,6 +404,7 @@ class OverlayWindow(QMainWindow):
         self._parked = True
         self._popup.hide()
         self._hover_word = None
+        self._drag_from = self._drag_to = None
         self._apply_click_through(True)
         self.setGeometry(OFFSCREEN, OFFSCREEN, 10, 10)
 
@@ -494,35 +506,115 @@ class OverlayWindow(QMainWindow):
     def _word_rects(self):
         """The clickable hotspots: [(QRect logical, Word)] across the live
         captions. Word boxes arrive in region-local physical px, same space
-        as the caption boxes."""
+        as the caption boxes. On CJK lines one hotspot is one CHARACTER —
+        the WORD it belongs to is resolved on hover (_word_for)."""
         if (self._target_hwnd is None or self._parked or self._picking
                 or self._selecting):
             return []
+        return [(self._rect_for(word.box), word)
+                for sentence in self._captions for word in sentence.words]
+
+    def _rect_for(self, box):
+        """A caption box (region-local physical px) as a logical-px QRect
+        with the hotspot's slack around the glyphs."""
         d = self._dpr()
-        pad = 2  # a little slack around the glyphs
-        rects = []
-        for sentence in self._captions:
-            for word in sentence.words:
-                l, t, r, b = word.box
-                rects.append((QRect(round(l / d) - pad, round(t / d) - pad,
-                                    round((r - l) / d) + 2 * pad,
-                                    round((b - t) / d) + 2 * pad), word))
-        return rects
+        pad = 2
+        l, t, r, b = box
+        return QRect(round(l / d) - pad, round(t / d) - pad,
+                     round((r - l) / d) + 2 * pad,
+                     round((b - t) / d) + 2 * pad)
+
+    def _lookup(self, text, index):
+        """The dictionary's word at `index`, only for the language it is a
+        dictionary OF. Read at call time: the pack stays open across a
+        Settings change, and Chinese text must not be resolved as Japanese
+        just because a Japanese video was watched earlier this session."""
+        if translate_mod.SOURCE_LANGUAGE != jmdict.LANG:
+            return None
+        return jmdict.word_at(text, index)
+
+    def _word_for(self, char_word):
+        """The whole WORD the hovered character belongs to.
+
+        Hotspots are one per character on CJK lines, because nothing at OCR
+        time knows where a Japanese word ends. The dictionary does: jmdict
+        resolves 戻 inside 戻るのも to 戻る and hands back the character
+        range, which span_word fuses into one Word carrying the dictionary
+        form. Spaced scripts already have real words, and a line the pack
+        can't help with falls back to the old script run."""
+        if char_word.index < 0:
+            return char_word
+        sentence = char_word.sentence
+        text = getattr(sentence, "text", "")
+        if not text or not is_cjk(text[char_word.index]):
+            return char_word
+        key = (id(sentence), char_word.index)
+        if key in self._span_cache:
+            return self._span_cache[key]
+        word = None
+        match = self._lookup(text, char_word.index)
+        if match is not None:
+            word = span_word(sentence, match.start, match.end)
+            if word is not None:
+                word.lemma = match.base
+        if word is None:
+            start, end = script_span(text, char_word.index)
+            word = span_word(sentence, start, end)
+        word = word or char_word
+        self._span_cache[key] = word
+        return word
+
+    def _selection(self, a, b):
+        """The Word covering the characters the user dragged across, from
+        character `a` to character `b` of one line — the escape hatch for
+        when the dictionary picks the wrong span.
+
+        The hand-picked span is still looked up: dragging exactly 戻って must
+        teach the card 戻る, not the surface. A span the dictionary doesn't
+        know keeps no lemma and takes the ordinary translation route."""
+        if a.sentence is not b.sentence:
+            return None
+        lo, hi = sorted((a.index, b.index))
+        word = span_word(a.sentence, lo, hi + 1)
+        if word is not None and word.text:
+            match = self._lookup(word.text, 0)
+            if match is not None and match.end == len(word.text):
+                word.lemma = match.base
+        return word
 
     def _handle_words(self):
-        """Highlight the word under the cursor; a click on it opens the
-        popup. Polling-based like the app's other modes — the overlay may
-        have been click-through a tick earlier, so Qt press events aren't
-        reliable here."""
+        """Highlight the word under the cursor; releasing on it opens the
+        popup, and dragging across characters selects exactly those.
+        Polling-based like the app's other modes — the overlay may have been
+        click-through a tick earlier, so Qt press events aren't reliable."""
         local = self.mapFromGlobal(QCursor.pos())
-        hover = None
+        under = None
         if not (self._resize_edges or self._hover_edges
                 or (self._popup.isVisible()
                     and self._popup.geometry().contains(local))):
             for rect, word in self._word_rects():
                 if rect.contains(local):
-                    hover = (rect, word)
+                    under = word
                     break
+
+        down = winapi.key_down(winapi.VK_LBUTTON)
+        if down and not self._word_prev_down:
+            self._drag_from, self._drag_to = under, None
+        elif down and self._drag_from is not None and under is not None:
+            if (under.sentence is self._drag_from.sentence
+                    and under.index != self._drag_from.index):
+                self._drag_to = under
+
+        # While a drag is live the highlight IS the selection; otherwise it
+        # is whatever word the hovered character resolves into.
+        if self._drag_from is not None and self._drag_to is not None:
+            shown = self._selection(self._drag_from, self._drag_to)
+        elif under is not None:
+            shown = self._word_for(under)
+        else:
+            shown = None
+        hover = (self._rect_for(shown.box), shown) if shown else None
+
         if (hover is None) != (self._hover_word is None) or (
                 hover is not None and hover[0] != self._hover_word[0]):
             self._hover_word = hover
@@ -533,9 +625,15 @@ class OverlayWindow(QMainWindow):
                     self.unsetCursor()
             self.update()
 
-        down = winapi.key_down(winapi.VK_LBUTTON)
-        if down and not self._word_prev_down and self._hover_word is not None:
-            self._popup.show_for(self._hover_word[1], self._hover_word[0])
+        # Open on RELEASE, not press: a press is also the start of a drag.
+        if not down and self._word_prev_down and self._drag_from is not None:
+            if self._drag_to is not None:
+                chosen = self._selection(self._drag_from, self._drag_to)
+            else:
+                chosen = self._word_for(self._drag_from)
+            if chosen is not None:
+                self._popup.show_for(chosen, self._rect_for(chosen.box))
+            self._drag_from = self._drag_to = None
         self._word_prev_down = down
 
     def _update_click_through(self):
@@ -634,6 +732,7 @@ class OverlayWindow(QMainWindow):
         live_captions is [(box, words)] — it fully replaces what we had."""
         events, captions = payload
         self._captions = captions
+        self._span_cache.clear()   # resolved words belong to the old Sentences
         self._sources.observe_captions(captions)
         self._render_status()
         self.update()
