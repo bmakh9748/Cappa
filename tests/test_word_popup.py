@@ -69,8 +69,6 @@ assert popup._snapshot_png is None and popup._snapshot_captions == []
 print("PASS: preview shows the entry, freezes nothing, arms nothing")
 
 # ---- the selection grows, the definition follows it ---------------------
-# A selection is always >= 2 characters: dragging back onto the first one
-# collapses it, and the overlay then previews the RESOLVED word instead.
 seen = []
 for end in (2, 3, 6):     # 戻る -> 戻るの -> 戻るのも面倒
     span = span_word(line, 0, end)
@@ -87,14 +85,29 @@ for surface, shown, meaning in seen[1:]:
 assert region.calls == 0
 print("PASS: the definition tracks the growing selection; unknown spans wait")
 
-# ---- collapsing the selection previews the resolved word again ----------
+# ---- a preview of a resolved word renders the same entry a click would --
 match = jmdict.word_at(line.text, 0)
 collapsed = span_word(line, match.start, match.end)
 collapsed.lemma = match.base
 popup.preview_for(collapsed, anchor)
 assert popup._word_label.text() == "戻る"
 assert not popup._anki.isEnabled()
-print("PASS: a collapsed selection previews the word under the cursor")
+print("PASS: a resolved-word preview renders the entry, still uncommitted")
+
+# ---- a SINGLE character is a legitimate selection ------------------------
+# Smaller than the word it sits inside: 倒 dragged out of 面倒くさい gets its
+# own entry (or the release-to-translate line), never the whole word's.
+line2 = make_line("面倒くさい")
+solo = span_word(line2, 1, 2)
+m = jmdict.word_at(solo.text, 0)
+solo.lemma = m.base if m and m.end == len(solo.text) else None
+popup.preview_for(solo, anchor)
+# 倒's own entry (JMdict heads it 逆しま, 'reverse; inversion'), NEVER the
+# containing word's — the exact headword is the pack's business.
+assert popup._word_label.text() != "面倒くさい", popup._word_label.text()
+assert "bothersome" not in popup._trans.text(), popup._trans.text()
+assert not popup._anki.isEnabled()
+print("PASS: a single-character selection previews that character alone")
 
 # ---- releasing commits: the word, the button, the frozen moment ---------
 word = span_word(line, 4, 6)                       # 面倒

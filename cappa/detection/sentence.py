@@ -93,6 +93,18 @@ def span_word(sentence, start, end):
     return Word(sentence.text[start:end], box, sentence, index=start)
 
 
+def selection_word(sentence, a, b):
+    """One Word covering hotspots `a` through `b` INCLUSIVE — exactly what a
+    drag swept, in either direction, down to a single hotspot (one character
+    of a longer dictionary word is a legitimate selection).
+
+    The span ends at the last hotspot's END, not its start index: on spaced
+    scripts a hotspot is a whole word, and slicing to its start would cut
+    the final word to one letter ('hello w' for a hello->world drag)."""
+    lo, hi = sorted((a, b), key=lambda w: w.index)
+    return span_word(sentence, lo.index, hi.index + max(len(hi.text), 1))
+
+
 class Sentence:
     __slots__ = ("text", "box", "words", "appeared_at", "cleared_at",
                  "ocr_conf", "junk")

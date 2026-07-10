@@ -1454,6 +1454,9 @@ splitting at OCR time, resolve the word at LOOKUP time.**
   a selection dragged off the caption can't scrub the video underneath.
   Selections are always ≥2 characters — dragging back onto the first one
   collapses the selection and previews the resolved word again.
+  (Superseded 2026-07-10: a drag now starts on cursor TRAVEL, not on
+  crossing a character boundary, so a single character is a legitimate
+  selection — see that entry.)
 
 Three ranking bugs found by testing every character of the screenshot's
 lines, each fixed in the pack build: (1) わかった resolved to 分かつ ('to
@@ -1478,6 +1481,39 @@ Not done: JMnedict (proper names — 10ten's third tab; 佐倉 in that scene
 resolves as common nouns); pitch accent; a Settings toggle while the pack
 downloads. `tests/test_jmdict.py` pins all 16 screenshot clicks and SKIPS
 cleanly when no pack is present.
+
+### 2026-07-10 — selection: persistent, visibly its own act, one character fine
+
+Three user calls on the day-old drag interaction, one bug found under them:
+
+- **The highlight stays.** The committed word or selection keeps its
+  highlight while its popup is open (`_active_word`), instead of vanishing
+  the moment the button came up or the cursor moved — the screen and the
+  popup now agree on what was picked. It dies exactly with its popup, and
+  with its caption (`_on_regions` drops it when the Sentence leaves the live
+  list: the popup keeps its click-time snapshot, but a wash painted over raw
+  video would lie).
+- **Selection looks like selection.** Its own graphic
+  (`_draw_word_selection`: translucent accent wash + solid outline — reads
+  as selected text) plus an I-beam cursor for the whole drag; the fleeting
+  link-hover underline is untouched. Not the glyph-exact tint (tried and
+  rejected 2026-07-08); a filled box needs no stroke mask.
+- **A single character is a legitimate selection.** A drag used to begin
+  only when the cursor crossed onto ANOTHER character, so nothing smaller
+  than one hotspot could ever be picked and dragging back to the origin
+  collapsed to the resolved word. A drag now begins on cursor TRAVEL
+  (`DRAG_START_PX`, 6 px from the press point — even inside the pressed
+  character), so 倒 can be dragged out of 面倒 and gets its own entry
+  (JMdict heads it 逆しま). Below the threshold a release is still a plain
+  click on the resolved word.
+- Bug under the selection maths (shipped 2026-07-09, latent): the span was
+  sliced to the last hotspot's START index — right for CJK where every
+  hotspot is one character, but an English hello→world drag produced
+  'hello w'. `sentence.selection_word` (new, pure, tested) ends the span at
+  the last hotspot's END; `_selection` uses it.
+
+tests/test_jmdict.py grows selection_word legs (forward/backward/single/
+'hello w'); test_word_popup.py gains the single-character preview leg.
 
 ### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
 

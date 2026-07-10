@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cappa import jmdict
 from cappa.detection.sentence import (Sentence, is_cjk, script_span,
-                                      span_word)
+                                      selection_word, span_word)
 
 # ---- pure, no pack needed: the deinflection engine ---------------------
 forms = {f for f, _r, _t in jmdict._deinflect("戻って")}
@@ -56,6 +56,24 @@ fused = span_word(sentence, 4, 6)          # 面倒
 assert fused.text == "面倒" and fused.index == 4
 assert fused.box == (160, 0, 240, 44), fused.box   # union of both characters
 print("PASS: Word carries its char offset; span_word fuses a character range")
+
+# ---- selection_word: exactly what a drag swept --------------------------
+sel = selection_word(sentence, sentence.words[4], sentence.words[5])
+assert sel.text == "面倒", sel.text
+# Backwards drags select the same span.
+assert selection_word(sentence, sentence.words[5], sentence.words[4]).text \
+    == "面倒"
+# A single hotspot is a legitimate selection: one character out of the
+# longer dictionary word (倒 out of 面倒).
+solo = selection_word(sentence, sentence.words[5], sentence.words[5])
+assert solo.text == "倒" and solo.box == (200, 0, 240, 44), (solo.text,
+                                                             solo.box)
+# The span ends at the LAST hotspot's end, not its start index: on spaced
+# scripts a hotspot is a whole word, and slicing to its start cut the final
+# word to one letter ('hello w').
+eng = selection_word(spaced, spaced.words[0], spaced.words[1])
+assert eng.text == "hello world", eng.text
+print("PASS: selection_word sweeps forward/backward, down to one character")
 
 if not jmdict.ensure_pack("ja", timeout=180.0):
     print("\nSKIP: no JMdict pack (offline?) — dictionary assertions skipped")

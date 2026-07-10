@@ -13,7 +13,8 @@ from PySide6.QtGui import QPainter, QColor, QPen, QCursor, QFont
 
 from .. import jmdict, winapi
 from .. import translate as translate_mod
-from ..detection.sentence import is_cjk, script_span, span_word
+from ..detection.sentence import (is_cjk, script_span, selection_word,
+                                  span_word)
 from ..detection.worker import CaptureWorker
 from ..screen_recorder import RegionRecorder
 from .launcher import Launcher
@@ -24,6 +25,10 @@ OFFSCREEN = -32000   # park the window here to hide it without destroying it
 TICK_MS = 30
 MIN_SELECTION = 20   # ignore accidental micro-drags (logical px)
 EDGE_GRIP = 8        # grabbable band inside a locked region's border (logical px)
+DRAG_START_PX = 6    # cursor travel from the press point that turns a click
+                     # into a text SELECTION — even inside one character, so
+                     # a single character of a longer word can be selected;
+                     # below it, release is a plain click on the resolved word
 
 _EDGE_CURSORS = {
     "L": Qt.SizeHorCursor, "R": Qt.SizeHorCursor,
@@ -68,7 +73,14 @@ class OverlayWindow(QMainWindow):
         self._drag_rect = None        # where the press landed: the live
                                       # preview popup anchors here, not to the
                                       # growing selection, so it stays put
+        self._drag_started = False    # cursor travelled DRAG_START_PX from
+                                      # the press: this is a SELECTION now,
+                                      # not a click
+        self._press_pos = None        # global cursor pos at the press
         self._preview_key = None      # span the preview popup last rendered
+        self._active_word = None      # (QRect, Word) committed to the popup —
+                                      # stays painted while the popup is open,
+                                      # so the highlight survives the release
         self._span_cache = {}         # (id(sentence), char index) -> Word
         self._detector_ok = None      # None until the model load resolves
 
@@ -142,13 +154,41 @@ class OverlayWindow(QMainWindow):
         if self._region_resizable():
             self._draw_resize_handles(painter, rect, border)
 
-        if (self._hover_word and self._target_hwnd is not None
+        if (self._target_hwnd is not None
                 and not self._picking and not self._selecting):
-            self._draw_word_highlight(painter)
+            self._draw_words(painter)
 
         if self._instruction and (self._picking or self._selecting
                                   or time.time() < self._tip_until):
             self._draw_instruction(painter)
+
+    def _draw_words(self, painter):
+        """The word decorations. The committed selection first (it stays
+        while its popup is open — the highlight must not vanish the moment
+        the button comes up), then the cursor's own highlight: SELECTION
+        style while a drag is sweeping hotspots — visibly a different act —
+        link-hover style otherwise."""
+        active = (self._active_word
+                  if self._active_word and self._popup.isVisible() else None)
+        if active is not None:
+            self._draw_word_selection(painter, active[0])
+        if not self._hover_word:
+            return
+        if self._drag_started and self._drag_from is not None:
+            self._draw_word_selection(painter, self._hover_word[0])
+        elif active is None or active[0] != self._hover_word[0]:
+            self._draw_word_highlight(painter)
+
+    def _draw_word_selection(self, painter, rect):
+        """The selection look: a translucent accent wash with a solid
+        outline — reads as selected text, unmistakably different from the
+        fleeting hover underline below. Not the glyph-exact tint (tried and
+        rejected: ragged masks on compressed video); a filled box needs no
+        stroke mask."""
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(120, 215, 255, 230), 1.5))
+        painter.setBrush(QColor(90, 210, 255, 70))
+        painter.drawRoundedRect(rect, 5, 5)
 
     def _draw_word_highlight(self, painter):
         """The word under the cursor, and nothing else: captions stay
@@ -227,7 +267,10 @@ class OverlayWindow(QMainWindow):
         self._captions = []
         self._hover_word = None
         self._drag_from = self._drag_to = self._drag_rect = None
+        self._drag_started = False
+        self._press_pos = None
         self._preview_key = None
+        self._active_word = None
         self._popup.hide()
         self._apply_edge_cursor("")
         self.launcher.show()
@@ -245,7 +288,10 @@ class OverlayWindow(QMainWindow):
         self._popup.hide()
         self._hover_word = None
         self._drag_from = self._drag_to = self._drag_rect = None
+        self._drag_started = False
+        self._press_pos = None
         self._preview_key = None
+        self._active_word = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Click the window to track   ·   Esc to cancel"
         self._apply_edge_cursor("")
@@ -272,7 +318,10 @@ class OverlayWindow(QMainWindow):
         self._captions = []
         self._hover_word = None
         self._drag_from = self._drag_to = self._drag_rect = None
+        self._drag_started = False
+        self._press_pos = None
         self._preview_key = None
+        self._active_word = None
         self._popup.hide()
         self.launcher.show()
         self._show()  # idle keeps the overlay hidden; tracking needs it up
@@ -302,7 +351,10 @@ class OverlayWindow(QMainWindow):
         self._popup.hide()
         self._hover_word = None
         self._drag_from = self._drag_to = self._drag_rect = None
+        self._drag_started = False
+        self._press_pos = None
         self._preview_key = None
+        self._active_word = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Drag a box over the video / subtitle area   ·   Esc to cancel"
         self._resize_edges = ""
@@ -413,7 +465,10 @@ class OverlayWindow(QMainWindow):
         self._popup.hide()
         self._hover_word = None
         self._drag_from = self._drag_to = self._drag_rect = None
+        self._drag_started = False
+        self._press_pos = None
         self._preview_key = None
+        self._active_word = None
         self._apply_click_through(True)
         self.setGeometry(OFFSCREEN, OFFSCREEN, 10, 10)
 
@@ -574,17 +629,17 @@ class OverlayWindow(QMainWindow):
         return word
 
     def _selection(self, a, b):
-        """The Word covering the characters the user dragged across, from
-        character `a` to character `b` of one line — the escape hatch for
-        when the dictionary picks the wrong span.
+        """The Word covering the hotspots the user dragged across, from `a`
+        to `b` of one line — exactly what was swept, down to a SINGLE
+        character of a longer dictionary word (倒 out of 面倒). The escape
+        hatch for when the dictionary picks the wrong span.
 
         The hand-picked span is still looked up: dragging exactly 戻って must
         teach the card 戻る, not the surface. A span the dictionary doesn't
         know keeps no lemma and takes the ordinary translation route."""
         if a.sentence is not b.sentence:
             return None
-        lo, hi = sorted((a.index, b.index))
-        word = span_word(a.sentence, lo, hi + 1)
+        word = selection_word(a.sentence, a, b)
         if word is not None and word.text:
             match = self._lookup(word.text, 0)
             if match is not None and match.end == len(word.text):
@@ -592,12 +647,20 @@ class OverlayWindow(QMainWindow):
         return word
 
     def _handle_words(self):
-        """Highlight the word under the cursor; releasing on it opens the
-        popup, and dragging across characters selects exactly those — with
-        the definition of the growing selection shown live as it grows.
-        Polling-based like the app's other modes — the overlay may have been
-        click-through a tick earlier, so Qt press events aren't reliable."""
-        local = self.mapFromGlobal(QCursor.pos())
+        """Highlight the word under the cursor; press-and-release opens it;
+        travelling DRAG_START_PX with the button down — even inside one
+        character — turns the press into a SELECTION of exactly the swept
+        hotspots, previewed live. The committed word or selection stays
+        painted while its popup is open. Polling-based like the app's other
+        modes — the overlay may have been click-through a tick earlier, so
+        Qt press events aren't reliable."""
+        # A committed highlight lives exactly as long as its popup.
+        if self._active_word is not None and not self._popup.isVisible():
+            self._active_word = None
+            self.update()
+
+        gpos = QCursor.pos()
+        local = self.mapFromGlobal(gpos)
         under = None
         # An open popup swallows the cursor — except mid-drag, where the
         # selection must keep tracking characters that pass beneath it.
@@ -612,19 +675,30 @@ class OverlayWindow(QMainWindow):
         down = winapi.key_down(winapi.VK_LBUTTON)
         if down and not self._word_prev_down:
             self._drag_from, self._drag_to = under, None
+            self._drag_started = False
+            self._press_pos = gpos
             self._drag_rect = self._rect_for(under.box) if under else None
             self._preview_key = None
-        elif down and self._drag_from is not None and under is not None:
-            if under.sentence is self._drag_from.sentence:
-                # Dragging back onto the first character is no selection.
-                self._drag_to = (under if under.index != self._drag_from.index
-                                 else None)
+        elif down and self._drag_from is not None:
+            if (not self._drag_started and self._press_pos is not None
+                    and (gpos - self._press_pos).manhattanLength()
+                    >= DRAG_START_PX):
+                self._drag_started = True
+                # The selection announces itself: text cursor, and the old
+                # committed highlight (if any) yields to the new gesture.
+                self.setCursor(Qt.IBeamCursor)
+                self._active_word = None
+                self.update()
+            if under is not None and under.sentence is self._drag_from.sentence:
+                self._drag_to = under
 
-        # While a drag is live the highlight IS the selection; otherwise it
-        # is whatever word the hovered character resolves into.
-        dragging = self._drag_from is not None and self._drag_to is not None
+        # While a selection is live the highlight IS the selection —
+        # possibly one character; otherwise it is whatever word the hovered
+        # character resolves into.
+        dragging = self._drag_from is not None and self._drag_started
         if dragging:
-            shown = self._selection(self._drag_from, self._drag_to)
+            shown = self._selection(self._drag_from,
+                                    self._drag_to or self._drag_from)
         elif under is not None:
             shown = self._word_for(under)
         else:
@@ -634,22 +708,17 @@ class OverlayWindow(QMainWindow):
         if (hover is None) != (self._hover_word is None) or (
                 hover is not None and hover[0] != self._hover_word[0]):
             self._hover_word = hover
-            if not self._hover_edges:
+            if not self._hover_edges and not dragging:
                 if hover is not None:
                     self.setCursor(Qt.PointingHandCursor)
                 else:
                     self.unsetCursor()
             self.update()
 
-        # The live definition of the span being dragged. Re-rendered only
+        # The live definition of the span being selected. Re-rendered only
         # when the span actually changes, and anchored to where the drag
         # STARTED so the popup doesn't chase the cursor across the line.
-        # It appears once the user actually DRAGS — a plain press must not
-        # flash a popup — but once shown it keeps up, including when the
-        # selection is dragged back down to the single word it began as.
-        previewing = self._drag_from is not None and (
-            dragging or self._preview_key is not None)
-        if previewing and shown is not None:
+        if dragging and shown is not None:
             key = (id(shown.sentence), shown.index, len(shown.text))
             if key != self._preview_key:
                 self._preview_key = key
@@ -658,17 +727,31 @@ class OverlayWindow(QMainWindow):
 
         # Open on RELEASE, not press: a press is also the start of a drag.
         if not down and self._word_prev_down and self._drag_from is not None:
-            chosen = (self._selection(self._drag_from, self._drag_to)
-                      if self._drag_to is not None
-                      else self._word_for(self._drag_from))
-            if chosen is not None:
+            if self._drag_started:
+                chosen = self._selection(self._drag_from,
+                                         self._drag_to or self._drag_from)
                 # A dragged popup keeps the anchor it previewed at, so it
                 # doesn't jump the instant the button comes up.
-                anchor = (self._drag_rect if self._drag_to is not None
-                          else self._rect_for(chosen.box))
-                self._popup.show_for(chosen, anchor or self._rect_for(chosen.box))
+                anchor = self._drag_rect
+            else:
+                chosen = self._word_for(self._drag_from)
+                anchor = None
+            if chosen is not None:
+                rect = self._rect_for(chosen.box)
+                # The commit keeps its highlight while the popup is open, so
+                # the screen and the popup agree on what was picked.
+                self._active_word = (rect, chosen)
+                self._popup.show_for(chosen, anchor or rect)
             self._drag_from = self._drag_to = self._drag_rect = None
+            self._drag_started = False
+            self._press_pos = None
             self._preview_key = None
+            if not self._hover_edges:
+                if under is not None:
+                    self.setCursor(Qt.PointingHandCursor)
+                else:
+                    self.unsetCursor()
+            self.update()
         self._word_prev_down = down
 
     def _update_click_through(self):
@@ -770,6 +853,11 @@ class OverlayWindow(QMainWindow):
         events, captions = payload
         self._captions = captions
         self._span_cache.clear()   # resolved words belong to the old Sentences
+        # A committed highlight dies with its caption: the popup keeps its
+        # click-time snapshot, but a wash painted over raw video would lie.
+        if (self._active_word is not None
+                and self._active_word[1].sentence not in captions):
+            self._active_word = None
         self._sources.observe_captions(captions)
         self._render_status()
         self.update()
