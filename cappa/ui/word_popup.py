@@ -11,7 +11,12 @@ Every other language keeps the old route: `dictionary.meaning` (Wiktionary
 definitions, contextual Google translation as hint and fallback), fetched on
 a helper thread so the UI never blocks — the popup opens instantly with
 "Translating…" and fills in when the call returns, or shows the failure (no
-network) as a ⚠ line. NO LLM on either path. Below sits the
+network) as a ⚠ line. NO LLM on either path.
+
+Two ways in. `show_for` is the COMMIT: it freezes the click moment and arms
+the card button. `preview_for` is the live definition of a span the user is
+still dragging out — same rendering, but it freezes nothing, calls nothing
+over the network, and leaves the button disabled. Below sits the
 Create Anki card button: the screenshot is captured immediately when the word
 is clicked, then clicking the button gathers the card's remaining ingredients
 (word + sentence translations and the audio clip cut from the rolling recorder
@@ -242,12 +247,38 @@ class WordPopup(QWidget):
         if entry is not None:
             # Japanese: the dictionary already has the answer, offline.
             self._show_entry(word, surface, entry)
+            self._anki.setEnabled(True)
         else:
             self._show_lookup(surface)
             threading.Thread(
                 target=self._fetch, args=(self._req, surface, sentence),
                 daemon=True,
             ).start()
+        self._place()
+        self.show()
+        self.raise_()
+
+    def preview_for(self, word, anchor):
+        """The definition of the span being dragged, live, while the button
+        is still down.
+
+        Deliberately side-effect free, because this runs on every tick the
+        selection grows: it never freezes the click moment (no screenshot,
+        no playback position, no caption snapshot) and never touches the
+        network — a dictionary hit is a cached sqlite lookup, and a span the
+        dictionary doesn't know just says so and waits for the release. The
+        card button stays disabled: `self.word = None` means nothing here is
+        committed, and only show_for() commits."""
+        self.word = None
+        self._anchor = QRect(anchor)
+        self._req += 1     # a fetch still in flight must not paint over this
+        entry = self._entry_for(word)
+        if entry is not None:
+            self._show_entry(word, clean_word(word.text) or word.text, entry)
+        else:
+            self._show_selection(word)
+        self._anki.setText("Create Anki card")
+        self._anki.setEnabled(False)
         self._place()
         self.show()
         self.raise_()
@@ -261,33 +292,49 @@ class WordPopup(QWidget):
         entries = jmdict.lookup(lemma)
         return entries[0] if entries else None
 
+    @staticmethod
+    def _set(label, text):
+        """Fill a line, and take it out of the layout when it's empty — an
+        invisible label still costs its row's spacing."""
+        label.setText(text)
+        label.setVisible(bool(text))
+
     def _show_entry(self, word, surface, entry):
         """A reader's entry: headword, reading, tags, numbered senses — and
         how the inflected surface on screen got back to the headword."""
-        self._word_label.setText(entry.headword)
-        self._reading.setText(
-            "【%s】" % entry.reading
-            if entry.reading and entry.reading != entry.headword else "")
+        self._set(self._word_label, entry.headword)
+        self._set(self._reading,
+                  "【%s】" % entry.reading
+                  if entry.reading and entry.reading != entry.headword else "")
         # How the form ON SCREEN got back to the headword. Read off the
         # surface itself, so a hand-dragged span explains itself too.
         match = jmdict.word_at(word.text, 0) if word.text else None
         reasons = (match.reasons if match and match.end == len(word.text)
                    and match.base == word.lemma else ())
-        self._inflection.setText(
-            "%s — %s" % (surface, ", ".join(reasons)) if reasons else "")
-        self._tags.setText(" · ".join(entry.tags()))
+        self._set(self._inflection,
+                  "%s — %s" % (surface, ", ".join(reasons)) if reasons else "")
+        self._set(self._tags, " · ".join(entry.tags()))
         senses = []
         for i, (_pos, glosses) in enumerate(entry.senses[:MAX_SENSES], 1):
             senses.append("%d. %s" % (i, "; ".join(glosses[:3])))
-        self._trans.setText("\n".join(senses))
-        self._anki.setEnabled(True)
+        self._set(self._trans, "\n".join(senses))
 
     def _show_lookup(self, surface):
-        self._word_label.setText(surface)
-        self._reading.setText("")
-        self._inflection.setText("")
-        self._tags.setText("")
-        self._trans.setText("Translating…")
+        self._set(self._word_label, surface)
+        self._set(self._reading, "")
+        self._set(self._inflection, "")
+        self._set(self._tags, "")
+        self._set(self._trans, "Translating…")
+
+    def _show_selection(self, word):
+        """A dragged span the dictionary has no entry for. Shown as-is; the
+        translation waits for the button to come up, because a lookup per
+        drag tick would be a network call per pixel."""
+        self._set(self._word_label, clean_word(word.text) or word.text)
+        self._set(self._reading, "")
+        self._set(self._inflection, "")
+        self._set(self._tags, "")
+        self._set(self._trans, "No dictionary entry — release to translate")
 
     # ------------------------------------------------------------ internals
     def _capture_click_image(self):
@@ -336,7 +383,7 @@ class WordPopup(QWidget):
     def _fill(self, req, text, err):
         if req != self._req or not self.isVisible():
             return  # popup moved on (new word / closed) while this ran
-        self._trans.setText(("⚠ " + err) if err else text)
+        self._set(self._trans, ("⚠ " + err) if err else text)
         self._anki.setEnabled(not err)
         self._place()  # the popup grew; re-clamp around the same word
 

@@ -65,6 +65,10 @@ class OverlayWindow(QMainWindow):
         self._drag_from = None        # character Word the press landed on
         self._drag_to = None          # character Word the cursor has reached,
                                       # while the button is held (a selection)
+        self._drag_rect = None        # where the press landed: the live
+                                      # preview popup anchors here, not to the
+                                      # growing selection, so it stays put
+        self._preview_key = None      # span the preview popup last rendered
         self._span_cache = {}         # (id(sentence), char index) -> Word
         self._detector_ok = None      # None until the model load resolves
 
@@ -222,7 +226,8 @@ class OverlayWindow(QMainWindow):
         self._resize_edges = ""
         self._captions = []
         self._hover_word = None
-        self._drag_from = self._drag_to = None
+        self._drag_from = self._drag_to = self._drag_rect = None
+        self._preview_key = None
         self._popup.hide()
         self._apply_edge_cursor("")
         self.launcher.show()
@@ -239,7 +244,8 @@ class OverlayWindow(QMainWindow):
         self._target_hwnd = None
         self._popup.hide()
         self._hover_word = None
-        self._drag_from = self._drag_to = None
+        self._drag_from = self._drag_to = self._drag_rect = None
+        self._preview_key = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Click the window to track   ·   Esc to cancel"
         self._apply_edge_cursor("")
@@ -265,7 +271,8 @@ class OverlayWindow(QMainWindow):
         self._target_hwnd = hwnd
         self._captions = []
         self._hover_word = None
-        self._drag_from = self._drag_to = None
+        self._drag_from = self._drag_to = self._drag_rect = None
+        self._preview_key = None
         self._popup.hide()
         self.launcher.show()
         self._show()  # idle keeps the overlay hidden; tracking needs it up
@@ -294,7 +301,8 @@ class OverlayWindow(QMainWindow):
         self._sel_active = False
         self._popup.hide()
         self._hover_word = None
-        self._drag_from = self._drag_to = None
+        self._drag_from = self._drag_to = self._drag_rect = None
+        self._preview_key = None
         self._prev_lbutton = True  # ignore the click that pressed this button
         self._instruction = "Drag a box over the video / subtitle area   ·   Esc to cancel"
         self._resize_edges = ""
@@ -404,7 +412,8 @@ class OverlayWindow(QMainWindow):
         self._parked = True
         self._popup.hide()
         self._hover_word = None
-        self._drag_from = self._drag_to = None
+        self._drag_from = self._drag_to = self._drag_rect = None
+        self._preview_key = None
         self._apply_click_through(True)
         self.setGeometry(OFFSCREEN, OFFSCREEN, 10, 10)
 
@@ -584,14 +593,17 @@ class OverlayWindow(QMainWindow):
 
     def _handle_words(self):
         """Highlight the word under the cursor; releasing on it opens the
-        popup, and dragging across characters selects exactly those.
+        popup, and dragging across characters selects exactly those — with
+        the definition of the growing selection shown live as it grows.
         Polling-based like the app's other modes — the overlay may have been
         click-through a tick earlier, so Qt press events aren't reliable."""
         local = self.mapFromGlobal(QCursor.pos())
         under = None
-        if not (self._resize_edges or self._hover_edges
-                or (self._popup.isVisible()
-                    and self._popup.geometry().contains(local))):
+        # An open popup swallows the cursor — except mid-drag, where the
+        # selection must keep tracking characters that pass beneath it.
+        blocked = (self._drag_from is None and self._popup.isVisible()
+                   and self._popup.geometry().contains(local))
+        if not (self._resize_edges or self._hover_edges or blocked):
             for rect, word in self._word_rects():
                 if rect.contains(local):
                     under = word
@@ -600,14 +612,18 @@ class OverlayWindow(QMainWindow):
         down = winapi.key_down(winapi.VK_LBUTTON)
         if down and not self._word_prev_down:
             self._drag_from, self._drag_to = under, None
+            self._drag_rect = self._rect_for(under.box) if under else None
+            self._preview_key = None
         elif down and self._drag_from is not None and under is not None:
-            if (under.sentence is self._drag_from.sentence
-                    and under.index != self._drag_from.index):
-                self._drag_to = under
+            if under.sentence is self._drag_from.sentence:
+                # Dragging back onto the first character is no selection.
+                self._drag_to = (under if under.index != self._drag_from.index
+                                 else None)
 
         # While a drag is live the highlight IS the selection; otherwise it
         # is whatever word the hovered character resolves into.
-        if self._drag_from is not None and self._drag_to is not None:
+        dragging = self._drag_from is not None and self._drag_to is not None
+        if dragging:
             shown = self._selection(self._drag_from, self._drag_to)
         elif under is not None:
             shown = self._word_for(under)
@@ -625,15 +641,34 @@ class OverlayWindow(QMainWindow):
                     self.unsetCursor()
             self.update()
 
+        # The live definition of the span being dragged. Re-rendered only
+        # when the span actually changes, and anchored to where the drag
+        # STARTED so the popup doesn't chase the cursor across the line.
+        # It appears once the user actually DRAGS — a plain press must not
+        # flash a popup — but once shown it keeps up, including when the
+        # selection is dragged back down to the single word it began as.
+        previewing = self._drag_from is not None and (
+            dragging or self._preview_key is not None)
+        if previewing and shown is not None:
+            key = (id(shown.sentence), shown.index, len(shown.text))
+            if key != self._preview_key:
+                self._preview_key = key
+                self._popup.preview_for(
+                    shown, self._drag_rect or self._rect_for(shown.box))
+
         # Open on RELEASE, not press: a press is also the start of a drag.
         if not down and self._word_prev_down and self._drag_from is not None:
-            if self._drag_to is not None:
-                chosen = self._selection(self._drag_from, self._drag_to)
-            else:
-                chosen = self._word_for(self._drag_from)
+            chosen = (self._selection(self._drag_from, self._drag_to)
+                      if self._drag_to is not None
+                      else self._word_for(self._drag_from))
             if chosen is not None:
-                self._popup.show_for(chosen, self._rect_for(chosen.box))
-            self._drag_from = self._drag_to = None
+                # A dragged popup keeps the anchor it previewed at, so it
+                # doesn't jump the instant the button comes up.
+                anchor = (self._drag_rect if self._drag_to is not None
+                          else self._rect_for(chosen.box))
+                self._popup.show_for(chosen, anchor or self._rect_for(chosen.box))
+            self._drag_from = self._drag_to = self._drag_rect = None
+            self._preview_key = None
         self._word_prev_down = down
 
     def _update_click_through(self):
@@ -642,8 +677,10 @@ class OverlayWindow(QMainWindow):
         browser behind it works normally."""
         if self._parked or self._picking or self._selecting:
             return  # those modes own the click-through state
-        if self._resize_edges:
+        if self._resize_edges or self._drag_from is not None:
             return  # keep click-through OFF so Windows keeps routing the drag
+                    # to us — a selection dragged off the caption must not
+                    # start scrubbing the video underneath
         local = self.mapFromGlobal(QCursor.pos())
         over = any(r.contains(local) for r in self._interactive_rects())
         if over == self._click_through:  # over => want click-through OFF
