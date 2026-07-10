@@ -2,8 +2,10 @@
 
 import json
 import os
+import shutil
 
 from . import prefs
+from .anki_sync import MARKER
 
 CARDS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -22,6 +24,29 @@ def next_card_dir(out_dir):
             return path
         except FileExistsError:
             i += 1
+
+
+def discard_draft(draft):
+    """Delete a draft folder the user rejected in the preview.
+
+    Deleting it is not a tidiness choice: sync() delivers every card_ folder
+    that carries no receipt, so a rejected draft left on disk would ride the
+    NEXT card's save into Anki. A folder that already has a receipt IS in
+    Anki and is left alone -- that copy is the user's (2026-07-08 rule).
+    Returns whether the folder went away."""
+    folder = draft.folder_path
+    if not folder or not os.path.isdir(folder):
+        return False
+    if not os.path.basename(folder).startswith("card_"):
+        return False
+    if os.path.isfile(os.path.join(folder, MARKER)):
+        return False
+    shutil.rmtree(folder, ignore_errors=True)
+    if os.path.isdir(folder):
+        return False
+    draft.folder_path = None
+    draft.metadata_path = None
+    return True
 
 
 def write_artifacts(draft):

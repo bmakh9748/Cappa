@@ -28,6 +28,8 @@ UNIT = [
     "test_audio.py",         # loopback ring buffer: clip math, device rebind
     "test_screen_recorder.py",  # area recorder's 5 GB self-cap (prune, no ffmpeg)
     "test_flashcard.py",     # draft folders: text, provenance, media paths
+    "test_card_preview.py",  # preview shows every piece; Discard deletes the
+                             #   draft, a receipted card survives
     "test_anki_sync.py",     # per-card Anki delivery: live (faked add-on) +
                              #   closed (throwaway collection file) + receipts
     "test_youtube_source.py",  # VTT parse + OCR->caption alignment (fixtures)

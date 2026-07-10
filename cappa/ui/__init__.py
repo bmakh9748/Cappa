@@ -15,6 +15,8 @@ The map (one window/widget per file):
                         Flashcards tabs), reopened live from the launcher
     word_popup.py       the box a clicked word opens: word · translation ·
                         Create Anki card (card built off-thread)
+    card_preview.py     what the built card holds, shown before it is
+                        delivered: Add to Anki, or Discard (deletes the draft)
     template_dialog.py  advanced card-design editor (front/back HTML + CSS)
     logo.py             the Cappa logo as paint code; window/taskbar icons
 

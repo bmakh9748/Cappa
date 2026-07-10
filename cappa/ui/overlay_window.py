@@ -359,10 +359,12 @@ class OverlayWindow(QMainWindow):
         # browser's picture-in-picture popout) stay visible without ever
         # owning the foreground, so focus loss doesn't park them.
         topmost = winapi.is_topmost(hwnd)
-        # The launcher and its menu count as "ours": clicking them must not
-        # read as the tracked window losing the foreground (=> park flicker).
+        # The launcher, its menu and an open card preview count as "ours":
+        # clicking them must not read as the tracked window losing the
+        # foreground (=> park flicker).
         in_front = winapi.foreground_root() in (
-            hwnd, int(self.winId()), *self.launcher.roots())
+            hwnd, int(self.winId()), *self.launcher.roots(),
+            *self._popup.roots())
         if winapi.is_minimized(hwnd) or not (in_front or topmost):
             self._park()
             return

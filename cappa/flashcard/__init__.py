@@ -20,7 +20,8 @@ The map (one ingredient per file):
     provenance.py  is the clicked word really in its saved sentence
     screenshot.py  click-time PNG capture/write
     writer.py      card_NNNN folders + metadata.json (the card's provenance
-                   record -- add keys, never rename them)
+                   record -- add keys, never rename them); discard_draft
+                   deletes a draft the user rejected in the preview
     anki_sync.py   sync(): puts the new card into Anki -- live via the
                    AnkiConnect add-on when Anki is open (visible instantly),
                    straight into its collection file when closed (visible
@@ -28,13 +29,18 @@ The map (one ingredient per file):
                    a delivered card is never touched again.
 
 Qt-free; the UI calls build_draft/sync_to_anki from a worker thread. Every
-missing piece becomes a draft note, never an exception."""
+missing piece becomes a draft note, never an exception.
+
+build_draft SAVES the draft but delivers nothing: the preview window
+(ui/card_preview.py) shows it and then either calls sync_to_anki or
+discard_draft."""
 
 from . import prefs
 from .anki_sync import SyncError, sync as sync_to_anki
 from .builder import CARDS_DIR, build_draft
 from .model import CardDraft
 from .screenshot import capture_png
+from .writer import discard_draft
 
 __all__ = ["CARDS_DIR", "CardDraft", "SyncError", "build_draft",
-          "capture_png", "prefs", "sync_to_anki"]
+          "capture_png", "discard_draft", "prefs", "sync_to_anki"]

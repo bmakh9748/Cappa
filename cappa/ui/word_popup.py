@@ -8,14 +8,14 @@ Create Anki card button: the screenshot is captured immediately when the word
 is clicked, then clicking the button gathers the card's remaining ingredients
 (word + sentence translations and the audio clip cut from the rolling recorder
 buffer around when the sentence was on screen) via cappa.flashcard, also off
-the UI thread. Saving the draft immediately triggers
-cappa.flashcard.sync_to_anki() on the SAME background thread -- no separate
-export step, no import dialog: with Anki open the card lands in it LIVE
-through the AnkiConnect add-on, with Anki closed it goes straight into the
-collection file for next launch. Only the new card is delivered (each card
-folder keeps a receipt once it's in Anki); a sync problem is appended to
-the button's message but the draft itself is never lost -- the receipt-less
-card rides the next save's sync.
+the UI thread.
+
+The gathered draft goes NOWHERE by itself: it opens the card preview
+(ui/card_preview.py), which shows what the card would carry and owns the two
+exits -- Add to Anki (still no export step, no import dialog: the card lands
+live in the open app through the AnkiConnect add-on, or in the collection
+file when Anki is closed) and Discard (which deletes the draft folder,
+because an unreceipted folder would otherwise ride the next save).
 
 A child of the overlay, so it parks/hides with it and is excluded from
 capture along with it. The overlay adds its geometry to the interactive
@@ -23,7 +23,6 @@ rects while visible, which is what lets its controls receive clicks. The
 overlay supplies `region_provider` (the tracked area to screenshot) and
 `recorder` (the audio ring buffer) — the popup owns the threading."""
 
-import os
 import threading
 
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
@@ -34,6 +33,7 @@ from .. import flashcard
 from ..detection.sentence import caption_block, click_pool
 from ..dictionary import meaning
 from ..translate import TranslationError, clean_word
+from .card_preview import CardPreview
 
 MARGIN = 10           # gap between the word and the popup
 MAX_TEXT_WIDTH = 300  # translation wraps instead of growing off-screen
@@ -95,8 +95,10 @@ class WordPopup(QWidget):
     # (request id, translation, error) — emitted from the fetch thread; Qt
     # queues it onto the UI thread because the emitter is a foreign thread.
     _translated = Signal(int, str, str)
-    # (request id, ok, message) from the card-build thread, same reason.
-    _carded = Signal(int, bool, str)
+    # (draft or None, error message) from the card-build thread, same reason.
+    # No request id: a built draft EXISTS on disk and must be resolved in the
+    # preview whatever the popup has moved on to, or it syncs itself later.
+    _built = Signal(object, str)
 
     def __init__(self, parent, region_provider=None, recorder=None,
                  source=None, captions_provider=None):
@@ -125,6 +127,7 @@ class WordPopup(QWidget):
         self._snapshot_captions = []
         self._snapshot_play_time = None  # playback position frozen at click
                                          # time (it drifts while the popup sits)
+        self._preview = None   # the card preview window, built on first use
 
         self._word_label = QLabel("", self)
         self._word_label.setObjectName("word")
@@ -160,8 +163,13 @@ class WordPopup(QWidget):
         lay.addWidget(self._anki, alignment=Qt.AlignLeft)
         self.setStyleSheet(_STYLE)
         self._translated.connect(self._fill)
-        self._carded.connect(self._card_done)
+        self._built.connect(self._card_done)
         self.hide()
+
+    def roots(self):
+        """The preview's top-level hwnd while it is open — the overlay counts
+        it as 'ours' so showing it doesn't park the tracking border."""
+        return self._preview.roots() if self._preview else ()
 
     def show_for(self, word, anchor):
         """Open for a detection Word, above `anchor` (a QRect in the
@@ -269,19 +277,18 @@ class WordPopup(QWidget):
             getattr(word, "sentence", None),
         )
         self._anki.setEnabled(False)
-        self._anki.setText("Saving…")
-        self._req += 1
+        self._anki.setText("Building…")
         threading.Thread(
             target=self._build_card,
-            args=(self._req, word, screenshot_png, screenshot_note, near_t,
-                  captions),
+            args=(word, screenshot_png, screenshot_note, near_t, captions),
             daemon=True,
         ).start()
 
-    def _build_card(self, req, word, screenshot_png, screenshot_note, near_t,
+    def _build_card(self, word, screenshot_png, screenshot_note, near_t,
                     captions):
         """Helper thread: the blocking gather (translations + WAV write).
-        Result crosses back through the queued _carded signal."""
+        Nothing is delivered here — the draft crosses back through the queued
+        _built signal and the preview decides its fate."""
         try:
             draft = flashcard.build_draft(
                 word, None, self._recorder,
@@ -292,50 +299,26 @@ class WordPopup(QWidget):
                 captions=captions,
             )
             print("[cappa] card: " + draft.summary())
-            ok = draft.folder_path is not None
-            folder = (os.path.basename(draft.folder_path)
-                      if draft.folder_path else "draft")
-            msg = "Saved %s" % folder
-            if draft.notes:
-                # Something degraded (audio fell back, no screenshot, ...) —
-                # say so instead of a silent thumbs-up; details in the console.
-                msg += " · %d note%s" % (len(draft.notes),
-                                         "" if len(draft.notes) == 1 else "s")
-            if not ok:
-                msg = "Card failed"
+            if draft.folder_path is None:
+                self._built.emit(None, "Card failed")
             else:
-                # The draft is saved either way; a sync problem is appended
-                # to the message, never lost -- the undelivered card rides
-                # the next save's sync pass.
-                msg += " · " + self._sync_to_anki()
-            self._carded.emit(req, ok, msg)
+                self._built.emit(draft, "")
         except Exception as exc:
-            self._carded.emit(req, False, "Card failed: %s" % exc)
+            self._built.emit(None, "Card failed: %s" % exc)
 
-    def _sync_to_anki(self):
-        """Deliver the just-saved card (plus any earlier save Anki wasn't
-        reachable for) -- live into the open app, or into its collection
-        file when closed. Cards already delivered are never touched.
-        Still on the card-build thread; never raises."""
-        try:
-            added = flashcard.sync_to_anki()
-        except flashcard.SyncError as exc:
-            print("[cappa] anki sync:", exc)
-            return "Anki: %s" % exc
-        except Exception as exc:
-            print("[cappa] anki sync failed:", exc)
-            return "Anki sync failed: %s" % exc
-        result = "Anki: %d new" % added if added else "Anki: nothing new"
-        print("[cappa] anki sync:", result)
-        return result
-
-    def _card_done(self, req, ok, message):
-        if req != self._req or not self.isVisible():
-            return
-        self._anki.setText(message if len(message) < 40 else message[:39] + "…")
-        # Re-enable so the user can retry (e.g. after fixing the network).
+    def _card_done(self, draft, error):
+        """Open the preview for the built draft. Deliberately NOT guarded on
+        the popup still being visible: the draft is already a folder on disk,
+        and only the preview can add it to Anki or delete it."""
+        self._anki.setText("Create Anki card")
         self._anki.setEnabled(True)
         self._place()
+        if draft is None:
+            self._anki.setText(error[:39] + "…" if len(error) > 40 else error)
+            return
+        if self._preview is None:
+            self._preview = CardPreview()
+        self._preview.show_draft(draft)
 
     def _place(self):
         self.adjustSize()
