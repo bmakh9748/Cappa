@@ -37,6 +37,7 @@ class SourceSession:
         self._rate_lookup = None         # () -> seconds per spoken word
         self._rows_lookup = None         # (t0, t1) -> this run's rows there
         self._audio_retry = threading.Lock()  # one download retry at a time
+        self._fetching = False          # a _load thread is in flight
         self.transcript_ready = False   # captions fetched + aligned-ready
         self.audio_ready = False        # audio downloaded, clips can be cut
         self.error = ""
@@ -57,8 +58,12 @@ class SourceSession:
             # captions arrived, or a fetch is in flight. A FAILED fetch ("no
             # captions" from a transient bot check / network blip) may be
             # retried by pointing the session at the same video once more.
+            # _fetching (not the status string) guards the in-flight case:
+            # a caption-less video keeps downloading AUDIO after its status
+            # says "no captions", and a retry landing in that window must
+            # not start a second concurrent download.
             if vid == self._video_id and (self.transcript_ready
-                                          or self.status == "loading captions"):
+                                          or self._fetching):
                 return
             self._video_id = vid
             self._url = youtube.info_url(url)
@@ -70,38 +75,67 @@ class SourceSession:
             self.audio_ready = False
             self.error = ""
             self.status = "loading captions"
+            self._fetching = True
             url_full, lang_now = self._url, self._lang
         threading.Thread(target=self._load, args=(url_full, lang_now, vid),
                          daemon=True).start()
 
     def _load(self, url, lang, vid):
         try:
-            transcript = youtube.fetch_transcript(url, lang=lang)
-        except SourceError as exc:
+            self._load_inner(url, lang, vid)
+        finally:
             with self._lock:
                 if self._video_id == vid:
-                    self.error, self.status = str(exc), "no captions"
-            return
-        with self._lock:
-            if self._video_id != vid:
-                return                       # user switched mid-fetch
-            self._transcript = transcript
-            self.transcript_ready = True
-            self.status = "captions ready"
+                    self._fetching = False
+
+    def _load_inner(self, url, lang, vid):
+        """Captions, then audio — and a caption failure does NOT skip the
+        audio. The clip windows come from the SCREEN (2026-07-07); the track
+        only fills edges and corrects text, so a caption-less video is still
+        a perfectly good audio source. This used to `return` on caption
+        failure, which meant no caption track -> source audio NEVER
+        downloaded -> every card limped on the loopback buffer (cards
+        0001/0002: 'audio not downloaded yet' minutes into the video)."""
+        captionless = False
+        try:
+            transcript = youtube.fetch_transcript(url, lang=lang)
+        except SourceError as exc:
+            captionless = True
+            with self._lock:
+                if self._video_id != vid:
+                    return               # user switched mid-fetch
+                self.error, self.status = str(exc), "no captions"
+        else:
+            with self._lock:
+                if self._video_id != vid:
+                    return
+                self._transcript = transcript
+                self.transcript_ready = True
+                self.status = "captions ready"
 
         try:
             path = youtube.fetch_audio(url)
         except SourceError as exc:
             with self._lock:
                 if self._video_id == vid:
-                    self.error, self.status = str(exc), "captions, no audio"
+                    self.error = self.error or str(exc)
+                    self.status = ("no captions, no audio" if captionless
+                                   else "captions, no audio")
             return
         with self._lock:
             if self._video_id != vid:
                 return
             self._audio_path = path
             self.audio_ready = True
-            self.status = "ready"
+            self.status = "no captions, audio ready" if captionless \
+                else "ready"
+
+    @property
+    def fetching(self):
+        """A caption/audio fetch is in flight (the tooltip dot shows amber
+        rather than flashing red through a caption-less video's download)."""
+        with self._lock:
+            return self._fetching
 
     def set_position_provider(self, provider):
         """Supply a callable returning the browser's current state dict (from
@@ -286,7 +320,15 @@ class SourceSession:
     def monotonic_window(self, start, end):
         """Map a caption window (video seconds) to the monotonic window when it
         played through the speakers, or None. The loopback-buffer rescue path:
-        exact caption timing without the downloaded audio."""
+        exact caption timing without the downloaded audio.
+
+        The mapping must PRESERVE DURATION (within playback-rate slack): the
+        two edges are mapped independently, and on a LOOPING video the same
+        video second plays once per pass, so the edges can land in different
+        passes — card_0002 mapped a 0.6 s window to 21.8 s of wall clock and
+        the card carried 21.8 s of audio spanning the loop. A window that
+        stretched or collapsed is refused; the caller falls back to the
+        on-screen-timed cut, which lives in one clock and can't straddle."""
         mapper = self._mono_mapper
         if mapper is None:
             return None
@@ -296,6 +338,9 @@ class SourceSession:
             return None
         if m0 is None or m1 is None or m1 <= m0:
             return None
+        span = end - start
+        if not (0.2 * span - 0.5 <= (m1 - m0) <= 4.0 * span + 1.0):
+            return None   # edges landed in different playback passes
         return m0, m1
 
     @property
@@ -314,7 +359,7 @@ class SourceSession:
             with self._lock:
                 if self.audio_ready:
                     return self._audio_path
-                in_flight = self.status in ("loading captions", "captions ready")
+                in_flight = self._fetching
             if not in_flight:
                 break
             time.sleep(0.25)
@@ -323,24 +368,30 @@ class SourceSession:
             with self._lock:
                 if self.audio_ready:
                     return self._audio_path
-                if not self.transcript_ready:
-                    return None       # no video / captions failed: nothing to do
+                # Captions failing is NOT a reason to skip the retry — a
+                # caption-less video's audio is still the best clip source
+                # (this gate used to require transcript_ready, the same
+                # disease _load_inner had). Only "no video at all" stops it.
                 url, vid = self._url, self._video_id
-            if not url:
+                captionless = not self.transcript_ready
+            if not url or vid is None:
                 return None
             try:
                 path = youtube.fetch_audio(url)
             except SourceError as exc:
                 with self._lock:
                     if self._video_id == vid:
-                        self.error, self.status = str(exc), "captions, no audio"
+                        self.error = self.error or str(exc)
+                        self.status = ("no captions, no audio" if captionless
+                                       else "captions, no audio")
                 return None
             with self._lock:
                 if self._video_id != vid:
                     return None
                 self._audio_path = path
                 self.audio_ready = True
-                self.status = "ready"
+                self.status = "no captions, audio ready" if captionless \
+                    else "ready"
                 return path
 
     def clip_wav(self, out_path, start, end, preroll=0.0, postroll=0.0):

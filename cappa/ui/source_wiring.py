@@ -183,7 +183,11 @@ class SourceWiring:
             self.session.set_video(state.get("url") or vid)
             print("[cappa] source: browser video %s (%s)"
                   % (vid, (state.get("title") or "?")[:50]))
-        elif vid and self.session.status == "no captions":
+        elif (vid and not self.session.fetching
+                and self.session.status.startswith("no captions")):
+            # Covers "no captions" and "no captions, audio ready": captions
+            # may appear on retry (bot check before the cookies arrived); the
+            # already-downloaded audio just re-resolves from the cache.
             self._retry_captions(vid, state)
 
     def _retry_captions(self, vid, state):
@@ -234,16 +238,23 @@ class SourceWiring:
     def _announce(self):
         """The launcher tooltip only shows on hover, so caption-track progress
         was invisible — tip the transitions that matter: the track becoming
-        usable, or this video not having one."""
+        usable, this video not having one, or a caption-less video's AUDIO
+        landing (cards are fine without captions — the screen times the
+        clips; say so instead of looking broken)."""
         if self.session.transcript_ready:
             if not self._ready_tipped:
                 self._ready_tipped = True
                 self._on_tip(
                     "YouTube captions ready — cards get caption-exact audio")
+        elif self.session.status == "no captions, audio ready":
+            if not self._ready_tipped:
+                self._ready_tipped = True
+                self._on_tip("No captions on this video — audio ready, "
+                             "clips timed from the screen")
         else:
             self._ready_tipped = False
-            if self.session.status in ("no captions", "bad URL"):
-                self._on_tip("YouTube captions unavailable (%s) — card "
+            if self.session.status in ("no captions, no audio", "bad URL"):
+                self._on_tip("YouTube audio unavailable (%s) — card "
                              "audio falls back to what just played"
                              % self.session.status)
 
@@ -275,19 +286,22 @@ class SourceWiring:
         return text
 
     def yt_light(self):
-        """The launcher's caption-source dot: 'ready' (green) = caption track
-        usable for cards, 'loading' (amber) = fetch in flight, 'error' (red)
-        = this video has no usable track, None (dark) = no video yet — or
-        nothing is WATCHING one: the YouTube tab closed (the recorder gate's
-        signal) or card audio is off. A green dot must mean "the next card
-        gets caption-exact audio", which is a lie once the tab is gone."""
+        """The launcher's video-source dot: 'ready' (green) = the next card
+        gets good audio — the caption track, or (caption-less) the downloaded
+        source audio with clips timed from the screen (user call, cards
+        0001/0002: no captions is a NOTE, not a failure); 'loading' (amber) =
+        fetch in flight, 'error' (red) = neither captions nor audio, None
+        (dark) = no video yet — or nothing is WATCHING one: the YouTube tab
+        closed (the recorder gate's signal) or card audio is off."""
         if self._audio_off or self._recorder_paused:
             return None
         age = self.bridge.age()
         if age is not None and age > DOT_STALE:
             return None   # tab just closed/hidden: dark within ~2s
-        if self.session.transcript_ready:
+        if self.session.transcript_ready or self.session.audio_ready:
             return "ready"
+        if self.session.fetching:
+            return "loading"
         status = self.session.status
         if status == "idle":
             return None

@@ -506,22 +506,66 @@ def _to_hiragana(text):
         for ch in text)
 
 
+# Old-form kanji (kyūjitai) -> the modern form JMdict keys words under.
+# Games and title cards love brush fonts drawing the OLD forms: card_0002's
+# column read perfectly at 0.99 — as 拔山蓋世, whose first glyph is the old
+# form of 抜 — and still missed 抜山蓋世's entry, so the whole idiom fell
+# through to Google and came back romanized as a name ('Kokeyama Kaiyo').
+# Two parallel strings, position-matched (asserted below).
+_OLD_KANJI = ("亞惡壓圍醫爲隱榮營衞驛圓緣鹽奧應橫歐毆黃溫假價畫會壞懷繪擴殼覺學"
+              "嶽樂勸卷觀關陷顏歸氣龜僞戲犧舊據擧虛峽挾狹曉區驅勳徑惠揭溪經繼"
+              "莖螢輕藝缺儉劍圈檢權獻縣險顯驗嚴效廣恆鑛號國濟碎齋劑櫻雜參慘棧"
+              "蠶贊殘絲齒兒辭濕實舍寫釋壽收從澁獸縱肅處敍燒稱證乘剩壤孃條淨狀"
+              "疊讓釀觸囑眞寢愼盡圖粹醉隨髓數樞聲靜齊攝竊專戰淺潛纖錢禪曾雙壯"
+              "搜插巢爭窗總聰莊裝騷增藏臟卽屬續墮體對帶滯臺瀧擇澤單擔膽團彈斷"
+              "遲晝蟲鑄廳聽鎭遞鐵轉點傳黨盜燈當德獨讀屆繩貳惱腦廢拜賣麥發髮拔"
+              "晚蠻祕濱拂佛倂變邊辨舖步寶豐沒飜每萬滿麵默彌藥譯豫餘與譽搖樣謠"
+              "來賴亂覽龍兩獵綠淚壘勵禮隸靈齡曆歷戀爐勞郞錄灣")
+_NEW_KANJI = ("亜悪圧囲医為隠栄営衛駅円縁塩奥応横欧殴黄温仮価画会壊懐絵拡殻覚学"
+              "岳楽勧巻観関陥顔帰気亀偽戯犠旧拠挙虚峡挟狭暁区駆勲径恵掲渓経継"
+              "茎蛍軽芸欠倹剣圏検権献県険顕験厳効広恒鉱号国済砕斎剤桜雑参惨桟"
+              "蚕賛残糸歯児辞湿実舎写釈寿収従渋獣縦粛処叙焼称証乗剰壌嬢条浄状"
+              "畳譲醸触嘱真寝慎尽図粋酔随髄数枢声静斉摂窃専戦浅潜繊銭禅曽双壮"
+              "捜挿巣争窓総聡荘装騒増蔵臓即属続堕体対帯滞台滝択沢単担胆団弾断"
+              "遅昼虫鋳庁聴鎮逓鉄転点伝党盗灯当徳独読届縄弐悩脳廃拝売麦発髪抜"
+              "晩蛮秘浜払仏併変辺弁舗歩宝豊没翻毎万満麺黙弥薬訳予余与誉揺様謡"
+              "来頼乱覧竜両猟緑涙塁励礼隷霊齢暦歴恋炉労郎録湾")
+assert len(_OLD_KANJI) == len(_NEW_KANJI)
+_KANJI_FOLD = str.maketrans(_OLD_KANJI, _NEW_KANJI)
+
+
+def _fold_old_kanji(text):
+    """Old-form kanji folded to the modern forms JMdict keys."""
+    return text.translate(_KANJI_FOLD)
+
+
+def _spellings(text):
+    """The forms a surface should be tried as, itself first: katakana
+    folded to hiragana, old kanji folded to modern, both. Deduplicated,
+    order kept — the surface as written always outranks a folding."""
+    return list(dict.fromkeys((
+        text,
+        _to_hiragana(text),
+        _fold_old_kanji(text),
+        _fold_old_kanji(_to_hiragana(text)),
+    )))
+
+
 def _deinflect(text):
     """`text` plus every form it could be an inflection of, as
     [(form, reasons, types)] -- types is the set of part-of-speech families
     the form must belong to, or None for 'anything'. Breadth-first so the
     shallowest (most likely) derivation of a form is the one kept."""
-    out = [(text, (), None)]
+    out = []
     # Keyed by form AND the types demanded of it: れば -> る is both a godan
     # and an ichidan conditional, and keying on the stem alone would drop
     # whichever rule came second.
-    seen = {(text, None)}
-    queue = [(text, (), None)]
-    kana = _to_hiragana(text)
-    if kana != text:
-        seen.add((kana, None))
-        out.append((kana, (), None))
-        queue.append((kana, (), None))
+    seen = set()
+    queue = []
+    for spelling in _spellings(text):
+        seen.add((spelling, None))
+        out.append((spelling, (), None))
+        queue.append((spelling, (), None))
     while queue:
         form, reasons, types = queue.pop(0)
         if len(reasons) >= MAX_DEPTH:
@@ -555,8 +599,14 @@ def _matches(types, entry):
 
 
 def lookup(form):
-    """Entries for an exact dictionary form; [] when absent or no pack."""
-    return _entries_for(form)
+    """Entries for an exact dictionary form; [] when absent or no pack.
+    Tries the form as written first, then its foldings (katakana ->
+    hiragana, old kanji -> modern), so 拔山蓋世 finds 抜山蓋世's entry."""
+    for spelling in _spellings(form):
+        entries = _entries_for(spelling)
+        if entries:
+            return entries
+    return []
 
 
 def resolve(text, index):

@@ -35,6 +35,8 @@ UNIT = [
     "test_anki_sync.py",     # per-card Anki delivery: live (faked add-on) +
                              #   closed (throwaway collection file) + receipts
     "test_youtube_source.py",  # VTT parse + OCR->caption alignment (fixtures)
+    "test_session_captionless.py",  # no captions still downloads audio;
+                                    #   monotonic_window refuses loop straddles
     "test_sentence_fill.py",   # word-at-a-time sentence completion (ours-first)
     "test_source_gate.py",     # captions attach to a video only while it plays
     "test_ocr_transcript.py",  # per-video ledger of watched caption rows

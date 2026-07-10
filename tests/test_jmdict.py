@@ -31,7 +31,14 @@ assert "やる" in forms, sorted(forms)[:20]
 # Katakana emphasis is folded to the kana JMdict keys words under.
 assert jmdict._to_hiragana("オマエ") == "おまえ"
 assert jmdict._to_hiragana("戻るノ") == "戻るの"
-print("PASS: deinflection unwinds te-forms, contractions and katakana")
+# Old-form kanji fold to the modern spellings JMdict keys (card_0002: a
+# brush font drew 拔, the old form of 抜, and the whole idiom missed).
+assert jmdict._fold_old_kanji("拔山蓋世") == "抜山蓋世"
+assert jmdict._fold_old_kanji("學校圖書館") == "学校図書館"
+assert jmdict._fold_old_kanji("戻る") == "戻る"        # modern text untouched
+assert "抜山蓋世" in {f for f, _r, _t in jmdict._deinflect("拔山蓋世")}
+print("PASS: deinflection unwinds te-forms, contractions, katakana and "
+      "old kanji")
 
 # ---- the script-run fallback IS the old, wrong grouping ----------------
 # Kept only for when no pack is present; the test pins what it does so the
@@ -126,6 +133,15 @@ print("PASS: entries carry reading, POS tags, senses and the inflection chain")
 assert jmdict.resolve("面倒", 1).surface == "倒"      # the lone kanji
 assert jmdict.word_at("面倒", 1).surface == "面倒"    # the word it is inside
 print("PASS: word_at finds the word a mid-word character belongs to")
+
+# ---- old-form kanji resolve to the modern entry (card_0002) -------------
+match = jmdict.word_at("拔山蓋世", 0)
+assert match is not None and match.surface == "拔山蓋世", match
+assert match.entry.headword == "抜山蓋世", match.entry.headword
+assert "strength" in match.entry.senses[0][1][0]
+assert jmdict.word_at("拔山蓋世", 2).entry.headword == "抜山蓋世"
+assert jmdict.lookup("拔山蓋世")[0].headword == "抜山蓋世"
+print("PASS: a brush font's old kanji still find the modern entry")
 
 # ---- a word the pack has never heard of resolves to nothing ------------
 # (Not fullwidth latin: JMdict really does list Ｚ, 'Z; z'.)

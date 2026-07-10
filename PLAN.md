@@ -1563,6 +1563,51 @@ until the yt-dlp fetch landed, and this card was made 6 s into a fresh
 video. meta() now floors on the session's own id/url and overlays fetched
 metadata when it arrives.
 
+### 2026-07-10c — no captions is a note, not a failure (cards 0001/0002)
+
+Three defects under the user's report "audio is not being recorded because
+there are no captions" — the belief was wrong (the loopback recorded 21.8 s
+on card_0002) but pointed straight at what WAS wrong:
+
+1. **A caption failure silently killed the source-audio download.** Twice:
+   `session._load` returned after "no captions" without ever reaching
+   `fetch_audio`, and `ensure_audio`'s card-time retry refused when
+   `transcript_ready` was false ("nothing to do"). So a caption-less video
+   NEVER got its audio downloaded and every card limped on the loopback —
+   card_0001's happened to be silent, card_0002's spanned a loop. The clip
+   windows come from the SCREEN (2026-07-07); the track only fills edges, so
+   caption-less videos are full audio sources now: statuses
+   "no captions, audio ready" / "no captions, no audio", the launcher dot
+   goes GREEN on audio-only (user call — green = the next card gets good
+   audio, track or not), the tip says "clips timed from the screen", and
+   each card carries the note "video has no captions — clip timed from the
+   on-screen life". The retry machinery keeps working (captions can appear
+   once cookies arrive); an explicit `_fetching` flag guards re-entry, since
+   the status now says "no captions" WHILE the audio is still downloading.
+
+2. **A 0.6 s window cut 21.8 s of audio** (card_0002). `monotonic_window`
+   maps a video window's edges through `bridge.mono_at` INDEPENDENTLY, and
+   on a looping Short the same video second plays once per pass — the edges
+   landed in different passes, exactly the mono_at failure the queued
+   Shorts item predicted. The mapping must preserve duration (with
+   playback-rate slack, 0.2×−4×): a stretched or collapsed window is
+   refused, and the ladder falls to the OCR-timed loopback cut, which lives
+   in ONE clock and clamps at max_clip. The full pass-counter fix stays
+   with the Shorts item; this guard just makes the wrong answer impossible.
+
+3. **A perfect read still missed the dictionary.** card_0002's column read
+   拔山蓋世 at 0.99 — but 拔 is the OLD form (kyūjitai) of 抜, so JMdict's
+   抜山蓋世 entry never matched, the whole idiom fell through to Google and
+   came back romanized as a name ('Kokeyama Kaiyo'). jmdict now folds
+   old-form kanji to modern (~290-pair table, position-matched strings) as
+   a lookup spelling alongside the katakana fold: clicking anywhere in
+   拔山蓋世 answers 抜山蓋世【ばつざんがいせい】 'great strength and energy
+   (of a mighty hero)'. Brush fonts and game title cards love old forms;
+   the surface as written still outranks a folding.
+
+tests/test_session_captionless.py (real SourceSession, stubbed fetchers) +
+folding legs in test_jmdict.
+
 ### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
 
 Turning the browser's own captions (CC) on or off makes a block of text

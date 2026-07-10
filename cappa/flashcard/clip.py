@@ -212,6 +212,13 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
     except Exception:
         pass
 
+    # A caption-less video is a NOTE, not a failure (user call, card_0002):
+    # the screen times the clip and the downloaded audio still gets cut —
+    # the card just says why its timing had no track to lean on.
+    if str(getattr(source, "status", "")).startswith("no captions"):
+        draft.notes.append("video has no captions — clip timed from the "
+                           "on-screen life")
+
     # The caption track's window for THIS sentence's text (window_for =
     # the exact matched words, not the run-on position blob). When it
     # strongly matches it IS the spoken sentence, and it's the fallback the
