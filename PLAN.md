@@ -1656,6 +1656,39 @@ debounce + consume-once restart tests. Not yet done, per the item's own
 advice: grounding on a REAL short — make one card on one looping short and
 read its provenance; the overlay-tick wiring itself is live-only territory.
 
+### 2026-07-14 — a restart must WRAP (user report: "so slow to see words")
+
+The Shorts-loop pass shipped a restart detector that was too eager: ANY
+backward jump landing near 0 counted, and every "restart" force-clears
+detection (hotspots wiped, full rescan). Three things that are not wraps
+trip that rule constantly in real browsing — clicking into a DIFFERENT
+video (old clock → new clock at 0), an AD resetting the player clock to 0
+mid-video (the extension reads currentTime off the <video> element, which
+shows AD time under the content's videoId), and two playing <video>
+elements alternating in the reports. Each false restart wiped every word
+for a rescan; a stream of them is exactly "so slow to see words".
+
+Now `_append_sample` carries the reported videoId and duration, and:
+
+- a VIDEO CHANGE bumps the pass (two videos' clocks are never comparable —
+  this also stops mono_at anchoring across videos, a latent flaw) but is
+  never a restart;
+- a backward jump within one video is a RESTART only when it WRAPS: the
+  previous sample sat within END_EPS (2 s) of the reported duration and
+  the landing is ≤ RESTART_EPS. Duration unknown (live streams) falls back
+  to the landing rule alone;
+- the restart flag is stamped ON the sample at append time, and steady_at
+  forgives exactly the flagged boundaries — an ad reset or a video change
+  stays a seek, as it always was.
+
+Known remaining false positive, judged harmless: a PRE-ROLL ad ends near
+its own duration and the content starts at 0 — one spurious restart at the
+moment the content begins, when there are no captions worth keeping. An
+is-ad signal from the extension would kill it, if it ever matters.
+
+Legs in test_bridge: ad reset / video change bump no restart and earn no
+steadiness forgiveness; a real wrap with known duration still restarts.
+
 ### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
 
 Turning the browser's own captions (CC) on or off makes a block of text

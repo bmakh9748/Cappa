@@ -53,6 +53,17 @@ RESTART_EPS = 1.5    # a backward jump landing at or under this is a RESTART
                      # seconds in. The cost of the tolerance: a caption
                      # already up at the landing can hide up to this much of
                      # its true start.
+END_EPS = 2.0        # ...and a restart must WRAP: the previous sample sat
+                     # within this of the video's reported duration. An AD
+                     # resets the player clock to 0 mid-video and a video
+                     # change starts a new clock at 0 — both used to count
+                     # as restarts, and each one force-cleared detection
+                     # (user report, 2026-07-14: "so slow to see words" —
+                     # every false restart wiped the hotspots for a rescan).
+                     # One report gap of slack: the wrap's last sample lands
+                     # up to ~1 s before the true end. Duration unknown
+                     # (live streams, older extension) falls back to the
+                     # landing rule alone.
 PASS_SLACK = 2.0     # mono_at: how far beyond a pass's SAMPLED video-time
                      # range video_t may sit and still count as played in
                      # that pass — one or two report gaps of lead (the pass
@@ -85,20 +96,26 @@ class BrowserBridge:
         self._lock = threading.Lock()
         self._state = None       # latest payload dict from the extension
         self._at = 0.0           # monotonic time it arrived
-        # (mono_arrival, currentTime, paused, pass) samples for mono_at():
-        # playback history survives pauses and seeks because each sample is
-        # its own video-time <-> clock-time anchor. The PASS counter bumps
-        # whenever video time jumps backwards: on a looping video (a Short)
-        # the same video second plays once per pass, so video time is not
-        # injective over the clock — the pass says which playthrough a
-        # sample belongs to (card_0002 cut audio from a pass minutes old).
+        # (mono_arrival, currentTime, paused, pass, restarted) samples for
+        # mono_at(): playback history survives pauses and seeks because each
+        # sample is its own video-time <-> clock-time anchor. The PASS
+        # counter bumps whenever video time jumps backwards — and when the
+        # reported VIDEO changes, since two videos' clocks are never
+        # comparable: on a looping video (a Short) the same video second
+        # plays once per pass, so video time is not injective over the
+        # clock — the pass says which playthrough a sample belongs to
+        # (card_0002 cut audio from a pass minutes old).
         self._history = deque(maxlen=HISTORY)
         self._pass = 0
-        # Bumped when a new pass starts AT the top of the video (ct near 0):
-        # a looping Short wrapped, or the user restarted. The screen belongs
-        # to a new playthrough — source_wiring watches this to force-clear
+        self._sample_vid = None     # video id the last sample reported
+        self._last_duration = None  # duration reported with the last sample
+        # Bumped when the SAME video WRAPS to its top (see END_EPS): a
+        # looping Short, or a restart at the end. The screen belongs to a
+        # new playthrough — source_wiring watches this to force-clear
         # detection, so an identical caption one loop later gets a fresh
-        # appear stamp instead of keeping the previous pass's.
+        # appear stamp instead of keeping the previous pass's. Never bumped
+        # by a video change or an ad resetting the player clock: those
+        # false restarts wiped detection over and over (2026-07-14).
         self.restart_count = 0
         self._server = None
         self._thread = None
@@ -143,18 +160,35 @@ class BrowserBridge:
             ct = data.get("currentTime")
             if isinstance(ct, (int, float)):
                 self._append_sample(now, float(ct),
-                                    bool(data.get("paused", False)))
+                                    bool(data.get("paused", False)),
+                                    data.get("videoId"),
+                                    data.get("duration"))
 
-    def _append_sample(self, mono, ct, paused):
-        """Append one (mono, ct, paused, pass) history sample, bumping the
-        pass counter on a backward jump in video time and the restart count
-        when that jump lands at the top. Callers hold self._lock (tests feed
-        history through here so their samples carry honest passes)."""
-        if self._history and ct < self._history[-1][1] - SEEK_SLACK:
-            self._pass += 1
-            if ct <= RESTART_EPS:
-                self.restart_count += 1
-        self._history.append((mono, ct, paused, self._pass))
+    def _append_sample(self, mono, ct, paused, vid=None, duration=None):
+        """Append one (mono, ct, paused, pass, restarted) history sample.
+        The pass bumps on a backward jump in video time and on a video
+        change (two videos' clocks are never comparable); the restart count
+        bumps only on a genuine WRAP — same video, jumped from near the end
+        (END_EPS, when the duration is known) to the top (RESTART_EPS).
+        Callers hold self._lock (tests feed history through here so their
+        samples carry honest passes)."""
+        restarted = False
+        if self._history:
+            if vid != self._sample_vid:
+                self._pass += 1
+            elif ct < self._history[-1][1] - SEEK_SLACK:
+                self._pass += 1
+                wrapped = (self._last_duration is None
+                           or self._history[-1][1]
+                           >= self._last_duration - END_EPS)
+                if ct <= RESTART_EPS and wrapped:
+                    restarted = True
+                    self.restart_count += 1
+        self._sample_vid = vid
+        self._last_duration = (float(duration)
+                               if isinstance(duration, (int, float))
+                               else None)
+        self._history.append((mono, ct, paused, self._pass, restarted))
 
     def pass_count(self):
         """Which playthrough the video is on (0-based; bumps on any backward
@@ -217,7 +251,7 @@ class BrowserBridge:
         with self._lock:
             samples = list(self._history)
         passes = {}   # pass -> [best (d, mono, ct) playing anchor, lo, hi]
-        for mono, ct, paused, pid in samples:
+        for mono, ct, paused, pid, _r in samples:
             info = passes.setdefault(pid, [None, ct, ct])
             info[1] = min(info[1], ct)
             info[2] = max(info[2], ct)
@@ -234,7 +268,7 @@ class BrowserBridge:
                 _, mono, ct = best
                 return mono + (video_t - ct)
         best = None  # no pass covers video_t: nearest playing sample overall
-        for mono, ct, paused, _pid in samples:
+        for mono, ct, paused, _pid, _r in samples:
             if paused:
                 continue
             d = abs(ct - video_t)
@@ -336,14 +370,17 @@ class BrowserBridge:
         if after:
             window.append(after[0])
         pairs = list(zip(window, window[1:]))
-        # Playback starts over at a restart (a loop wrap / a seek to the
-        # top): whatever happened before it can't poison a stamp after it,
-        # so only the pairs past the LAST restart in the window are judged.
+        # Playback starts over at a restart (the same video wrapping to its
+        # top — the flag is decided at append time, where the duration is
+        # known): whatever happened before it can't poison a stamp after
+        # it, so only the pairs past the LAST restart in the window are
+        # judged. An ad reset or a video change carries no flag and stays
+        # a seek, exactly as before.
         start = 0
-        for k, (s1, s2) in enumerate(pairs):
-            if s2[1] < s1[1] - SEEK_SLACK and s2[1] <= RESTART_EPS:
+        for k, (_s1, s2) in enumerate(pairs):
+            if s2[4]:
                 start = k + 1
-        for (m1, c1, p1, _), (m2, c2, p2, _) in pairs[start:]:
+        for (m1, c1, p1, *_), (m2, c2, p2, *_) in pairs[start:]:
             dm, dc = m2 - m1, c2 - c1
             if p1 or p2:
                 # Across a pause, video time may hold still or advance up

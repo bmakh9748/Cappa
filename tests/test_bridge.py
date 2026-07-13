@@ -229,9 +229,47 @@ def test_steady_at_forgives_a_restart():
           "seeks after it")
 
 
+def test_ad_reset_and_video_change_are_not_restarts():
+    """An AD resets the player clock to 0 mid-video, and a video change
+    starts a new clock at 0 — neither is the video WRAPPING, yet each used
+    to count as a restart, and every false restart force-cleared detection
+    (user report, 2026-07-14: 'so slow to see words'). Both still bump the
+    PASS (their clocks are not comparable); neither bumps the restart
+    count nor earns steady_at's forgiveness."""
+    b = BrowserBridge(port=0)
+    with b._lock:
+        # Watching a 600 s video, 300 s in...
+        for k in range(4):
+            b._append_sample(100.0 + 0.7 * k, 300.0 + 0.7 * k, False,
+                             "vidA", 600.0)
+        # ...a mid-roll ad takes the player: the clock resets to 0.
+        for k in range(3):
+            b._append_sample(102.8 + 0.7 * k, 0.1 + 0.7 * k, False,
+                             "vidA", 15.0)
+    assert b.pass_count() == 1, b.pass_count()
+    assert b.restart_count == 0, b.restart_count
+    # The reset is still a JUMP: a stamp right after it is not steady.
+    assert b.steady_at(103.2) is False
+    # Clicking into a different video: new pass, still no restart.
+    with b._lock:
+        b._append_sample(105.0, 0.4, False, "vidB", 240.0)
+    assert b.pass_count() == 2, b.pass_count()
+    assert b.restart_count == 0, b.restart_count
+    # A genuine wrap with the duration known IS still a restart.
+    b2 = BrowserBridge(port=0)
+    with b2._lock:
+        b2._append_sample(200.0, 14.1, False, "vidS", 15.0)
+        b2._append_sample(200.7, 14.8, False, "vidS", 15.0)
+        b2._append_sample(201.4, 0.3, False, "vidS", 15.0)
+    assert b2.restart_count == 1, b2.restart_count
+    print("PASS bridge: ad resets and video changes never count as "
+          "restarts; a real wrap still does")
+
+
 if __name__ == "__main__":
     main()
     test_video_at_honest()
     test_steady_at()
     test_mono_at_resolves_in_the_newest_pass()
     test_steady_at_forgives_a_restart()
+    test_ad_reset_and_video_change_are_not_restarts()
