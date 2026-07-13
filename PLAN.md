@@ -1148,7 +1148,9 @@ default path:
    accepted half of the ML idea weighed on 2026-07-07 (see "Ideas weighed and
    set aside") — the model reads the waveform, where the missing information
    actually lives.
-5. **YouTube Shorts support.** The pieces that *look* like blockers already work:
+5. **YouTube Shorts support. [Built 2026-07-13 — see that entry; live
+   grounding on a real short still owed.]** The pieces that *look* like
+   blockers already work:
    `extension/content.js` matches `/shorts/<id>` and picks the largest PLAYING
    `<video>` (card_0018's fix, when the feed's preloaded neighbours were being
    read at t=0), and `youtube.extract_video_id` accepts `/shorts/` URLs, so
@@ -1607,6 +1609,52 @@ on card_0002) but pointed straight at what WAS wrong:
 
 tests/test_session_captionless.py (real SourceSession, stubbed fetchers) +
 folding legs in test_jmdict.
+
+### 2026-07-13 — the Shorts loop: video time is not a clock (queued item 5)
+
+Cards 0001/0002 both came off a looping Short; 2026-07-10c's duration-preserving
+guard made the WRONG loopback cut impossible, this pass makes the right one
+available. Everything in the timing stack assumed video time advances with the
+wall clock; a loop breaks that where the queued item predicted, and the fixes
+landed in its prescribed order:
+
+- **Bridge samples carry a PASS counter** (`bridge._append_sample`): bumped
+  whenever video time jumps backwards — that's exactly when video time stops
+  being injective over the clock. A jump landing at ≤ `RESTART_EPS` (1.5 s) is
+  also a RESTART (`restart_count`): the loop wrapping, or a seek to the top —
+  either way playback starts over and nothing on screen predates second 0.
+- **`mono_at` answers from the newest pass that actually played the moment**
+  (sampled ct range ± `PASS_SLACK`), so a caption window maps to THIS pass's
+  audio, not an occurrence minutes old (card_0002's 0.6 s → 21.8 s stretch).
+  A second the newest pass hasn't reached yet falls to the pass that did play
+  it — on a loop that is the same audio, and it is actually in the buffer.
+  No pass covering it = the old global-nearest answer (single-pass behaviour
+  unchanged, e.g. a predicted end slightly ahead of the playhead).
+- **`steady_at` forgives the wrap**: jumps before the window's last restart
+  no longer poison a stamp, so captions in a pass's first 2 s can anchor
+  their own appearance (on a 15 s short that's a meaningful slice of every
+  pass). A mid-video seek after the restart still refuses, as ever.
+- **A restart force-clears detection**: `wiring.video_restarted()` (consume-
+  once) rides the overlay tick into `_refresh_words()` — the same caption,
+  same pixels, one loop later never registers a clear, so its `appeared_at`
+  kept a stamp from the previous pass; now it's re-accepted fresh.
+- **The transcript logs every pass**: `observe(..., pass_id)` from the
+  bridge's counter, and the REPEAT_GAP dedupe only swallows a repeat within
+  the SAME pass — a short under 10 s used to lose every watch after the
+  first to the blip-loop rule.
+- The two smaller ones: **clip ends clamp to the video's duration** (clip.py,
+  last, after the min/max settings — an end past EOF is empty air on the file
+  and next-pass audio on the loopback), and **a session fetch waits for the
+  id to hold still 1.5 s** (`VIDEO_ID_DEBOUNCE`) so scrolling the feed stops
+  costing a metadata/caption/audio fetch per short flicked past — while
+  caption ATTRIBUTION follows the reported id instantly.
+
+Tests: loop legs in test_bridge (pass-aware mono_at, restart-forgiving
+steady_at, seek-vs-restart counters), a loop-pass leg in test_ocr_transcript,
+a duration-clamp leg in test_youtube_source, and test_source_gate grew the
+debounce + consume-once restart tests. Not yet done, per the item's own
+advice: grounding on a REAL short — make one card on one looping short and
+read its provenance; the overlay-tick wiring itself is live-only territory.
 
 ### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
 

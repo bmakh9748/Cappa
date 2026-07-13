@@ -352,6 +352,13 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
     end = match["end"] - TAIL_TRIM
     start, end = widen_to_min(start, end, timing.MIN_CLIP, floor=0.0)
     start, end = shrink_to_max(start, end, timing.max_clip(), center=near_t)
+    # Nothing past the video's end can play: a predicted end that overruns
+    # the file (words x pace on a last line, a widened minimum) is empty on
+    # the downloaded audio and, on a looping Short, maps the loopback rescue
+    # into the NEXT pass's audio. Clamp to the known duration, last.
+    duration = float(meta.get("duration") or 0.0)
+    if duration > start:
+        end = min(end, duration)
 
     wav_path = os.path.join(draft.folder_path, "audio.wav")
     window = {

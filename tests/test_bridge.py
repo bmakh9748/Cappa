@@ -118,8 +118,11 @@ def main():
 
 
 def _fill(bridge, samples):
-    for s in samples:
-        bridge._history.append(s)
+    # Through _append_sample, so samples carry honest pass counters exactly
+    # as live extension reports would.
+    with bridge._lock:
+        for mono, ct, paused in samples:
+            bridge._append_sample(mono, ct, paused)
 
 
 def test_video_at_honest():
@@ -177,7 +180,58 @@ def test_steady_at():
           "pauses, shrugs at silence")
 
 
+def test_mono_at_resolves_in_the_newest_pass():
+    """A looping Short plays the same video second once per PASS, so the
+    nearest sample overall can sit a playthrough ago — card_0002 cut 21.8 s
+    of audio because the window's edges landed in different passes. mono_at
+    answers from the newest pass that actually played video_t."""
+    b = BrowserBridge(port=0)
+    # Pass 0: a full 30 s playthrough. Pass 1: wrapped, 2.2 s in so far.
+    _fill(b, [(100.0 + k, 0.5 + k, False) for k in range(30)])
+    _fill(b, [(130.0, 0.2, False), (131.0, 1.2, False), (132.0, 2.2, False)])
+    assert b.pass_count() == 1, b.pass_count()
+    assert b.restart_count == 1, b.restart_count
+    # video second 0.7 exists in BOTH passes; the pass-0 sample at ct 0.5
+    # is the nearest overall (d 0.2, thirty seconds of clock ago) — but the
+    # newest pass played 0.7 too, and that occurrence is the answer.
+    m = b.mono_at(0.7)
+    assert m is not None and m > 129.0, m
+    assert abs(m - 130.5) < 1e-6, m
+    # video second 15 hasn't played yet in pass 1: the pass that DID play
+    # it answers — never a future extrapolation from the newest pass.
+    m15 = b.mono_at(15.0)
+    assert abs(m15 - 114.5) < 1e-6, m15
+    # A mid-video backward seek starts a new pass but is NOT a restart.
+    _fill(b, [(133.0 + k, 3.2 + k, False) for k in range(17)])  # play on
+    assert b.pass_count() == 1, b.pass_count()   # forward play: same pass
+    _fill(b, [(151.0, 10.0, False)])             # drag back to 10 s
+    assert b.pass_count() == 2, b.pass_count()
+    assert b.restart_count == 1, b.restart_count
+    print("PASS bridge: mono_at answers from the newest pass that played "
+          "the moment; a mid-video seek is no restart")
+
+
+def test_steady_at_forgives_a_restart():
+    """A loop wrap (or a seek to 0) is not a seek: playback starts over and
+    nothing on screen predates second 0, so a caption popping in a pass's
+    first seconds anchors its own appearance. A mid-video jump after the
+    restart still poisons the stamp."""
+    b = BrowserBridge(port=0)
+    _fill(b, [(100.0, 28.6, False), (100.7, 29.3, False),
+              (101.4, 0.3, False), (102.1, 1.0, False), (102.8, 1.7, False)])
+    assert b.steady_at(102.5) is True, "a restart must not poison the stamp"
+    # A jump AFTER the restart, inside the window: still a seek.
+    b2 = BrowserBridge(port=0)
+    _fill(b2, [(300.0, 29.5, False), (300.7, 0.4, False),
+               (301.4, 8.0, False), (302.1, 8.7, False)])
+    assert b2.steady_at(301.8) is False, "a seek after the restart poisons"
+    print("PASS bridge: steady_at forgives the loop wrap, still refuses "
+          "seeks after it")
+
+
 if __name__ == "__main__":
     main()
     test_video_at_honest()
     test_steady_at()
+    test_mono_at_resolves_in_the_newest_pass()
+    test_steady_at_forgives_a_restart()

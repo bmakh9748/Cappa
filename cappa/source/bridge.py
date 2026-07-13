@@ -44,6 +44,20 @@ STEADY_GAP = 4.0     # nearest samples farther than this can't vouch (the
                      # the tab was hidden or reports stopped)
 SEEK_SLACK = 0.75    # |video-time step − clock step| beyond this is a seek,
                      # not report jitter (real seeks jump by seconds)
+RESTART_EPS = 1.5    # a backward jump landing at or under this is a RESTART
+                     # (a looping Short wrapping, or a seek to the top):
+                     # playback begins again from the start, so nothing on
+                     # screen predates it — no sentence starts before 0. The
+                     # extension posts ~700 ms apart, so a fresh pass's first
+                     # report lands well inside this; a mid-video seek lands
+                     # seconds in. The cost of the tolerance: a caption
+                     # already up at the landing can hide up to this much of
+                     # its true start.
+PASS_SLACK = 2.0     # mono_at: how far beyond a pass's SAMPLED video-time
+                     # range video_t may sit and still count as played in
+                     # that pass — one or two report gaps of lead (the pass
+                     # played through moments the ~700 ms cadence never
+                     # sampled, at both edges)
 STRADDLE_MAX = 1.5   # a stamp may trail the last playing sample by this much
                      # and still count as "appeared during play": detection
                      # lag plus one report gap lands appear stamps just past
@@ -71,10 +85,21 @@ class BrowserBridge:
         self._lock = threading.Lock()
         self._state = None       # latest payload dict from the extension
         self._at = 0.0           # monotonic time it arrived
-        # (mono_arrival, currentTime, paused) samples for mono_at(): playback
-        # history survives pauses and seeks because each sample is its own
-        # video-time <-> clock-time anchor.
+        # (mono_arrival, currentTime, paused, pass) samples for mono_at():
+        # playback history survives pauses and seeks because each sample is
+        # its own video-time <-> clock-time anchor. The PASS counter bumps
+        # whenever video time jumps backwards: on a looping video (a Short)
+        # the same video second plays once per pass, so video time is not
+        # injective over the clock — the pass says which playthrough a
+        # sample belongs to (card_0002 cut audio from a pass minutes old).
         self._history = deque(maxlen=HISTORY)
+        self._pass = 0
+        # Bumped when a new pass starts AT the top of the video (ct near 0):
+        # a looping Short wrapped, or the user restarted. The screen belongs
+        # to a new playthrough — source_wiring watches this to force-clear
+        # detection, so an identical caption one loop later gets a fresh
+        # appear stamp instead of keeping the previous pass's.
+        self.restart_count = 0
         self._server = None
         self._thread = None
         self.port = port         # actual bound port (differs if port=0)
@@ -117,8 +142,26 @@ class BrowserBridge:
             self._at = now
             ct = data.get("currentTime")
             if isinstance(ct, (int, float)):
-                self._history.append((now, float(ct),
-                                      bool(data.get("paused", False))))
+                self._append_sample(now, float(ct),
+                                    bool(data.get("paused", False)))
+
+    def _append_sample(self, mono, ct, paused):
+        """Append one (mono, ct, paused, pass) history sample, bumping the
+        pass counter on a backward jump in video time and the restart count
+        when that jump lands at the top. Callers hold self._lock (tests feed
+        history through here so their samples carry honest passes)."""
+        if self._history and ct < self._history[-1][1] - SEEK_SLACK:
+            self._pass += 1
+            if ct <= RESTART_EPS:
+                self.restart_count += 1
+        self._history.append((mono, ct, paused, self._pass))
+
+    def pass_count(self):
+        """Which playthrough the video is on (0-based; bumps on any backward
+        jump). The transcript's dedupe uses it to tell a looping Short's
+        genuine re-watch from a blip loop re-clearing the same row."""
+        with self._lock:
+            return self._pass
 
     def age(self):
         """Seconds since the extension last reported, or None if it never
@@ -157,13 +200,41 @@ class BrowserBridge:
         mono = anchor_mono + (video_t - anchor_ct). Sample-by-sample anchoring
         keeps the mapping honest across pauses and seeks -- an anchor on the
         same playing stretch maps exactly; the nearest one otherwise is off by
-        at most the gap to it."""
+        at most the gap to it.
+
+        PASS-AWARE: on a looping video the same video second plays once per
+        pass, so the nearest sample overall can belong to a playthrough
+        minutes old — outside the loopback buffer, or silently cutting the
+        wrong pass's audio (card_0002). The NEWEST pass whose sampled range
+        covers video_t answers, anchored on its own nearest playing sample;
+        a second the newest pass hasn't reached yet falls to the pass that
+        DID play it. Only when no pass ever covered video_t does the old
+        global-nearest answer stand (the single-pass case unchanged: e.g. a
+        predicted end slightly ahead of the playhead legitimately maps into
+        the near future)."""
         if video_t is None:
             return None
         with self._lock:
             samples = list(self._history)
-        best = None  # (|ct - video_t|, mono, ct)
-        for mono, ct, paused in samples:
+        passes = {}   # pass -> [best (d, mono, ct) playing anchor, lo, hi]
+        for mono, ct, paused, pid in samples:
+            info = passes.setdefault(pid, [None, ct, ct])
+            info[1] = min(info[1], ct)
+            info[2] = max(info[2], ct)
+            if paused:
+                continue
+            d = abs(ct - video_t)
+            if info[0] is None or d < info[0][0]:
+                info[0] = (d, mono, ct)
+        for pid in sorted(passes, reverse=True):
+            best, lo, hi = passes[pid]
+            if not (lo - PASS_SLACK <= video_t <= hi + PASS_SLACK):
+                continue      # this pass never played video_t (or not yet)
+            if best is not None and best[0] <= MAX_ANCHOR_GAP:
+                _, mono, ct = best
+                return mono + (video_t - ct)
+        best = None  # no pass covers video_t: nearest playing sample overall
+        for mono, ct, paused, _pid in samples:
             if paused:
                 continue
             d = abs(ct - video_t)
@@ -198,16 +269,16 @@ class BrowserBridge:
         if before is None and after is None:
             return None
         if before is None:
-            m, ct, paused = after
+            m, ct, paused = after[:3]
             if m - mono > MAX_ANCHOR_GAP:
                 return None
             return ct if paused else max(0.0, ct - (m - mono))
         if after is None:
-            m, ct, paused = before
+            m, ct, paused = before[:3]
             if mono - m > MAX_ANCHOR_GAP:
                 return None
             return ct if paused else ct + (mono - m)
-        (bm, bct, bp), (am, act, ap) = before, after
+        (bm, bct, bp), (am, act, ap) = before[:3], after[:3]
         if bp and ap:
             return bct       # paused stretch: the screen held bct (a seek
                              # while paused only shows from `after` onward)
@@ -233,7 +304,14 @@ class BrowserBridge:
         a row that appeared because of a seek, or while long paused, was
         already mid-life and its true start was never on screen (user rule;
         every wrong clip of cards 2-9, 2026-07-07, traced to a trusted
-        landing stamp)."""
+        landing stamp).
+
+        A RESTART is not a seek: a looping Short wrapping to the top (or a
+        seek to 0) starts playback over, and nothing on screen predates the
+        start of the video — so a jump landing at ct <= RESTART_EPS stops
+        poisoning stamps after it. Without this no caption in a pass's
+        first STEADY_BEFORE seconds could ever anchor its own appearance,
+        which on a 15-second Short is a meaningful slice of every pass."""
         if mono is None:
             return None
         with self._lock:
@@ -257,7 +335,15 @@ class BrowserBridge:
             window.insert(0, prev[-1])
         if after:
             window.append(after[0])
-        for (m1, c1, p1), (m2, c2, p2) in zip(window, window[1:]):
+        pairs = list(zip(window, window[1:]))
+        # Playback starts over at a restart (a loop wrap / a seek to the
+        # top): whatever happened before it can't poison a stamp after it,
+        # so only the pairs past the LAST restart in the window are judged.
+        start = 0
+        for k, (s1, s2) in enumerate(pairs):
+            if s2[1] < s1[1] - SEEK_SLACK and s2[1] <= RESTART_EPS:
+                start = k + 1
+        for (m1, c1, p1, _), (m2, c2, p2, _) in pairs[start:]:
             dm, dc = m2 - m1, c2 - c1
             if p1 or p2:
                 # Across a pause, video time may hold still or advance up

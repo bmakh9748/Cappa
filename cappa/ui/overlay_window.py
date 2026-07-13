@@ -960,6 +960,13 @@ class OverlayWindow(QMainWindow):
         if self._sources.poll():
             self._render_status()
 
+        # The video RESTARTED (a looping Short wrapped, or a seek to 0):
+        # detection drops its memory so a caption identical across the wrap
+        # is re-accepted with a fresh appear stamp — kept from the previous
+        # pass, it would time its clip against the wrong playthrough.
+        if self._sources.video_restarted():
+            self._refresh_words()
+
         # The lock-on tip expires on its own.
         if self._tip_until and time.time() >= self._tip_until:
             self._tip_until = 0.0

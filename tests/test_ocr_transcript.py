@@ -171,6 +171,30 @@ def test_blip_loop_logs_once_rewatch_logs_again():
         print("PASS ledger: blip loops log once, a re-watch logs again")
 
 
+def test_loop_pass_repeats_are_logged():
+    """A Short under 10 s loops INSIDE the repeat window, so the same text
+    clearing once per pass was silently discarded as a blip loop — every
+    pass after the first went unrecorded. A repeat seen in a NEW pass (the
+    bridge's pass counter moved) is a genuine observation; a repeat within
+    one pass is still the blip it always was."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = OcrTranscriptLog(root=tmp)
+        for k in range(3):                    # three passes of an 8 s short
+            s = _row("subscribe dulu bang", 100.0 + 8 * k)
+            s.cleared_at = 103.0 + 8 * k      # clears 8 s apart: < REPEAT_GAP
+            log.observe("vidLoop", [s], pass_id=k)
+            log.observe("vidLoop", [], pass_id=k)
+        blip = _row("subscribe dulu bang", 119.5)   # flicker inside pass 2
+        blip.cleared_at = 120.5
+        log.observe("vidLoop", [blip], pass_id=2)
+        log.observe("vidLoop", [], pass_id=2)
+        with open(os.path.join(tmp, "vidLoop.jsonl"), encoding="utf-8") as f:
+            lines = f.read().strip().splitlines()
+        assert len(lines) == 3, lines
+        print("PASS ledger: each loop pass logs its watch; a blip within "
+              "one pass still logs once")
+
+
 def test_window_hint_recalls_first_sighting():
     """card_0009 (watch -> rewind -> pause -> click): the log holds every
     sighting of the row; window_hint hands back the EARLIEST mapped one
@@ -310,6 +334,7 @@ if __name__ == "__main__":
     test_seconds_per_word_measures_this_videos_pace()
     test_silent_vanish_and_junk_not_logged()
     test_blip_loop_logs_once_rewatch_logs_again()
+    test_loop_pass_repeats_are_logged()
     test_window_hint_recalls_first_sighting()
     test_window_hint_never_reads_a_past_run()
     test_window_hint_closes_at_the_sighting_s_last_row()

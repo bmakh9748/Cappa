@@ -39,6 +39,11 @@ REPEAT_GAP = 10.0   # the same text clearing again within this many seconds
                     # re-watch: log it once. Deliberate re-reads — a rewind —
                     # clear well apart and are all welcome (user call: every
                     # read is an observation, duplicates always match).
+                    # EXEMPT across playback passes: a Short under 10 s loops
+                    # INSIDE this window, and every pass after the first was
+                    # being discarded as a blip — a row seen in a NEW pass
+                    # (the bridge's pass counter moved) is a genuine
+                    # observation however soon it recurs.
 HINT_RADIUS = 120.0  # window_hint only trusts sightings this close to the
                      # click: a stock phrase repeated elsewhere in the video
                      # must not lend its timing to this row
@@ -68,11 +73,14 @@ class OcrTranscriptLog:
         self._seen = {}    # video_id -> rows THIS RUN watched: window_hint's
                            # only source, gone when the process is
 
-    def observe(self, video_id, sentences, video_at=lambda m: None):
+    def observe(self, video_id, sentences, video_at=lambda m: None,
+                pass_id=None):
         # A falsy video_id means there is no live video to attribute these
         # rows to -- paused, tab hidden/closed, or no bridge (the caller,
         # source_wiring.live_video_id, decides). Nothing is logged then, so
         # a frozen or off-screen frame can't lie about a caption's life.
+        # `pass_id` is the bridge's playthrough counter (None without one):
+        # the REPEAT_GAP dedupe only swallows a repeat within the SAME pass.
         current = set()
         for s in sentences:
             current.add(id(s))
@@ -96,11 +104,11 @@ class OcrTranscriptLog:
                                             # pending clear): remember it so
                                             # the next tick can't re-adopt
                                             # and re-write it
-            self._write(vid, s, cleared, video_at)
+            self._write(vid, s, cleared, video_at, pass_id)
         self._done &= current               # departed rows may be GC'd and
                                             # their ids recycled: forget them
 
-    def _write(self, video_id, s, cleared, video_at):
+    def _write(self, video_id, s, cleared, video_at, pass_id=None):
         appeared = getattr(s, "appeared_at", 0.0) or 0.0
         conf = getattr(s, "ocr_conf", None)
         box = getattr(s, "box", None)
@@ -128,9 +136,12 @@ class OcrTranscriptLog:
             return
         recent = self._recent.setdefault(vid, deque(maxlen=8))
         if any(txt == s.text and abs(cleared - at) < REPEAT_GAP
-               for txt, at in recent):
-            return                          # blip loop, not a re-watch
-        recent.append((s.text, cleared))
+               and p == pass_id
+               for txt, at, p in recent):
+            return                          # blip loop, not a re-watch —
+                                            # a repeat in a NEW pass (the
+                                            # Short looped) is welcome
+        recent.append((s.text, cleared, pass_id))
         # This run's in-memory record -- what window_hint and
         # seconds_per_word read back. Deduped like the file: a paused frame's
         # flicker must not lend a phantom pace or a phantom sighting.

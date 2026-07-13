@@ -37,6 +37,13 @@ CAPTION_RETRY_MAX = 2      # retries per video: transient failures (a bot
                            # check before the extension's cookies landed, a
                            # network blip) heal; a genuinely captionless
                            # video stops costing fetches after two tries
+VIDEO_ID_DEBOUNCE = 1.5    # a Shorts scroll rewrites the reported video id
+                           # every ~700 ms report; only an id STABLE this
+                           # long earns a session fetch (metadata, captions,
+                           # an audio download — one per short scrolled past
+                           # otherwise). Caption ATTRIBUTION still follows
+                           # the reported id instantly: rows must land under
+                           # the video actually on screen.
 
 
 def live_video_id(state, bridge_video_id):
@@ -116,7 +123,10 @@ class SourceWiring:
         self.session.set_rows_lookup(
             lambda t0, t1: self.ocr_log.rows_between(
                 self._bridge_video_id, t0, t1))
-        self._bridge_video_id = None      # last video the bridge auto-selected
+        self._bridge_video_id = None      # the video the browser shows NOW
+        self._session_video_id = None     # the video the session fetched for
+        self._vid_since = 0.0             # when _bridge_video_id last changed
+        self._restarts_seen = 0           # consumed bridge.restart_count
         self._caption_retry = (None, 0, 0.0)  # (video, attempts, last try)
         # Cappa's own transcript of the captions it watches: rows that leave
         # the screen are appended to transcripts/<video>.jsonl with their
@@ -164,6 +174,7 @@ class SourceWiring:
             self._audio_off = off
             if off:
                 self._bridge_video_id = None   # re-select on re-enable
+                self._session_video_id = None
                 self._bridge_lost_at = None
                 self.recorder.stop()
                 self.recorder.error = ("recording off — card audio is "
@@ -179,10 +190,17 @@ class SourceWiring:
         self._ext_version = state.get("ext") or self._ext_version
         vid = state.get("videoId")
         if vid and vid != self._bridge_video_id:
+            # Attribution follows the screen instantly; the FETCH waits for
+            # the id to hold still (VIDEO_ID_DEBOUNCE) so scrolling the
+            # Shorts feed doesn't fire a download per short flicked past.
             self._bridge_video_id = vid
-            self.session.set_video(state.get("url") or vid)
-            print("[cappa] source: browser video %s (%s)"
-                  % (vid, (state.get("title") or "?")[:50]))
+            self._vid_since = time.monotonic()
+        if vid and vid != self._session_video_id:
+            if time.monotonic() - self._vid_since >= VIDEO_ID_DEBOUNCE:
+                self._session_video_id = vid
+                self.session.set_video(state.get("url") or vid)
+                print("[cappa] source: browser video %s (%s)"
+                      % (vid, (state.get("title") or "?")[:50]))
         elif (vid and not self.session.fetching
                 and self.session.status.startswith("no captions")):
             # Covers "no captions" and "no captions, audio ready": captions
@@ -264,9 +282,25 @@ class SourceWiring:
         down with their on-screen life — the durable record cards cite. Only
         while a YouTube video is genuinely live in front of us: a stale
         report (tab hidden/closed/not YouTube) or a paused one yields no
-        video id, and observe() logs nothing without one."""
+        video id, and observe() logs nothing without one. The bridge's pass
+        counter rides along so a looping Short's every pass is logged (the
+        REPEAT_GAP dedupe only swallows repeats within one pass)."""
         vid = live_video_id(self.bridge.current(), self._bridge_video_id)
-        self.ocr_log.observe(vid, captions, self.bridge.video_at)
+        self.ocr_log.observe(vid, captions, self.bridge.video_at,
+                             self.bridge.pass_count())
+
+    def video_restarted(self):
+        """True exactly once per bridge-observed RESTART (a looping Short
+        wrapping to the top, or a seek to 0). The overlay's tick answers by
+        force-clearing detection: the screen belongs to a new pass, and a
+        caption identical across the wrap must be re-accepted with a fresh
+        appear stamp instead of keeping the previous pass's (which would
+        time its clip against the wrong playthrough)."""
+        n = self.bridge.restart_count
+        if n != self._restarts_seen:
+            self._restarts_seen = n
+            return True
+        return False
 
     # ---------------------------------------------------------------- status
     def status_suffix(self):

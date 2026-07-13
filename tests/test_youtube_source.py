@@ -203,6 +203,35 @@ def test_builder_block_life_times_the_clip():
         print("PASS builder: pure on-screen life times the clip (no track)")
 
 
+def test_builder_clip_end_clamped_to_duration():
+    """Nothing past the video's end can play: a clear stamp (or predicted
+    end) overrunning the file is empty air on the downloaded audio and, on
+    a looping Short, maps the loopback rescue into the NEXT pass. The
+    session's known duration caps the window, last (PLAN item 5)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sentence = Sentence(
+            "sampai jumpa di video berikutnya", (10, 20, 300, 50),
+            [("jumpa", (10, 20, 50, 50))])
+        sentence.appeared_at = 100.0    # -> video 16.5 (fake mapping)
+        sentence.cleared_at = 106.0     # -> video 19.0: past the video's end
+        meta = {"video_id": "abc", "url": "u", "title": "t", "channel": "c",
+                "caption_lang": "id", "caption_auto": False,
+                "duration": 18.0}
+        src = FakeSource(None, meta, appear_t=16.5, clear_t=19.0)
+        draft = build_draft(sentence.words[0], None, None, out_dir=tmp,
+                            translator=lambda t, s="": "tx:" + t,
+                            screenshot_note="no shot", source=src)
+        assert src.sliced is not None, "source clip was never cut"
+        start, end, _, _ = src.sliced
+        assert abs(start - 16.5) < 1e-6, src.sliced
+        assert abs(end - 18.0) < 1e-6, src.sliced   # clamped, not 20.0
+        with open(os.path.join(draft.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            m = json.load(f)
+        assert m["audio_window"]["end"] == 18.0, m["audio_window"]
+        print("PASS builder: the clip never runs past the video's end")
+
+
 def test_builder_track_extends_end_not_start():
     """card_0006: we cleanly saw the line appear at 49.05 and lose it early
     at 49.52 (a churn/quick-click fragment of its tail). The matched track
@@ -1003,6 +1032,7 @@ if __name__ == "__main__":
     test_window_for_caps_phantom_tail()
     test_window_for_rejects_shared_tail()
     test_builder_block_life_times_the_clip()
+    test_builder_clip_end_clamped_to_duration()
     test_builder_track_extends_end_not_start()
     test_builder_clip_always_covers_the_click()
     test_builder_waits_for_the_clear()
