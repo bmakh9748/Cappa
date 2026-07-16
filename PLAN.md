@@ -1710,3 +1710,24 @@ appear/disappear on screen all at once; detection reads it and stamps
 feed a wrong clip window. We need to recognise a CC toggle (a whole block
 appearing/vanishing at once, not a single caption line cycling) and NOT record
 those as honest appear/clear stamps. Left for later, per the user.
+
+### 2026-07-16b — Arabic reading died silently: rapidocr grew a python-bidi need
+
+A full unit sweep caught test_ocr_arabic red. Every read through the arabic
+pack RAISED — rapidocr 3.9's RTL path runs a bidi reorder on each read and
+imports python-bidi, which it doesn't declare as a dependency and the venv
+didn't have (rapidocr is unpinned in requirements.txt, so an upgrade brought
+the need in) — and `_read_once`'s fail-open except swallowed the raise into
+(None, 0.0). The app showed exactly the symptom the pack exists to fix
+("Arabic came back empty") with the pack loaded and `ready` True: the silent
+degradation AGENTS rule 7 forbids. Two fixes: **python-bidi is installed and
+in requirements.txt** (imported by rapidocr, not by us — the comment there
+says so, don't prune it), and **a read that raises still fails open but
+REPORTS itself** (`_say_read_failed`): one stderr line per exception kind per
+reader — a structural failure repeats on every read, and one line is signal
+where a stream is noise; set_language resets the memory with the model.
+Verified: test_ocr_arabic passes all four checks — rapidocr's bidi reorder
+changes only the LINE text ordering, and the hotspot words still come out as
+logical-order substrings, so `_fix_rtl` needed no change — and test_ocr_read
+grew the raising-read leg (fail-open, reported exactly once, both the upright
+and vertical paths). Japanese/English/vertical reads unchanged, conf 0.99-1.00.
