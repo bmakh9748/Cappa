@@ -3,6 +3,7 @@ pywin32
 mss
 numpy
 rapidocr
+python-bidi  # rapidocr imports it on every RTL (arabic) read but doesn't declare it
 onnxruntime
 anki
 deep-translator
