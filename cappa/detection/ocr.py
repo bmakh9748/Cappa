@@ -18,7 +18,8 @@ path gets no slower.
 Fail-open by design: if the model can't load or a read errors, read()
 returns (None, 0.0), and callers must treat unreadable text as NO EVIDENCE,
 never as junk. Captions in scripts the model can't read worked before OCR
-landed and must keep working."""
+landed and must keep working. Fail-open is never SILENT, though: a raising
+read reports itself on stderr, once per failure kind."""
 
 import sys
 
@@ -143,6 +144,7 @@ class TextReader:
     def __init__(self, lang=None):
         self._model = None
         self._failed = False
+        self._read_errors = set()  # failure kinds already reported, once each
         self._script = _SCRIPT_MODELS.get(lang)  # None -> default model
         self._lang = lang                         # for the lexicon splitter
 
@@ -159,6 +161,7 @@ class TextReader:
         self._script = script
         self._model = None
         self._failed = False  # a new model deserves a fresh load attempt
+        self._read_errors = set()  # ...and fresh failure reporting
 
     def warm(self):
         """Load the model now (worker calls this at thread start)."""
@@ -224,7 +227,8 @@ class TextReader:
         try:
             res = self._model(crop, use_det=False, use_cls=False,
                               use_rec=True, return_word_box=True)
-        except Exception:
+        except Exception as exc:
+            self._say_read_failed(exc)
             return None
         if not res.txts:
             return "", 0.0, []
@@ -246,7 +250,8 @@ class TextReader:
         try:
             res = self._model(crop, use_det=False, use_cls=False,
                               use_rec=True, return_word_box=True)
-        except Exception:
+        except Exception as exc:
+            self._say_read_failed(exc)
             return None
         if not res.txts:
             return "", 0.0, []
@@ -315,6 +320,21 @@ class TextReader:
             spans.append((_fix_rtl("".join(chars)),
                           (int(cl + left), t, int(cl + right), b)))
         return spans
+
+    def _say_read_failed(self, exc):
+        """A raising read stays fail-open (None -- no evidence, callers keep
+        working) but must never be SILENT: rapidocr 3.9 raised
+        ModuleNotFoundError (python-bidi, undeclared) on EVERY arabic read,
+        and swallowed it looked exactly like 'Arabic came back empty' -- the
+        user report the arabic pack exists to fix -- while the reader claimed
+        ready. One stderr line per failure kind: a structural failure repeats
+        on every read, and one line is signal where a stream is noise."""
+        kind = type(exc).__name__
+        if kind in self._read_errors:
+            return
+        self._read_errors.add(kind)
+        print("cappa: text read failed (%s: %s) — treating the text as "
+              "unreadable" % (kind, exc), file=sys.stderr)
 
     def _ensure(self):
         if self._model is not None or self._failed:

@@ -155,6 +155,52 @@ sentence, conf = reader.read(frame, (0, 0, 1, 1))
 assert sentence is None and conf == 0.0
 print("PASS: degenerate crop returns no evidence, no crash")
 
+# A read that RAISES must fail open — (None, 0.0), captions keep working —
+# but never silently: rapidocr 3.9 threw ModuleNotFoundError (python-bidi,
+# a dependency it doesn't declare) on EVERY arabic read, and swallowed it
+# looked exactly like "Arabic came back empty", the user report the arabic
+# pack exists to fix. First failure of each kind is reported on stderr;
+# repeats stay quiet (a structural failure fires per read). The tall box
+# exercises BOTH read paths (upright + vertical) — still one line.
+import io
+
+
+class _RaisingModel:
+    def __call__(self, *a, **k):
+        raise ModuleNotFoundError("python-bidi is not installed")
+
+
+broken = TextReader()
+broken._model = _RaisingModel()   # loaded-and-ready, but every read raises
+err, real_stderr = io.StringIO(), sys.stderr
+sys.stderr = err
+try:
+    s1, c1 = broken.read(np.zeros((220, 80, 4), np.uint8), (10, 10, 60, 210))
+    s2, c2 = broken.read(np.zeros((220, 80, 4), np.uint8), (10, 10, 60, 210))
+finally:
+    sys.stderr = real_stderr
+assert s1 is None and c1 == 0.0 and s2 is None and c2 == 0.0, (
+    "FAIL: raising read must return no evidence, got %r" % ((s1, c1, s2, c2),))
+report = err.getvalue()
+assert "ModuleNotFoundError" in report and "python-bidi" in report, (
+    "FAIL: read failure not reported: %r" % report)
+assert report.count("text read failed") == 1, (
+    "FAIL: expected exactly one report for repeated failures: %r" % report)
+# The vertical site must report ON ITS OWN: in the reads above the upright
+# site raised first, so its report would mask a silently-swallowing
+# vertical site. Fresh memory, vertical path alone.
+broken._read_errors.clear()
+err2 = io.StringIO()
+sys.stderr = err2
+try:
+    got = broken._read_vertical(np.zeros((220, 80, 4), np.uint8),
+                                (10, 10, 60, 210), 0)
+finally:
+    sys.stderr = real_stderr
+assert got is None and "text read failed" in err2.getvalue(), (
+    "FAIL: vertical read failure not reported: %r" % err2.getvalue())
+print("PASS: a raising read fails open and reports itself exactly once")
+
 # VERTICAL text (card_0001: 拔山蓋世 written top-to-bottom in a game read
 # upright as '执数单' at conf 0.31 — garbage word, garbage translations).
 # A tall column is also read on its side, best score wins; hotspots come
