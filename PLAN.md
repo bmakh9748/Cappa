@@ -1689,6 +1689,19 @@ is-ad signal from the extension would kill it, if it ever matters.
 Legs in test_bridge: ad reset / video change bump no restart and earn no
 steadiness forgiveness; a real wrap with known duration still restarts.
 
+### 2026-07-16 — run.py boots itself into the venv ("no module named pyside6")
+
+The IDE's Run button launches whatever python the editor happens to have
+selected — on this machine a bare interpreter with no PySide6 — and the
+launcher died with a traceback (user report). run.py now PROBES its imports:
+when they're missing and .venv exists, it re-launches itself with the venv's
+python (no activation, no interpreter picking, any python can start it);
+no venv prints the pip line instead of a traceback. Verified end-to-end with
+the same bare interpreter that failed: it re-execs and the app runs. Also a
+local .vscode/settings.json pins the IDE interpreter to the venv — note the
+root `settings.json` gitignore pattern catches that file too, so it stays
+untracked by design.
+
 ### DEFERRED — CC-toggle fakes a caption spawn/clear (card-driven, don't fix yet)
 
 Turning the browser's own captions (CC) on or off makes a block of text
