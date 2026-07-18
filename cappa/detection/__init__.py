@@ -5,8 +5,10 @@ The map (one stage per file, chained by worker.py on a background thread):
     capture.py     screen grab (mss)                  every frame   ~10 ms
     diff.py        what changed since last frame      every frame   <1 ms
     stability.py   watch live captions for vanishing  every frame   <1 ms
-    detector.py    NEURAL text detection (ONNX)       on change     ~0.06-0.1 s
-    ocr.py         read text in accepted boxes (ONNX) on accept     ~0.02 s
+    gpu.py         which device the two neural stages run on: GPU via
+                   DirectML when the venv has it, CPU otherwise (fail-open)
+    detector.py    NEURAL text detection (ONNX)       on change     ~0.06-0.13 s
+    ocr.py         read text in accepted boxes (ONNX) on accept     ~0.01 s
                    (one hotspot per WORD; per CHARACTER on CJK lines; a
                    tall column is also tried as VERTICAL text, best wins)
     tracking.py    ledger: live boxes, clear debounce, drift
@@ -16,7 +18,9 @@ The map (one stage per file, chained by worker.py on a background thread):
                    Japanese word ends, so cappa.jmdict resolves it at lookup
                    time and span_word() fuses the range back into one Word
     latency.py     the pipeline's measured reaction times (appear/clear lags)
-    worker.py      the background thread gluing it all together
+    worker.py      the background thread gluing it all together — plus its
+                   scan helper thread, so neural scans run BESIDE the loop
+                   and frame grabs never pause for one
 
 Every stage except worker.py is Qt-free and testable in isolation. The UI
 talks to this package only through CaptureWorker's Qt signals (imported from

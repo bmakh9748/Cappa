@@ -828,7 +828,12 @@ class OverlayWindow(QMainWindow):
         self._area_recorder.stop()
         self._capture_worker.stop()
         self._capture_thread.quit()
-        self._capture_thread.wait(1000)
+        # Long enough to cover a quit DURING the worker's warm-up: run()
+        # checks stop() between warm steps, but a single model load /
+        # DirectML first-run compile is ~1.5-2 s and can't be interrupted
+        # mid-call. A running loop notices within one frame, so the common
+        # case returns in milliseconds either way.
+        self._capture_thread.wait(5000)
         self._sources.stop()
 
     def _card_region(self):

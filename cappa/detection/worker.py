@@ -1,8 +1,22 @@
 """The background thread that runs caption detection end to end.
 
-Kept off the Qt UI thread because the neural scan costs ~60-100 ms — enough
+Kept off the Qt UI thread because the neural scan costs ~60-130 ms — enough
 to stutter the overlay if it ran inline. Results cross back to the UI through
 queued signals, which Qt delivers on the main thread.
+
+The neural scan itself runs on a SECOND helper thread beside the capture
+loop (one job in flight, results consumed next loop pass). Two reasons,
+both measured: the loop keeps grabbing frames during a scan, so the
+vanish-watcher never starves (that starvation is what capped the old
+cadence); and the scan clock starts at SUBMISSION, so the scan period is
+truly SCAN_INTERVAL instead of interval + scan time. onnxruntime releases
+the GIL during inference, so the two threads genuinely overlap. The stages
+stay single-owner: detector belongs to the scan thread (after warm),
+reader/watcher/ledger to the loop — a scan job carries its frame, diff
+sample and grab time with it, and everything downstream of the boxes runs
+on the loop against that snapshot, exactly as when it was synchronous. A
+reset/refresh bumps a generation counter and a stale in-flight result is
+dropped on arrival.
 
 The chain, one stage per file (cheap stages run every frame, the expensive
 one only when something changed, and never more often than SCAN_INTERVAL):
@@ -10,8 +24,9 @@ one only when something changed, and never more often than SCAN_INTERVAL):
     capture.py     grab the tracked region            every frame   ~10 ms
     diff.py        what changed since last frame      every frame   <1 ms
     stability.py   watch live captions for vanishing  every frame   <1 ms
-    detector.py    neural text detection              on change     ~0.06-0.1 s
-    ocr.py         read text in accepted boxes        on accept     ~0.02 s
+    detector.py    neural text detection (GPU when    on change     ~0.06-0.13 s
+                   the venv has DirectML; gpu.py)     (beside the loop)
+    ocr.py         read text in accepted boxes        on accept     ~0.01 s
     tracking.py    match scans to what's already live
     classifier.py  stamp junk TEXT (clock/URL/handle) so it stays off cards
 
@@ -26,7 +41,9 @@ confirms it (a brief overlay sliding over the caption must not flicker it)
 -> "cleared" is emitted, and the next line is usually already on screen for
 that same follow-up scan."""
 
+import queue
 import sys
+import threading
 import time
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -48,13 +65,22 @@ def _printable(s):
     return s.encode(enc, "backslashreplace").decode(enc)
 
 
-SCAN_INTERVAL = 0.2        # min seconds between neural scans. Playing video
-                           # keeps `dirty` set, so this is the scan cadence —
-                           # and the appear-latency floor — during playback.
-                           # Measured on the realistic sim: 0.5s -> 169-834 ms
-                           # latency, 0.2s -> 197-538 ms; 0.15s is WORSE (the
-                           # ~60-95 ms scans crowd out frame grabs). ~35-45%
-                           # of one core while video plays, vs ~15% at 0.5s.
+SCAN_INTERVAL = 0.1        # min seconds between GPU scan SUBMISSIONS (the
+                           # cadence is a true interval now that scans run
+                           # beside the loop — the old starvation ceiling is
+                           # gone: frame grabs continue during a scan, so a
+                           # tighter cadence no longer blinds the watcher).
+                           # Playing video keeps `dirty` set, so this is the
+                           # appear-latency floor during playback. The GPU
+                           # does the work; the loop's CPU cost per scan is
+                           # only the pre-shrink + submit.
+SCAN_INTERVAL_CPU = 0.2    # the CPU cadence, unchanged from the CPU era:
+                           # a CPU scan burns a core whether or not it
+                           # blocks the loop, and 0.2 was the measured
+                           # sweet spot for that budget (0.5s -> 169-834 ms
+                           # appear latency, 0.2s -> 197-538 ms; 0.15 worse).
+                           # Also used when placement is UNKNOWN (gpu.py
+                           # couldn't read the session) — conservative.
 RESCAN_AFTER_CLEAR = 0.15  # a cleared line usually means a new one is up
 ACTIVITY_FRACTION = 0.001  # sampled pixels changing = "something happened"
 FORCED_RESCAN = 1.0        # max seconds between scans while tracking, even
@@ -95,14 +121,57 @@ class CaptureWorker(QObject):
         reader = TextReader(self._ocr_lang)
         watcher = CaptionWatcher(scale=DOWNSCALE)
         ledger = CaptionLedger()
+        # The warm sequence costs seconds (model loads + DirectML's first-run
+        # compile), and run() can't see stop() until it checks: bail between
+        # steps so quitting during startup doesn't leave this thread alive
+        # past the UI's bounded wait.
         detector.warm()  # pay the model loads now, not on the first caption
-        reader.warm()
-        lexicon.ensure_pack(self._ocr_lang)  # download the word-split pack
-        jmdict.ensure_pack(self._ocr_lang)   # ja: the word-lookup dictionary
+        if self._running:
+            reader.warm()
+        if self._running:
+            lexicon.ensure_pack(self._ocr_lang)  # the word-split pack
+            jmdict.ensure_pack(self._ocr_lang)   # ja: word-lookup dictionary
+        if not self._running:
+            capture.close()
+            return
         self.detector_ok.emit(detector.ready)
         print("[cappa] detector %s | reader %s"
-              % ("ready" if detector.ready else "FAILED TO LOAD",
-                 "ready" if reader.ready else "FAILED (no text rules)"))
+              % ("ready on %s" % (detector.device or "unknown")
+                 if detector.ready else "FAILED TO LOAD",
+                 "ready on %s" % (reader.device or "unknown")
+                 if reader.ready else "FAILED (no text rules)"))
+
+        # The scan helper thread (see the module docstring): one job in
+        # flight at a time, the result consumed by the loop next pass.
+        # The detector belongs to THIS thread from here on; the loop keeps
+        # the reader/watcher/ledger. A job carries everything its apply
+        # step needs, so a scan is judged against the frame it actually
+        # scanned, not whatever is on screen when it finishes.
+        scan_jobs = queue.Queue(maxsize=1)
+        scan_results = queue.Queue()
+
+        def scan_thread():
+            while True:
+                job = scan_jobs.get()
+                if job is None:
+                    return
+                img, sample, grab_time, gen = job
+                try:
+                    boxes = detector.scan(img)  # fail-open: [] on failure
+                except Exception:               # last net: a lost result
+                    boxes = []                  # must never wedge in_flight
+                scan_results.put((boxes, img, sample, grab_time, gen))
+
+        threading.Thread(target=scan_thread, name="cappa-scan",
+                         daemon=True).start()
+
+        # Cadence keyed to where the sessions actually LANDED (gpu.py's
+        # truth channel), not the install probe: unknown placement gets
+        # the conservative CPU cadence.
+        scan_interval = (SCAN_INTERVAL if detector.device == "gpu"
+                         else SCAN_INTERVAL_CPU)
+        in_flight = False   # a scan job is out; only one at a time
+        generation = 0      # bumped on any reset; stale results are dropped
 
         dirty = True     # something changed since the last neural scan
         last_scan = 0.0
@@ -129,6 +198,7 @@ class CaptureWorker(QObject):
                     diff.reset()
                     watcher.reset()
                     ledger.reset()
+                    generation += 1  # outdate any in-flight scan
                     dirty = True
                 else:
                     img = capture.grab(region)
@@ -139,17 +209,21 @@ class CaptureWorker(QObject):
                     if diff.mask is None:  # first frame / resize: no baseline
                         watcher.reset()
                         ledger.reset()
+                        generation += 1
                         dirty = True
                     else:
                         refreshed = False
                         if self._refresh:
                             # The user's "check again for words": drop every
                             # detection memory (live captions, pending
-                            # clears) and scan NOW.
+                            # clears) and scan NOW. The emit below clears
+                            # the overlay's hotspots this same pass; the
+                            # fresh scan repopulates them when it lands.
                             self._refresh = False
                             refreshed = True
                             watcher.reset()
                             ledger.reset()
+                            generation += 1
                             dirty = True
                             last_scan = 0.0
                         events = []
@@ -164,17 +238,38 @@ class CaptureWorker(QObject):
                                 # either resurrects it (blip) or lets it
                                 # expire into a real "cleared". The next line
                                 # is probably already up for that same scan.
+                                # (At the GPU cadence the natural interval is
+                                # already <= RESCAN_AFTER_CLEAR, so this only
+                                # moves the clock on the CPU cadence.)
                                 last_scan = min(
                                     last_scan,
-                                    time.perf_counter() - SCAN_INTERVAL
+                                    time.perf_counter() - scan_interval
                                     + RESCAN_AFTER_CLEAR)
                         for box in ledger.expire_clears():
                             events.append(("cleared", box))
-                        if (dirty and time.perf_counter() - last_scan
-                                >= SCAN_INTERVAL):
-                            events += self._scan(img, diff, detector, reader,
-                                                 watcher, ledger,
-                                                 grab_time=grab_time)
+                        # A finished scan lands here on the pass after the
+                        # helper thread produced it.
+                        try:
+                            done = scan_results.get_nowait()
+                        except queue.Empty:
+                            pass
+                        else:
+                            in_flight = False
+                            boxes, s_img, s_sample, s_grab, gen = done
+                            if gen == generation:
+                                events += self._apply_scan(
+                                    boxes, s_img, s_sample, reader,
+                                    watcher, ledger, grab_time=s_grab)
+                            # else: a reset/refresh outdated it — dropped.
+                        if (dirty and not in_flight
+                                and time.perf_counter() - last_scan
+                                >= scan_interval):
+                            scan_jobs.put((img, diff.sample, grab_time,
+                                           generation))
+                            in_flight = True
+                            # Submission time, not completion: the cadence
+                            # is a true interval (period used to be
+                            # interval + scan cost).
                             last_scan = time.perf_counter()
                             dirty = False
                         if events or refreshed:
@@ -190,32 +285,40 @@ class CaptureWorker(QObject):
 
                 self._pace(loop_start)
         finally:
+            try:
+                scan_jobs.put_nowait(None)  # scanner is a daemon; this just
+            except queue.Full:              # lets it exit promptly
+                pass
             capture.close()
 
     @staticmethod
-    def _scan(img, diff, detector, reader, watcher, ledger, grab_time=0.0):
-        """One neural pass: box all text, read what's new, start watching
-        it. Returns the events. Prints a one-line diagnostic per interesting
-        scan so a terminal run shows what the detector saw."""
-        scan = detector.scan(img)
+    def _apply_scan(scan, img, sample, reader, watcher, ledger,
+                    grab_time=0.0):
+        """Apply one finished neural scan: bookkeeping against the ledger,
+        read what's new, start watching it. `scan`, `img`, `sample` and
+        `grab_time` are the scan job's snapshot — the frame the boxes were
+        found on — so every judgment below is the same as when the scan ran
+        inline; only the wall clock has moved (~one scan) since. Returns
+        the events. Prints a one-line diagnostic per interesting scan so a
+        terminal run shows what the detector saw."""
         events = []
         # A pending clear whose box is back with its accept-time content:
         # something briefly drew over the caption (control-bar gradient,
         # popup). Resume watching it — no events, no flicker.
-        for box in ledger.resurrect(scan, diff.sample, DOWNSCALE):
+        for box in ledger.resurrect(scan, sample, DOWNSCALE):
             watcher.watch(box)
             print("[cappa]   blip: caption re-confirmed, clear suppressed")
         # A live caption whose content stopped matching its accept-time
         # fingerprint was replaced in place (new line, same spot, no clean
         # vanish between). Retire it here so THIS scan re-reads the new
         # text as fresh — no manual refresh needed.
-        for box in ledger.drifted(diff.sample, DOWNSCALE):
+        for box in ledger.drifted(sample, DOWNSCALE):
             watcher.unwatch(box)
             events.append(("cleared", box))
             print("[cappa]   live caption content changed; re-reading")
         fresh = ledger.fresh(scan)
         for box in fresh:
-            # Read the text (~20 ms, only for genuinely new boxes). Junk
+            # Read the text (~10 ms, only for genuinely new boxes). Junk
             # text (a clock, a URL, a handle) is stamped, never rejected:
             # the box stays clickable, but the row must not join a caption
             # block, a card sentence, or the transcript (card_0028:
@@ -225,7 +328,7 @@ class CaptureWorker(QObject):
             why = text_verdict(sentence.text if sentence else None, conf)
             if why is not None and sentence is not None:
                 sentence.junk = why
-            ledger.accept(box, diff.sample, DOWNSCALE, sentence, grab_time)
+            ledger.accept(box, sample, DOWNSCALE, sentence, grab_time)
             watcher.watch(box)
             events.append(("appeared", box))
             if sentence and sentence.text:
