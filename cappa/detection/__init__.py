@@ -7,7 +7,7 @@ The map (one stage per file, chained by worker.py on a background thread):
     stability.py   watch live captions for vanishing  every frame   <1 ms
     gpu.py         which device the two neural stages run on: GPU via
                    DirectML when the venv has it, CPU otherwise (fail-open)
-    detector.py    NEURAL text detection (ONNX)       on change     ~0.06-0.13 s
+    detector.py    NEURAL text detection (ONNX)       on change     ~0.04-0.1 s
     ocr.py         read text in accepted boxes (ONNX) on accept     ~0.01 s
                    (one hotspot per WORD; per CHARACTER on CJK lines; a
                    tall column is also tried as VERTICAL text, best wins)

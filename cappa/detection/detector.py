@@ -90,6 +90,8 @@ class TextDetector:
         self._model = None
         self._device = None
         self._failed = False
+        self._fast_pre = False  # our preprocess only replaces the wrapper's
+                                # when the pack's mean/std match its formula
         self._scan_errors = set()  # runtime failure kinds reported, once each
 
     def warm(self):
@@ -139,13 +141,20 @@ class TextDetector:
 
         h, w = frame.shape[:2]
         scale = min(1.0, self._target_side / max(h, w, 1))
-        if scale < 1.0:  # shrink BGRA first: 4 small copies beat 3 full-res
-            frame = cv2.resize(frame, None, fx=scale, fy=scale,
-                               interpolation=cv2.INTER_AREA)
-        img = np.ascontiguousarray(frame[:, :, :3])
         try:
-            result = self._model(img, use_det=True, use_cls=False,
-                                 use_rec=False)
+            if self._fast_pre:
+                # _detect resizes once, straight to the /32 grid, and its
+                # postprocess maps boxes straight back to full resolution.
+                polys = self._detect(frame, scale, cv2, np)
+                scale = 1.0
+            else:  # a pack with unexpected mean/std: the wrapper knows best
+                if scale < 1.0:  # shrink BGRA first: 4 small copies beat
+                    frame = cv2.resize(frame, None, fx=scale, fy=scale,
+                                       interpolation=cv2.INTER_AREA)
+                img = np.ascontiguousarray(frame[:, :, :3])
+                result = self._model(img, use_det=True, use_cls=False,
+                                     use_rec=False)
+                polys = () if result.boxes is None else result.boxes
         except Exception as exc:
             # A session that LOADED can still fail at RUNTIME on DirectML —
             # driver reset (TDR) while a game runs, VRAM exhaustion on a
@@ -155,12 +164,48 @@ class TextDetector:
             self._say_scan_failed(exc)
             return []
         boxes = []
-        for poly in () if result.boxes is None else result.boxes:
+        for poly in polys:
             xs = [float(p[0]) / scale for p in poly]
             ys = [float(p[1]) / scale for p in poly]
             boxes.append((int(min(xs)), int(min(ys)),
                           int(max(xs)), int(max(ys))))
         return merge_lines(boxes)
+
+    def _detect(self, frame, scale, cv2, np):
+        """One det pass running rapidocr's det module directly — its ONNX
+        session and DBNet postprocess — with OUR pre/post plumbing. Why:
+        the wrapper's DetPreProcess normalises in float64 and recopies
+        twice, ~32 ms of CPU per scan at the GPU working size (measured),
+        for a tensor this produces byte-identically in ~7 ms —
+        (x/255 - .5)/.5 is x*(2/255)-1, and PP-OCR det packs all use
+        mean = std = 0.5 (checked at load; scan() falls back to the
+        wrapper otherwise). One fused resize replaces the old
+        shrink-then-round pair, and the postprocess is handed the FULL
+        frame shape so it maps boxes straight back to full resolution —
+        no second coordinate pass. Box parity with the wrapper verified
+        on real captures (0.0 px drift, pre-fuse; box counts identical
+        after). `frame` is BGRA; the alpha plane is split off free
+        rather than sliced off with a copy."""
+        det = self._model.text_det
+        h, w = frame.shape[:2]
+        rh = int(round(h * scale / 32) * 32)
+        rw = int(round(w * scale / 32) * 32)
+        if rh <= 0 or rw <= 0:
+            return ()
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
+        if (rh, rw) != (h, w):
+            interp = (cv2.INTER_AREA if rh < h or rw < w
+                      else cv2.INTER_LINEAR)
+            frame = cv2.resize(frame, (rw, rh), interpolation=interp)
+        tensor = np.empty((1, 3, rh, rw), dtype=np.float32)
+        for c, plane in enumerate(cv2.split(frame)[:3]):
+            np.multiply(plane, np.float32(2.0 / 255.0), out=tensor[0, c],
+                        casting="unsafe")
+        tensor -= 1.0
+        preds = det.session(tensor)
+        boxes, _scores = det.postprocess_op(preds, (h, w))
+        return () if boxes is None else boxes
 
     def _ensure(self):
         if self._model is not None or self._failed:
@@ -184,6 +229,13 @@ class TextDetector:
                 "EngineConfig.onnxruntime.use_dml": gpu.available(),
             })
             self._device = gpu.session_device(self._model.text_det)
+            # _detect()'s fused normalise assumes mean = std = 0.5 (what
+            # every PP-OCR det pack ships). Check the loaded pack once; a
+            # mismatch just keeps the wrapper path, never wrong boxes.
+            mean = self._model.text_det.mean or [0.5] * 3
+            std = self._model.text_det.std or [0.5] * 3
+            self._fast_pre = (list(mean) == [0.5] * 3
+                              and list(std) == [0.5] * 3)
             if self._auto_sized and self._device == "cpu" \
                     and self._target_side != TARGET_SIDE:
                 # The DML wheel is installed but the session LANDED on CPU
