@@ -26,6 +26,7 @@ import sys
 import numpy as np
 
 from .. import lexicon
+from . import gpu
 from .sentence import Sentence, is_cjk
 
 PAD = 4      # px of context around the crop; rec likes breathing room
@@ -35,7 +36,7 @@ PAD = 4      # px of context around the crop; rec likes breathing room
 # column laid on its side almost perfectly and reads it upright as garbage:
 # card_0001's real column read 0.31 upright, 0.99 rotated 90° ccw. Both
 # reads run and the better score wins, so a tall-but-horizontal box costs
-# one wasted rec pass (~20 ms, rare) and can never LOSE accuracy.
+# one wasted rec pass (~10 ms, rare) and can never LOSE accuracy.
 VERTICAL_MIN_ASPECT = 1.6
 
 # settings.source_language code -> rapidocr LangRec value. Only scripts the
@@ -143,6 +144,7 @@ def _is_rtl(ch):
 class TextReader:
     def __init__(self, lang=None):
         self._model = None
+        self._device = None
         self._failed = False
         self._read_errors = set()  # failure kinds already reported, once each
         self._script = _SCRIPT_MODELS.get(lang)  # None -> default model
@@ -160,16 +162,30 @@ class TextReader:
             return
         self._script = script
         self._model = None
+        self._device = None
         self._failed = False  # a new model deserves a fresh load attempt
         self._read_errors = set()  # ...and fresh failure reporting
 
     def warm(self):
-        """Load the model now (worker calls this at thread start)."""
+        """Load the model now (worker calls this at thread start) — and push
+        one dummy crop through it, so a session's first-run cost (DirectML
+        compiles on first use) lands here, not on the first caption. read()
+        is fail-open, so a raising warm read just reports itself once."""
         self._ensure()
+        if self._model is None:
+            return
+        import numpy as np
+        self.read(np.zeros((24, 64, 4), dtype=np.uint8), (2, 2, 62, 22))
 
     @property
     def ready(self):
         return self._model is not None
+
+    @property
+    def device(self):
+        """'gpu'/'cpu' once ready — the worker's startup line prints it so
+        a silent fall-back to CPU is visible in the console."""
+        return self._device
 
     def read(self, frame, box):
         """frame: (H, W, 4) BGRA uint8, FULL resolution (recognition wants
@@ -350,11 +366,17 @@ class TextReader:
                 # (no lang_type) is the measured-best multi-script pack; a
                 # _SCRIPT_MODELS language overrides it below.
                 "Rec.engine_type": EngineType.ONNXRUNTIME,
+                # GPU when the venv has it (measured a shade faster than
+                # CPU, 7 vs 9 ms/read, and it keeps both neural stages on
+                # one device); rapidocr falls back to CPU on its own when
+                # the provider list disagrees (fail-open).
+                "EngineConfig.onnxruntime.use_dml": gpu.available(),
             }
             if self._script:
                 self._model = self._load_script_model(base)
             if self._model is None:
                 self._model = RapidOCR(params=base)
+            self._device = gpu.session_device(self._model.text_rec)
         except Exception as exc:  # missing package / download failure
             self._failed = True
             print("cappa: text reading unavailable (%s: %s) — detection "

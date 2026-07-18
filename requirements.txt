@@ -4,7 +4,11 @@ mss
 numpy
 rapidocr
 python-bidi  # rapidocr imports it on every RTL (arabic) read but doesn't declare it
-onnxruntime
+onnxruntime-directml  # the GPU (DirectML) build — detection/gpu.py probes for
+                      # it; plain `onnxruntime` also works but scans on CPU
+                      # at the smaller working size (slower, misses small text).
+                      # Upgrading an old venv: `pip uninstall onnxruntime`
+                      # FIRST — both wheels own the same package directory.
 anki
 deep-translator
 PyAudioWPatch
