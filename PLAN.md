@@ -1803,3 +1803,20 @@ each); at 1280 the detector now boxes sidebar/menu text on busy pages by
 design ("every text line becomes hoverable", user call 2026-07-09) — the
 junk classifier still keeps clocks/URLs/handles off cards, but UI chrome
 text is hoverable like any other line.
+
+### 2026-07-18c — wake-on-result and a 0.08 s cadence
+
+Two more cuts at appear latency, compounding on the async scan. First: the
+loop used to sleep out its fixed frame budget even when a finished scan sat
+in the result queue — the scanner now sets an event when it posts a result,
+_pace waits on that event instead of plain-sleeping, and the result is
+consumed at the TOP of the loop pass (also the fix for a subtle busy-loop:
+a parked region never reaches the old consume site, and a stranded set
+event would have made _pace return instantly forever). A scan's boxes now
+hit the ledger within ~a millisecond of the scan ending instead of up to a
+frame later. Second: SCAN_INTERVAL 0.1 -> 0.08, measured across 0.1 /
+0.08 / 0.06 on the sim — 0.08 gave 155-251 ms appears, 0.06 bought nothing
+(the scan itself is the floor now), and one-in-flight means a big capture
+self-throttles to its own scan cost regardless. Confirming run at the new
+defaults: 157-202 ms appears, all clears clean, no false positives — vs
+211-463 ms this morning and 197-538 ms in the CPU era. Full suite ALL PASS.

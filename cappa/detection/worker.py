@@ -65,15 +65,19 @@ def _printable(s):
     return s.encode(enc, "backslashreplace").decode(enc)
 
 
-SCAN_INTERVAL = 0.1        # min seconds between GPU scan SUBMISSIONS (the
+SCAN_INTERVAL = 0.08       # min seconds between GPU scan SUBMISSIONS (the
                            # cadence is a true interval now that scans run
                            # beside the loop — the old starvation ceiling is
                            # gone: frame grabs continue during a scan, so a
                            # tighter cadence no longer blinds the watcher).
                            # Playing video keeps `dirty` set, so this is the
-                           # appear-latency floor during playback. The GPU
-                           # does the work; the loop's CPU cost per scan is
-                           # only the pre-shrink + submit.
+                           # appear-latency floor during playback. Sized on
+                           # the sim: 0.08 measured 155-251 ms appears and
+                           # 0.06 bought nothing more (scan cost is the
+                           # floor now); one in-flight job at a time means
+                           # a big capture self-throttles to its own scan
+                           # cost either way. The GPU does the work; the
+                           # loop's cost per scan is the pre-shrink + submit.
 SCAN_INTERVAL_CPU = 0.2    # the CPU cadence, unchanged from the CPU era:
                            # a CPU scan burns a core whether or not it
                            # blocks the loop, and 0.2 was the measured
@@ -149,6 +153,8 @@ class CaptureWorker(QObject):
         # scanned, not whatever is on screen when it finishes.
         scan_jobs = queue.Queue(maxsize=1)
         scan_results = queue.Queue()
+        scan_done = threading.Event()  # lets _pace wake the moment a scan
+                                       # finishes instead of sleeping it off
 
         def scan_thread():
             while True:
@@ -161,6 +167,7 @@ class CaptureWorker(QObject):
                 except Exception:               # last net: a lost result
                     boxes = []                  # must never wedge in_flight
                 scan_results.put((boxes, img, sample, grab_time, gen))
+                scan_done.set()
 
         threading.Thread(target=scan_thread, name="cappa-scan",
                          daemon=True).start()
@@ -180,6 +187,29 @@ class CaptureWorker(QObject):
         try:
             while self._running:
                 loop_start = time.perf_counter()
+
+                # A finished scan is applied FIRST, whatever else the pass
+                # does: combined with the event-wake in _pace, a result is
+                # in the ledger within ~a millisecond of the scan ending.
+                # Consuming up here (not inside the tracking branch) also
+                # means a parked region can't strand the wake event set —
+                # that would turn _pace into a busy loop. If this same pass
+                # then resets/parks, the reset wipes what was applied,
+                # which is exactly what the reset means.
+                scan_events = []
+                try:
+                    done = scan_results.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    scan_done.clear()
+                    in_flight = False
+                    boxes, s_img, s_sample, s_grab, gen = done
+                    if gen == generation:
+                        scan_events = self._apply_scan(
+                            boxes, s_img, s_sample, reader,
+                            watcher, ledger, grab_time=s_grab)
+                    # else: a reset/refresh outdated it — dropped.
 
                 if self._ocr_lang_dirty:
                     # New video language from Settings: swap the rec model and
@@ -226,7 +256,7 @@ class CaptureWorker(QObject):
                             generation += 1
                             dirty = True
                             last_scan = 0.0
-                        events = []
+                        events = scan_events
                         if (diff.mask.sum()
                                 >= ACTIVITY_FRACTION * diff.mask.size):
                             dirty = True
@@ -247,20 +277,6 @@ class CaptureWorker(QObject):
                                     + RESCAN_AFTER_CLEAR)
                         for box in ledger.expire_clears():
                             events.append(("cleared", box))
-                        # A finished scan lands here on the pass after the
-                        # helper thread produced it.
-                        try:
-                            done = scan_results.get_nowait()
-                        except queue.Empty:
-                            pass
-                        else:
-                            in_flight = False
-                            boxes, s_img, s_sample, s_grab, gen = done
-                            if gen == generation:
-                                events += self._apply_scan(
-                                    boxes, s_img, s_sample, reader,
-                                    watcher, ledger, grab_time=s_grab)
-                            # else: a reset/refresh outdated it — dropped.
                         if (dirty and not in_flight
                                 and time.perf_counter() - last_scan
                                 >= scan_interval):
@@ -283,7 +299,7 @@ class CaptureWorker(QObject):
                     frames = 0
                     window_start = loop_start
 
-                self._pace(loop_start)
+                self._pace(loop_start, scan_done)
         finally:
             try:
                 scan_jobs.put_nowait(None)  # scanner is a daemon; this just
@@ -348,10 +364,19 @@ class CaptureWorker(QObject):
         except Exception:
             return None
 
-    def _pace(self, loop_start):
+    def _pace(self, loop_start, wake=None):
+        """Sleep out the frame budget — but wake at once if the scanner
+        finishes mid-sleep (`wake`, a threading.Event the loop clears on
+        consume), so a result never sits a sleep's length before it's
+        applied. Waking early is harmless: the loop just grabs the next
+        frame a shade sooner."""
         remaining = self._interval - (time.perf_counter() - loop_start)
-        if remaining > 0:
+        if remaining <= 0:
+            return
+        if wake is None:
             time.sleep(remaining)
+        else:
+            wake.wait(remaining)
 
     def refresh(self):
         """UI thread: rescan the region from scratch on the next loop pass —
