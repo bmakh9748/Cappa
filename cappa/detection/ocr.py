@@ -149,20 +149,29 @@ class TextReader:
         self._read_errors = set()  # failure kinds already reported, once each
         self._script = _SCRIPT_MODELS.get(lang)  # None -> default model
         self._lang = lang                         # for the lexicon splitter
+        # script -> its loaded RapidOCR, kept for the process's life. A
+        # replaced model must NEVER be dropped: destroying a RapidOCR
+        # instance tears down its ONNX sessions, and on DirectML that
+        # poisons every OTHER live session in the process — the next
+        # detector scan segfaults the app (reproduced on ORT 1.24.4).
+        # Caching also makes switching BACK to a language instant.
+        self._models = {}
 
     def set_language(self, lang):
         """Switch the rec model for a newly picked video language (worker
         thread, between scans). The rec MODEL only changes when the script
         does; the language string is always kept, since the lexicon
         splitter is keyed by language, not script (en and id share a
-        model but not a word list)."""
+        model but not a word list). The old model stays cached in
+        self._models — see __init__ on why it must never be dropped."""
         self._lang = lang
         script = _SCRIPT_MODELS.get(lang)
         if script == self._script:
             return
         self._script = script
-        self._model = None
-        self._device = None
+        self._model = self._models.get(script)
+        self._device = (gpu.session_device(self._model.text_rec)
+                        if self._model is not None else None)
         self._failed = False  # a new model deserves a fresh load attempt
         self._read_errors = set()  # ...and fresh failure reporting
 
@@ -376,6 +385,8 @@ class TextReader:
                 self._model = self._load_script_model(base)
             if self._model is None:
                 self._model = RapidOCR(params=base)
+            self._models[self._script] = self._model  # cached for the
+            # process's life — see __init__ on why it must never be dropped
             self._device = gpu.session_device(self._model.text_rec)
         except Exception as exc:  # missing package / download failure
             self._failed = True
