@@ -1,6 +1,6 @@
 """The background thread that runs caption detection end to end.
 
-Kept off the Qt UI thread because the neural scan costs ~60-130 ms — enough
+Kept off the Qt UI thread because the neural scan costs ~40-100 ms — enough
 to stutter the overlay if it ran inline. Results cross back to the UI through
 queued signals, which Qt delivers on the main thread.
 
@@ -24,7 +24,7 @@ one only when something changed, and never more often than SCAN_INTERVAL):
     capture.py     grab the tracked region            every frame   ~10 ms
     diff.py        what changed since last frame      every frame   <1 ms
     stability.py   watch live captions for vanishing  every frame   <1 ms
-    detector.py    neural text detection (GPU when    on change     ~0.06-0.13 s
+    detector.py    neural text detection (GPU when    on change     ~0.04-0.1 s
                    the venv has DirectML; gpu.py)     (beside the loop)
     ocr.py         read text in accepted boxes        on accept     ~0.01 s
     tracking.py    match scans to what's already live
@@ -65,19 +65,19 @@ def _printable(s):
     return s.encode(enc, "backslashreplace").decode(enc)
 
 
-SCAN_INTERVAL = 0.08       # min seconds between GPU scan SUBMISSIONS (the
+SCAN_INTERVAL = 0.05       # min seconds between GPU scan SUBMISSIONS (the
                            # cadence is a true interval now that scans run
                            # beside the loop — the old starvation ceiling is
                            # gone: frame grabs continue during a scan, so a
                            # tighter cadence no longer blinds the watcher).
                            # Playing video keeps `dirty` set, so this is the
-                           # appear-latency floor during playback. Sized on
-                           # the sim: 0.08 measured 155-251 ms appears and
-                           # 0.06 bought nothing more (scan cost is the
-                           # floor now); one in-flight job at a time means
-                           # a big capture self-throttles to its own scan
-                           # cost either way. The GPU does the work; the
-                           # loop's cost per scan is the pre-shrink + submit.
+                           # appear-latency floor during playback. One
+                           # in-flight job at a time means the real throttle
+                           # is the scan itself (~40-90 ms after the direct
+                           # det path landed); this just stops a fast GPU
+                           # from scanning unchanged pixels back-to-back.
+                           # Sim-measured through the fast path: see PLAN
+                           # 2026-07-18d.
 SCAN_INTERVAL_CPU = 0.2    # the CPU cadence, unchanged from the CPU era:
                            # a CPU scan burns a core whether or not it
                            # blocks the loop, and 0.2 was the measured
@@ -86,7 +86,18 @@ SCAN_INTERVAL_CPU = 0.2    # the CPU cadence, unchanged from the CPU era:
                            # Also used when placement is UNKNOWN (gpu.py
                            # couldn't read the session) — conservative.
 RESCAN_AFTER_CLEAR = 0.15  # a cleared line usually means a new one is up
-ACTIVITY_FRACTION = 0.001  # sampled pixels changing = "something happened"
+ACTIVITY_FRACTION = 0.004  # sampled pixels changing = "something happened".
+                           # Matches diff.py's CHANGED_FRACTION. Was 0.001:
+                           # compression shimmer on a STATIC scene tripped
+                           # it every frame, so a paused video was scanned
+                           # at the full cadence forever (user report,
+                           # 2026-07-18: "no need to do it a million times a
+                           # second"). Under this bar a quiet screen scans
+                           # at the FORCED_RESCAN 1 Hz, which also nets any
+                           # appearance too subtle for the gate (~1 s worst
+                           # case, the user's own stated tolerance). A real
+                           # caption appearing measures well above 0.004 of
+                           # the sampled grid.
 FORCED_RESCAN = 1.0        # max seconds between scans while tracking, even
                            # on a quiet screen: the automatic version of the
                            # launcher's "Refresh words" — catches whatever
@@ -169,8 +180,9 @@ class CaptureWorker(QObject):
                 scan_results.put((boxes, img, sample, grab_time, gen))
                 scan_done.set()
 
-        threading.Thread(target=scan_thread, name="cappa-scan",
-                         daemon=True).start()
+        scanner = threading.Thread(target=scan_thread, name="cappa-scan",
+                                   daemon=True)
+        scanner.start()
 
         # Cadence keyed to where the sessions actually LANDED (gpu.py's
         # truth channel), not the install probe: unknown placement gets
@@ -301,10 +313,25 @@ class CaptureWorker(QObject):
 
                 self._pace(loop_start, scan_done)
         finally:
+            # The scanner MUST be joined before run() returns: when this
+            # frame dies, its locals — reader/detector and their cached
+            # RapidOCR instances — are destroyed, and destroying DirectML
+            # sessions while another session is mid-run is an access
+            # violation in onnxruntime (caught by faulthandler at sim
+            # shutdown; same poison ocr.py's model cache guards against).
+            # Drain any queued job so the sentinel is next, then wait out
+            # at most one in-flight scan.
+            while True:
+                try:
+                    scan_jobs.get_nowait()
+                except queue.Empty:
+                    break
             try:
-                scan_jobs.put_nowait(None)  # scanner is a daemon; this just
-            except queue.Full:              # lets it exit promptly
+                scan_jobs.put_nowait(None)
+            except queue.Full:
                 pass
+            scanner.join(timeout=2.0)  # a scan is ~0.05-0.4 s; a hung
+                                       # driver forfeits the join (daemon)
             capture.close()
 
     @staticmethod
@@ -325,10 +352,23 @@ class CaptureWorker(QObject):
             watcher.watch(box)
             print("[cappa]   blip: caption re-confirmed, clear suppressed")
         # A live caption whose content stopped matching its accept-time
-        # fingerprint was replaced in place (new line, same spot, no clean
-        # vanish between). Retire it here so THIS scan re-reads the new
-        # text as fresh — no manual refresh needed.
-        for box in ledger.drifted(sample, DOWNSCALE):
+        # fingerprint MAY have been replaced in place (new line, same spot,
+        # no clean vanish between) — or the video's compression shimmer
+        # just drifted the pixels under unchanged text. Re-read BEFORE
+        # surfacing anything (user report, 2026-07-18: the same caption
+        # was re-read in a loop). Same text -> silently re-accept: the
+        # original Sentence rides through (appeared_at keeps anchoring the
+        # audio clip), the fingerprint re-baselines to the current pixels,
+        # the watcher never stops guarding, no events, no flicker. Only a
+        # text that actually READS differently is a real replacement.
+        for box, old in ledger.drifted(sample, DOWNSCALE):
+            sentence, conf = reader.read(img, box)
+            if (old is not None and sentence is not None and sentence.text
+                    and sentence.text == old.text):
+                old.cleared_at = 0.0
+                ledger.accept(box, sample, DOWNSCALE, old,
+                              getattr(old, "appeared_at", 0.0))
+                continue
             watcher.unwatch(box)
             events.append(("cleared", box))
             print("[cappa]   live caption content changed; re-reading")

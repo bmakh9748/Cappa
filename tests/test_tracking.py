@@ -105,14 +105,33 @@ assert led4.drifted(sample(200), SCALE) == [], (
 assert led4.live() == [CAPTION]
 assert led4.drifted(changed, SCALE) == []      # drift first noticed
 time.sleep(0.15)
-assert led4.drifted(changed, SCALE) == [CAPTION], (
+retired = led4.drifted(changed, SCALE)
+assert [b for b, _ in retired] == [CAPTION], (
     "persistent content change must retire the live line"
 )
 assert led4.live() == []
 assert led4.fresh([CAPTION]) == [CAPTION], (
     "the replaced spot must be immediately fresh"
 )
-print("PASS: in-place content change retires the line; blips do not")
+# drifted() hands back the sentence the box was showing, so the worker can
+# re-read and tell a REAL replacement from shimmer under unchanged text
+# (2026-07-18: the same caption was retired+re-read in a loop). Re-accepting
+# that same sentence must keep its appeared_at — it anchors the audio clip.
+box, sent = retired[0]
+assert sent is not None and sent.appeared_at > 0, (
+    "the retired sentence (with its appeared_at) must ride along"
+)
+born = sent.appeared_at
+led4.accept(box, sample(200), SCALE, sent, born)
+assert led4.live() == [CAPTION]
+assert led4.captions()[0].appeared_at == born, (
+    "re-accepting the shimmer-drifted sentence must not re-anchor its clip"
+)
+assert led4.drifted(sample(200), SCALE) == [], (
+    "re-baselined fingerprint must match the current pixels again"
+)
+print("PASS: in-place content change retires the line; blips do not; "
+      "shimmer re-accept keeps the clip anchor")
 
 led.reset()
 assert led.live() == [] and led.fresh([CAPTION]) == [CAPTION]

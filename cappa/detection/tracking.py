@@ -27,9 +27,13 @@ from .sentence import Sentence
 
 MATCH_OVERLAP = 0.55   # intersection / smaller-area to call two boxes "same"
 MISS_LIMIT = 3         # consecutive scans not seeing a live caption = stale
-CLEAR_CONFIRM = 0.35   # seconds a clear stays pending before it surfaces —
-                       # long enough for the post-clear fast rescan
-                       # (RESCAN_AFTER_CLEAR + one scan) to resurrect a blip
+CLEAR_CONFIRM = 0.18   # seconds a clear stays pending before it surfaces —
+                       # long enough for a confirming scan to resurrect a
+                       # blip. Was 0.35, sized for the 0.2 s scan cadence;
+                       # scans now come every ~0.05-0.1 s (async pipeline),
+                       # so a blip still gets 2+ scans and a real clear
+                       # surfaces twice as fast (boxes lingered — user
+                       # report, 2026-07-18)
 FP_BLOCKS = (2, 4)     # fingerprint grid over the box (rows, cols)
 FP_TOLERANCE = 8       # max per-block grey delta (0-255) = "same content".
                        # Was 14: loose enough that a new caption line over a
@@ -124,10 +128,17 @@ class CaptionLedger:
         fingerprint: the line was REPLACED IN PLACE (next caption, same
         spot) without a clean vanish in between, so the watcher never fires
         and the stale text would sit unclickable until a manual refresh.
-        Retire them — the scan that called this then re-reads the box as
-        fresh. Drift must persist DRIFT_CONFIRM before it counts, so a
-        gradient or popup sliding over the caption is absorbed the same way
-        pending clears absorb blips. Returns the retired boxes."""
+        Retire them. Drift must persist DRIFT_CONFIRM before it counts, so
+        a gradient or popup sliding over the caption is absorbed the same
+        way pending clears absorb blips.
+
+        Returns [(box, sentence)] — the retired box WITH the sentence it
+        was showing, because pixels drifting does not prove the TEXT
+        changed (video shimmer drifts fingerprints under unchanged text).
+        The caller re-reads the box: same text -> re-accept() with this
+        same sentence (appeared_at keeps anchoring the audio clip) and the
+        fingerprint quietly re-baselines; different text -> surface the
+        clear and read it as fresh."""
         now = time.monotonic()
         out = []
         for box in list(self._live):
@@ -146,7 +157,7 @@ class CaptionLedger:
             sent = self._sentences.pop(box, None)
             if sent is not None:
                 sent.cleared_at = first  # the content changed back THEN
-            out.append(box)
+            out.append((box, sent))
         return out
 
     def sweep(self, scan_boxes):
