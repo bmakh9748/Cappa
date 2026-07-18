@@ -1731,3 +1731,75 @@ changes only the LINE text ordering, and the hotspot words still come out as
 logical-order substrings, so `_fix_rtl` needed no change — and test_ocr_read
 grew the raising-read leg (fail-open, reported exactly once, both the upright
 and vertical paths). Japanese/English/vertical reads unchanged, conf 0.99-1.00.
+
+### 2026-07-18 — detection moves to the GPU: DirectML, bigger working size, faster cadence
+
+The user's report: detection slow and low quality, GPU (GTX 1660) unused.
+True on both counts — the venv's `onnxruntime` was the CPU-only build, and
+both CPU-era compromises were still in force: the MOBILE det model and a
+736 px working size, sized so a scan wouldn't hog the core. Measured on the
+real recordings (median/scan): CPU-mobile 112 ms at 736; DirectML-mobile
+60/88/104 ms at 736/960/1280 — and on a dense 1920 px browser frame the
+detector boxes 8 text lines at 736 vs 55 at 1280. The shrink, not the
+model, was the quality ceiling. (Server det on DML: 136 ms at 736 but still
+fewer lines than mobile at 1280 — mobile+bigger-input wins on both axes.
+Rec on DML: 7 vs 9 ms/read, no per-shape recompile penalty — measured cold
+vs warm, it's flat.)
+
+The change: `onnxruntime` -> `onnxruntime-directml` in requirements, a new
+`detection/gpu.py` probe (available() -> sizing; session_device() -> the
+truth, read from the live ORT session for the startup line), both neural
+stages pass `use_dml` through to rapidocr (which falls back to CPU by
+itself — fail-open preserved), TARGET_SIDE_GPU=1280 when the GPU is there
+(CPU keeps 736 and its old behaviour exactly), warm() now pushes a dummy
+frame/crop through each session so DirectML's one-time first-run compile
+(~1-2 s measured) lands at thread start, not on the first caption, and
+SCAN_INTERVAL drops to 0.15 on GPU (sim-measured: 218-353 ms appears,
+clean clears; 0.12 starved the watcher — one clear went unconfirmed — for
+~30 ms; CPU keeps 0.2, where 0.15 measured worse). Verified end-to-end on
+the realistic sim: ALL PASS, and both "hard" captions (16 px font, plain
+white no outline) now DETECT — they were built as expected-misses.
+
+### 2026-07-18b — the scan moves beside the loop; probe-vs-placement reconciled
+
+An adversarial review of the GPU change confirmed one real hazard and the
+user asked for more speed; both land here.
+
+The hazard: gpu.available() probes the INSTALL (the wheel's provider list),
+not the adapter — on a machine with the DML wheel but no usable GPU (VM,
+remote session, broken driver) onnxruntime quietly creates the session on
+CPU, and the old wiring would have kept GPU sizing (1280) and GPU cadence
+on it: ~360 ms CPU scans on a fast clock, worse than before the change.
+Now the probe only picks the INTENTION; after the session exists,
+detector._ensure re-reads where it actually landed (gpu.session_device —
+which now returns None instead of laundering the probe when rapidocr's
+internals can't be read) and drops back to the CPU working size with a
+stderr note; the worker picks its cadence from the same truth. Also from
+the review: detector.scan() now guards the inference call itself — DirectML
+sessions can start failing at RUNTIME (driver TDR while gaming, VRAM
+pressure), which the CPU path never did, and an unguarded raise killed the
+capture thread silently; now it fails open to no-boxes and reports once per
+failure kind, same discipline as ocr's _say_read_failed.
+
+The speed: the neural scan now runs on a helper thread beside the capture
+loop (worker.py; one job in flight, snapshot of frame + diff sample + grab
+time travels with it, a generation counter drops stale results after any
+reset/refresh). Two compounding wins, both measured: frame grabs continue
+during a scan, so the vanish-watcher never starves — the exact ceiling
+that made 0.12 s fail when the scan ran inline — and the scan clock stamps
+at SUBMISSION, so the period is truly the interval instead of interval +
+scan cost. GPU cadence drops to SCAN_INTERVAL=0.1 (CPU keeps its measured
+0.2 as SCAN_INTERVAL_CPU, also used when placement is unknown). Realistic
+sim, two runs: appears 156-283 ms typical (was 211-463 on GPU sync at 0.2,
+197-538 in the CPU era), all clears clean, no false positives, and the
+hard cases (16 px font, no outline) keep detecting. Quit-during-warm is
+now bounded too: run() checks stop() between warm steps and the UI waits
+5 s instead of 1 (a single model load / first-run compile is ~1.5-2 s and
+uninterruptible). Full suite re-run: ALL PASS.
+
+Known and accepted: rapidocr constructs det+cls+rec sessions per instance,
+so four never-used sessions also sit on the GPU (tiny models, ~5-20 MB
+each); at 1280 the detector now boxes sidebar/menu text on busy pages by
+design ("every text line becomes hoverable", user call 2026-07-09) — the
+junk classifier still keeps clocks/URLs/handles off cards, but UI chrome
+text is hoverable like any other line.
