@@ -1820,3 +1820,52 @@ frame later. Second: SCAN_INTERVAL 0.1 -> 0.08, measured across 0.1 /
 self-throttles to its own scan cost regardless. Confirming run at the new
 defaults: 157-202 ms appears, all clears clean, no false positives — vs
 211-463 ms this morning and 197-538 ms in the CPU era. Full suite ALL PASS.
+
+### 2026-07-18d — the scan sheds its CPU fat; churn and two crashes die with it
+
+"Make it under 0.1" (user). Profiling a det call split it 32 ms preprocess /
+37 ms GPU / 4-17 ms postprocess — the wrapper's DetPreProcess normalises in
+FLOAT64 and recopies twice. detector.scan now runs rapidocr's det module
+directly: our fused preprocess ((x/255-.5)/.5 == x*(2/255)-1; PP-OCR det
+packs all ship mean=std=0.5, checked at load with wrapper fallback), one
+fused resize straight to the /32 grid, and the postprocess handed the FULL
+frame shape so boxes come back in full-res coordinates with no second
+mapping pass. Tensor parity with the wrapper: byte-identical (0.0 diff);
+preprocess 32 -> 7 ms. FP16 was tried and REJECTED: ~1 ms faster on this
+card and it changes the detections (55 -> 39 boxes on the dense frame).
+SCAN_INTERVAL 0.05 (in-flight gating self-throttles to real scan cost).
+Sim: 110-180 ms typical appears. Beware benchmarking the GPU cold: it
+idles at 300 MHz (P8) and doubles apparent inference time; playing video
+keeps it awake in real use.
+
+Two crashes found and fixed along the way. (1) Destroying a RapidOCR
+instance tears down its ONNX sessions, and on DirectML that POISONS every
+other live session in the process — the next run segfaults (reproduced,
+deterministic, ORT 1.24.4). ocr.py's set_language dropped exactly such an
+instance, so switching video language would have killed the app: the reader
+now caches one model per script for the process's life and never drops one
+(switching back is instant, as a bonus). (2) The same poison at shutdown:
+run() returning destroys its locals — including those cached sessions —
+while the scan helper thread could still be mid-inference; faulthandler
+caught the access violation at sim teardown (flaky, ~half of runs at the
+new cadence). run()'s finally now drains the job queue, sends the
+sentinel, and JOINS the scanner (2 s bound) before the frame dies. Five
+sim runs after: zero crashes.
+
+And the user's live report, both parts confirmed and fixed. Boxes lingered:
+CLEAR_CONFIRM was 0.35 s, sized so the OLD 0.2 s cadence could deliver a
+confirming scan; at the async cadence 0.18 s keeps 2+ scans of blip cover
+and clears surface twice as fast. The same caption was re-read in a loop:
+compression shimmer drifts a live box's fingerprint under UNCHANGED text,
+and drifted() retired it, re-read it, re-fingerprinted it mid-shimmer and
+went round again — every cycle re-anchoring the caption's audio clip.
+drifted() now returns the sentence with the box; the worker re-reads
+FIRST, and same text means silent re-accept: original sentence (clip
+anchor intact), fresh fingerprint, watcher untouched, no events. Only
+text that actually reads differently surfaces a clear. Also
+ACTIVITY_FRACTION 0.001 -> 0.004 (matches diff's CHANGED_FRACTION):
+static scenes' compression shimmer no longer counts as activity, so a
+paused/quiet screen scans at the FORCED_RESCAN 1 Hz — the user's stated
+tolerance — instead of the full cadence forever. Sim x5: ALL PASS, 0
+crashes, re-reads 0-5 per run (was dozens; the sim burns adversarial
+noise over its captions), clears all confirmed.
