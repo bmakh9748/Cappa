@@ -48,7 +48,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .. import jmdict, lexicon
+from .. import arabic, jmdict, kanjidic, lexicon
 from .capture import ScreenCapture
 from .classifier import text_verdict
 from .detector import TextDetector
@@ -146,6 +146,8 @@ class CaptureWorker(QObject):
         if self._running:
             lexicon.ensure_pack(self._ocr_lang)  # the word-split pack
             jmdict.ensure_pack(self._ocr_lang)   # ja: word-lookup dictionary
+            kanjidic.ensure_pack(self._ocr_lang)  # ja: per-kanji info
+            arabic.ensure_pack(self._ocr_lang)   # ar: morphology (root/form)
         if not self._running:
             capture.close()
             return
@@ -231,6 +233,8 @@ class CaptureWorker(QObject):
                     reader.warm()
                     lexicon.ensure_pack(self._ocr_lang)
                     jmdict.ensure_pack(self._ocr_lang)
+                    kanjidic.ensure_pack(self._ocr_lang)
+                    arabic.ensure_pack(self._ocr_lang)
                     self._refresh = True
 
                 region = self._region()
