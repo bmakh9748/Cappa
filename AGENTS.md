@@ -31,6 +31,15 @@ cappa/
   settings.py    persisted user settings (settings.json). No Qt.
   translate.py   sentence/word translation (free Google endpoint). No Qt.
   dictionary.py  word meanings: Wiktionary first, Google hint/fallback. No Qt.
+  examples.py    example sentences: JMdict pack (ja, offline), Wiktionary,
+                 Tatoeba top-up. No Qt.
+  pronounce.py   word audio: free Google TTS fetch + winmm playback. No Qt.
+  arabic.py      Arabic anatomy: root/form/lemma via slim camel-tools +
+                 its morphology pack (arabic_packs/). No Qt.
+  indonesian.py  Indonesian anatomy: Sastrawi root + affix labels. No Qt.
+  kanjidic.py    per-kanji info pack (KANJIDIC2, jmdict_packs/). No Qt.
+  grammar_notes.py  the Grammar tab's hand-written one-liners (ja reasons,
+                 ar Forms I-X, id affixes). Pure data, no Qt.
   audio.py       WASAPI loopback ring buffer (LoopbackRecorder). No Qt.
   ui/            everything visible (the ONLY Qt package besides app.py
                  and detection/worker.py's signal layer)
@@ -55,9 +64,11 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
    or splitting a file means updating that map in the same change. If the
    README layout table is affected, update it too.
 3. **Qt stays in `ui/` + `app.py`**, plus the signal layer of
-   `detection/worker.py`. Detection stages, `source/`, `flashcard/`,
-   `translate/dictionary/audio/settings/winapi` must import no Qt — that is
-   what makes them unit-testable in isolation.
+   `detection/worker.py`. Detection stages, `source/`, `flashcard/`, and
+   every word-data module (`translate/dictionary/examples/pronounce/
+   arabic/indonesian/kanjidic/grammar_notes/jmdict/lexicon/audio/settings/
+   winapi`) must import no Qt — that is what makes them unit-testable in
+   isolation.
 4. **`winapi.py` owns Win32.** No raw `ctypes`/`win32gui` calls anywhere else;
    `winapi.py` itself never imports Qt.
 5. **The UI thread does no heavy work.** OCR, translation, card building,
@@ -92,13 +103,17 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
 - Tests are plain scripts with `assert` (not pytest). Run one file directly,
   or the suite: `python tests/run_all.py` (venv, repo root).
 - A new test file must be registered in `run_all.py`, in `UNIT` (instant,
-  windowless, no network) or `LIVE` (opens windows, loads models, needs the
+  windowless; the dictionary-pack tests may download a pack ONCE and must
+  SKIP cleanly offline) or `LIVE` (opens windows, loads models, needs the
   mouse/keyboard untouched). Agents: run the relevant `UNIT` files after any
   change; run `LIVE` only when the user is present and expecting it.
 - Every behavioural fix ships with a regression test in the matching
   `tests/test_*.py`, added to that file's `__main__` list.
-- Unit tests must stay network-free: fake the translator/source (see
-  `FakeSource` in `test_youtube_source.py`), use `tests/fixtures/`.
+- Unit tests must stay network-free — fake the translator/source (see
+  `FakeSource` in `test_youtube_source.py`), use `tests/fixtures/` — with
+  one exception: the pack-backed tests (jmdict/kanjidic/arabic) may call
+  their `ensure_pack` once, and must SKIP (exit 0 with a "SKIP:" line)
+  when it fails offline.
 
 ## Git
 
