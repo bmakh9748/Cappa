@@ -21,8 +21,8 @@ dropped on arrival.
 The chain, one stage per file (cheap stages run every frame, the expensive
 one only when something changed, and never more often than SCAN_INTERVAL):
 
-    capture.py     grab the tracked region            every frame   ~10 ms
-    diff.py        what changed since last frame      every frame   <1 ms
+    diff.py        grab + what changed since last     every frame   ~10 ms
+                   frame
     stability.py   watch live captions for vanishing  every frame   <1 ms
     detector.py    neural text detection (GPU when    on change     ~0.04-0.1 s
                    the venv has DirectML; gpu.py)     (beside the loop)
@@ -48,9 +48,8 @@ import time
 from PySide6.QtCore import QObject, Signal, Slot
 
 from .. import arabic, jmdict, kanjidic, lexicon
-from .capture import ScreenCapture
 from .detector import TextDetector
-from .diff import CHANGED_FRACTION, DOWNSCALE, FrameDiff
+from .diff import CHANGED_FRACTION, DOWNSCALE, FrameDiff, ScreenCapture
 from .ocr import TextReader
 from .stability import CaptionWatcher
 from .tracking import CaptionLedger

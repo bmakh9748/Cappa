@@ -8,7 +8,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa.detection.latency import APPEAR_LAG
+from cappa.detection import APPEAR_LAG
 from cappa.detection.sentence import Sentence
 from cappa.source.ocr_transcript import OcrTranscriptLog
 

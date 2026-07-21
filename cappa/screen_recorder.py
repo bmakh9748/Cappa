@@ -21,7 +21,7 @@ import threading
 import time
 from datetime import datetime
 
-from .detection.capture import ScreenCapture
+from .detection.diff import ScreenCapture
 
 RECORDINGS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recordings")

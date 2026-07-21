@@ -1,7 +1,13 @@
-"""Step 2 — frame diff: decide when a frame is worth OCRing.
+"""Steps 1-2 — frame intake: grab the tracked region, then decide when a
+frame is worth OCRing.
 
-Compares each captured frame to the previous one on a downscaled copy,
-per-channel (a grey-mean diff is blind to colour flips of equal brightness,
+ScreenCapture wraps `mss`: a raw pixel copy with no encoding, ~10 ms,
+essentially free. An `mss` instance is bound to the thread that created
+it, so each worker thread builds its own ScreenCapture rather than
+sharing one.
+
+FrameDiff compares each captured frame to the previous one on a downscaled
+copy, per-channel (a grey-mean diff is blind to colour flips of equal brightness,
 e.g. red -> blue). A subtitle appearing looks like: quiet → a burst of change
 (the fade/pop-in) → quiet again. OCR wants the *settled* frame, so `feed()`
 returns True exactly once per burst — on the first frame that has stayed quiet
@@ -16,12 +22,33 @@ a reset or a resize), `sample` the downscaled BGR int16 frame it came from.
 All tuning knobs live in the constructor defaults below (see PLAN.md's "Diff
 sensitivity" notes). No Qt in here: this is a plain, testable unit."""
 
+import mss
 import numpy as np
 
 DOWNSCALE = 4          # sample every Nth pixel per axis (N*N fewer pixels)
 PIXEL_THRESHOLD = 18   # channel delta (0-255) for one pixel to count as changed
 CHANGED_FRACTION = 0.004  # fraction of sampled pixels that must change
 SETTLE_FRAMES = 3      # consecutive quiet frames before a change "settles"
+
+
+class ScreenCapture:
+    def __init__(self):
+        self._sct = mss.mss()
+
+    def grab(self, region):
+        """Grab a screen rectangle.
+
+        region: (left, top, width, height) in physical screen pixels.
+        Returns an (H, W, 4) uint8 array in BGRA order — a private copy, since
+        mss reuses its internal buffer on the next grab."""
+        left, top, width, height = region
+        shot = self._sct.grab(
+            {"left": left, "top": top, "width": width, "height": height}
+        )
+        return np.array(shot, copy=True)
+
+    def close(self):
+        self._sct.close()
 
 
 class FrameDiff:

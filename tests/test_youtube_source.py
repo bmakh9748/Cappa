@@ -665,7 +665,7 @@ def test_builder_appearance_anchor():
     """A position-matched clip anchors at the caption's appearance stamp,
     not around the playback position at card time: card_0061 was paused
     past the line and the old near_t-centred cap cut the sentence's start.
-    The stamp is already lag-corrected at mapping time (latency.py
+    The stamp is already lag-corrected at mapping time (detection
     APPEAR_LAG) — the window opens AT it, no blanket backshift (user call,
     2026-07-09: the same row watched three times stamped within ~170 ms;
     1.8s of worst-case padding put the previous sentence on most cards)."""

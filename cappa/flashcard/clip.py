@@ -69,8 +69,8 @@ SAME_OCCURRENCE_TOL = 1.0
 SILENT_CLIP_PEAK = 100
 
 # NOTE on stamps: a mapped appearance/clear is ALREADY corrected for the
-# pipeline's measured reaction time (detection/latency.py APPEAR_LAG /
-# CLEAR_LAG, subtracted before the bridge mapping). Those measured numbers
+# pipeline's measured reaction time (detection APPEAR_LAG / CLEAR_LAG,
+# subtracted before the bridge mapping). Those measured numbers
 # plus the user's HEAD_BUFFER/TAIL_TRIM are the ONLY time ever added or
 # taken — no worst-case padding (deleted 2026-07-09, user call: the same
 # row watched three times stamped within ~170 ms).

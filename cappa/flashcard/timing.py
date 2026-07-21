@@ -3,7 +3,7 @@
 # Detection latency between a real on-screen event and our timestamp for it.
 # The lags belong to detection (they measure ITS reaction time) and live
 # there; imported here so every window function can keep reading timing.*.
-from ..detection.latency import APPEAR_LAG, CLEAR_LAG
+from ..detection import APPEAR_LAG, CLEAR_LAG
 
 # Safety padding so a word at the very edge of the line still has its audio.
 PREROLL = 0.40

@@ -27,7 +27,7 @@ import json
 import os
 from collections import deque
 
-from ..detection.latency import APPEAR_LAG, CLEAR_LAG
+from ..detection import APPEAR_LAG, CLEAR_LAG
 
 TRANSCRIPTS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),

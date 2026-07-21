@@ -2,8 +2,8 @@
 
 The map (one stage per file, chained by worker.py on a background thread):
 
-    capture.py     screen grab (mss)                  every frame   ~10 ms
-    diff.py        what changed since last frame      every frame   <1 ms
+    diff.py        screen grab (mss) + what changed   every frame   ~10 ms
+                   since the last frame
     stability.py   watch live captions for vanishing  every frame   <1 ms
     gpu.py         which device the two neural stages run on: GPU via
                    DirectML when the venv has it, CPU otherwise (fail-open)
@@ -16,7 +16,6 @@ The map (one stage per file, chained by worker.py on a background thread):
                    A CJK Word is one character -- nothing here knows where a
                    Japanese word ends, so cappa.jmdict resolves it at lookup
                    time and span_word() fuses the range back into one Word
-    latency.py     the pipeline's measured reaction times (appear/clear lags)
     worker.py      the background thread gluing it all together — plus its
                    scan helper thread, so neural scans run BESIDE the loop
                    and frame grabs never pause for one
@@ -24,6 +23,14 @@ The map (one stage per file, chained by worker.py on a background thread):
 Every stage except worker.py is Qt-free and testable in isolation. The UI
 talks to this package only through CaptureWorker's Qt signals (imported from
 .worker directly — this __init__ stays import-light so other packages can
-reach sentence.py/latency.py without pulling in Qt or the capture stack):
-`regions` carries ("appeared"/"cleared", box) events plus the live caption
-boxes; `fps` the capture rate."""
+reach sentence.py and the lag constants below without pulling in Qt or the
+capture stack): `regions` carries ("appeared"/"cleared", box) events plus
+the live caption boxes; `fps` the capture rate."""
+
+# The pipeline's measured reaction times: each appear/clear stamp trails
+# the real on-screen event by the pipeline's own reaction, so consumers
+# that turn stamps back into real moments (the flashcard audio window, the
+# OCR transcript log) subtract these.
+APPEAR_LAG = 0.30  # the settle debounce (~0.1s) plus up to one scan interval
+CLEAR_LAG = 0.35   # tracking.CLEAR_CONFIRM must pass before a vanish is
+                   # trusted
