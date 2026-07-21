@@ -1,10 +1,12 @@
-"""Thin wrappers over the Win32 / DWM calls the overlay needs.
+"""Thin wrappers over the Win32 / DWM / winmm calls the app needs.
 
 Keeping every ctypes and pywin32 detail in one Qt-free module lets the rest of
-the app talk about windows and input in plain terms (``root_window_at``,
-``key_down``, ``set_click_through``) instead of raw handles and bit flags."""
+the app talk about windows, input and audio in plain terms
+(``root_window_at``, ``key_down``, ``set_click_through``,
+``play_mp3_blocking``) instead of raw handles and bit flags."""
 
 import ctypes
+import itertools
 import os
 from ctypes import wintypes
 
@@ -186,6 +188,40 @@ def exclude_from_capture(hwnd):
     return bool(ctypes.windll.user32.SetWindowDisplayAffinity(
         hwnd, _WDA_EXCLUDEFROMCAPTURE
     ))
+
+
+# Each play gets its own MCI alias: overlapping plays (the user re-clicks 🔊
+# while the last word still sounds) must not collide on a shared device name.
+_MCI_SEQ = itertools.count(1)
+
+
+def play_mp3_blocking(path):
+    """Play an MP3 file and return when it finishes.
+
+    MCI (winmm) renders it: three commands, no Qt, no media backend spin-up —
+    right-sized for a one-second pronunciation clip. `play … wait` blocks the
+    CALLING thread for the clip's length, so callers keep this off the UI
+    thread. The path must be quoted inside the command string (a space in an
+    unquoted path is MCI error 259), and the device is always closed — a
+    leaked open device keeps the file locked, which would break the caller's
+    temp-file cleanup. Raises OSError carrying MCI's own error text."""
+    winmm = ctypes.windll.winmm
+    alias = "cappa_mp3_%d" % next(_MCI_SEQ)
+
+    def run(cmd):
+        rc = winmm.mciSendStringW(cmd, None, 0, None)
+        if rc:
+            buf = ctypes.create_unicode_buffer(255)
+            winmm.mciGetErrorStringW(rc, buf, 255)
+            raise OSError(buf.value or "MCI error %d" % rc)
+
+    run('open "%s" type mpegvideo alias %s' % (path, alias))
+    try:
+        run("play %s wait" % alias)
+    finally:
+        # rc is deliberately ignored: a close after a failed open is 263
+        # ("device not open"), which is exactly the state we want anyway.
+        winmm.mciSendStringW("close %s" % alias, None, 0, None)
 
 
 def set_click_through(hwnd, enabled):
