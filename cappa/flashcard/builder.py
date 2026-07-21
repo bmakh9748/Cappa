@@ -1,8 +1,8 @@
 """Build card draft folders from clicked OCR words.
 
 The audio half (window choice + cutting) lives in clip.py; this module owns
-what the CARD says — text, provenance, translations, screenshot — and the
-draft's assembly order."""
+what the CARD says — text, sentence provenance, translations, the
+click-time screenshot — and the draft's assembly order."""
 
 import os
 import time
@@ -14,8 +14,6 @@ from ..translate import TranslationError, clean_word, translate
 from . import prefs, timing
 from .clip import SOURCE_STRONG_SCORE, write_audio
 from .model import CardDraft
-from .provenance import attach_sentence_provenance
-from .screenshot import write_png_bytes, write_region_png
 from .writer import CARDS_DIR, next_card_dir, write_artifacts
 
 # An OCR word is snapped to its aligned caption-track word only when the two
@@ -32,7 +30,7 @@ OCR_SHAKY_CONF = 0.8
 
 # Sentence completion (word-at-a-time hardsubs): how far a transcript row's
 # stamps may sit from a track word's start and still count as OUR sighting
-# of that word — appear/clear stamps run ~0.3s late (detection/latency.py).
+# of that word — appear/clear stamps run ~0.3s late (detection.APPEAR_LAG).
 FILL_SLACK = 0.45
 # Two logged rows of the same text within this are one sighting (a re-read),
 # not two words.
@@ -41,6 +39,99 @@ FILL_DEDUP = 0.5
 # character-similar — loose enough for OCR misreads ('pbyed' ~ 'played'),
 # tight enough that a watermark never claims a real word.
 FILL_TEXT_SIM = 0.5
+
+
+def capture_png(region):
+    """PNG bytes for the tracked area (physical left, top, width, height)."""
+    import mss
+    import mss.tools
+
+    left, top, width, height = region
+    with mss.mss() as sct:
+        shot = sct.grab({
+            "left": int(left),
+            "top": int(top),
+            "width": int(width),
+            "height": int(height),
+        })
+    return mss.tools.to_png(shot.rgb, shot.size)
+
+
+def write_region_png(region, path):
+    """Capture the tracked area and write it to path as PNG."""
+    write_png_bytes(path, capture_png(region))
+
+
+def write_png_bytes(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def _box_tuple(value):
+    if not value:
+        return None
+    try:
+        return tuple(int(v) for v in value)
+    except Exception:
+        return None
+
+
+def _box_contains(outer, inner, slack=3):
+    if outer is None or inner is None:
+        return False
+    return (inner[0] >= outer[0] - slack
+            and inner[1] >= outer[1] - slack
+            and inner[2] <= outer[2] + slack
+            and inner[3] <= outer[3] + slack)
+
+
+def attach_sentence_provenance(word, draft, sentence=None):
+    """Record whether the clicked Word belongs to the saved OCR sentence.
+    `sentence` is what the card actually saves — the word's own line, or the
+    joined CaptionBlock when the caption spanned several lines; it defaults
+    to the word's line."""
+    if sentence is None:
+        sentence = getattr(word, "sentence", None)
+    draft.word_box = _box_tuple(getattr(word, "box", None))
+    draft.sentence_box = _box_tuple(getattr(sentence, "box", None))
+    words = list(getattr(sentence, "words", []) or [])
+
+    # A clicked Word is normally one of the sentence's own. On CJK lines it
+    # is not: the hotspots are per character and the clicked word was fused
+    # out of a character RANGE (sentence.span_word), so it is matched by the
+    # line it came from plus the offset it starts at — which is its first
+    # character's hotspot, and lands on the same index the old identity test
+    # would have given.
+    identity_index = -1
+    for i, candidate in enumerate(words):
+        if candidate is word:
+            identity_index = i
+            break
+    if identity_index < 0 and getattr(word, "index", -1) >= 0:
+        for i, candidate in enumerate(words):
+            if (getattr(candidate, "sentence", None)
+                    is getattr(word, "sentence", None)
+                    and getattr(candidate, "index", -1) == word.index):
+                identity_index = i
+                break
+    draft.word_index = identity_index
+
+    if sentence is None:
+        draft.notes.append("sentence missing from clicked word")
+        return
+    if identity_index < 0:
+        draft.notes.append("clicked word is not in its sentence word list")
+    if not _box_contains(draft.sentence_box, draft.word_box):
+        draft.notes.append("clicked word box is outside the sentence box")
+
+    cleaned = clean_word(getattr(word, "text", "")) or getattr(word, "text", "")
+    if cleaned and cleaned.casefold() not in (draft.sentence or "").casefold():
+        draft.notes.append("clicked word text not found in OCR sentence")
+
+    draft.sentence_verified = (
+        identity_index >= 0
+        and _box_contains(draft.sentence_box, draft.word_box)
+    )
 
 
 def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
