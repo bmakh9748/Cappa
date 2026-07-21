@@ -26,7 +26,9 @@ to the noun 来.
 DATA. JMdict is the property of the Electronic Dictionary Research and
 Development Group, used under their licence (http://www.edrdg.org/edrdg/
 licence.html) -- attribution is required and lives in the README and the
-settings window. The pack is the jmdict-simplified JSON release (~11 MB),
+settings window. The pack is the jmdict-simplified EXAMPLES release
+(~14 MB): the same dictionary plus Tatoeba jp/en sentence pairs on ~29k
+entries, which is what lets the popup's Examples tab answer offline. It is
 downloaded once and converted to a stdlib sqlite3 database so lookups are
 indexed and memory stays flat however big the dictionary gets. Same lazy,
 fail-soft, no-pack-means-no-change contract as lexicon.py: without a pack
@@ -48,8 +50,19 @@ import urllib.request
 PACKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "..", "jmdict_packs")
 DB_NAME = "jmdict-eng.sqlite3"
-ZIP_NAME = "jmdict-eng.json.zip"   # kept so a rebuild costs no download
-SCHEMA_VERSION = "2"
+ZIP_NAME = "jmdict-examples-eng.json.zip"  # kept so a rebuild costs no
+                                           # download; the -examples variant
+                                           # since schema 3
+OLD_ZIP_NAME = "jmdict-eng.json.zip"  # the pre-examples cache a schema-2
+                                      # machine still holds: no examples in
+                                      # it, but the full dictionary — the
+                                      # offline BRIDGE when the new zip
+                                      # can't be fetched at upgrade time
+SCHEMA_VERSION = "3"
+
+MAX_EXAMPLES = 5   # jp/en pairs kept per entry (sense order, so the best
+                   # sense's sentences win): the popup shows 3, and a common
+                   # verb's full crop would bloat the pack for nothing
 
 # Kanji spellings JMdict marks as rare, outdated, irregular or search-only.
 # 「の」's entry lists 乃 and 之 as kanji; showing a particle as 乃 is
@@ -60,7 +73,7 @@ _RARE_KANJI = frozenset(("rK", "oK", "iK", "sK"))
 # download URL is resolved through the releases API rather than pinned.
 _RELEASES = ("https://api.github.com/repos/scriptin/jmdict-simplified"
              "/releases/latest")
-_ASSET = re.compile(r"^jmdict-eng-\d[^/]*\.json\.zip$")
+_ASSET = re.compile(r"^jmdict-examples-eng-\d[^/]*\.json\.zip$")
 _UA = "Cappa/0.1 (local language-learning flashcard app)"
 
 # Only Japanese needs this: every other language Cappa reads has spaces, or
@@ -272,14 +285,19 @@ POS_LABELS = {
 class Entry:
     """One dictionary entry: a headword, its reading, and its senses."""
 
-    __slots__ = ("headword", "reading", "senses", "common")
+    __slots__ = ("headword", "reading", "senses", "common", "examples")
 
-    def __init__(self, headword, reading, senses, common):
+    def __init__(self, headword, reading, senses, common, examples=()):
         self.headword = headword
         self.reading = reading
         # [(pos_tags, glosses)] in JMdict's own sense order.
         self.senses = senses
         self.common = common
+        # ((japanese, english, surface_used), ...) — the pack's Tatoeba
+        # pairs, flattened across senses in sense order. surface_used is the
+        # form the sentence actually contains (ＣＤプレイヤー for the entry
+        # ＣＤプレーヤー), which is what the popup bolds.
+        self.examples = examples
 
     def tags(self):
         """The first sense's parts of speech, as readable labels."""
@@ -356,34 +374,94 @@ def ready():
     return _open() is not None
 
 
+def variant():
+    """'examples' when the open pack carries example pairs, 'plain' for a
+    bridge build from the old zip, None without a pack."""
+    conn = _open()
+    if conn is None:
+        return None
+    with _lock:
+        row = conn.execute(
+            "SELECT v FROM meta WHERE k='variant'").fetchone()
+    return row[0] if row else "plain"
+
+
+def _old_zip():
+    """The pre-schema-3 cached zip's bytes, or None."""
+    path = os.path.normpath(os.path.join(PACKS_DIR, OLD_ZIP_NAME))
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _drop_old_zip():
+    """Delete the superseded plain zip once an examples pack exists — it
+    can never rebuild anything current, and it is 11 MB."""
+    try:
+        os.remove(os.path.normpath(os.path.join(PACKS_DIR, OLD_ZIP_NAME)))
+    except OSError:
+        pass
+
+
 def ensure_pack(lang, timeout=120.0):
     """Download and build the JMdict pack if it isn't there yet. Lazy and
     fail-soft, exactly like lexicon.ensure_pack: returns True when a usable
-    pack is present afterwards. Safe on a worker thread; never raises."""
+    pack is present afterwards. Safe on a worker thread; never raises.
+
+    Offline resilience: a schema-2 machine upgrading without network would
+    otherwise lose Japanese lookup entirely (the version gate rejects its
+    pack, and only the network has the examples zip). Its OLD cached zip
+    still holds the full dictionary, so it builds a BRIDGE pack — examples
+    empty, everything else whole — and a later session with network
+    upgrades the bridge to the examples variant in place."""
     if lang != LANG:
         return False
-    if ready():
+    if ready() and variant() == "examples":
         return True
+    bridged = ready()          # a plain pack works; the upgrade is optional
     try:
         os.makedirs(PACKS_DIR, exist_ok=True)
         raw = _download(timeout)
-        if raw is None:
-            return False
+    except Exception as exc:
+        print("[cappa] jmdict: pack download failed: %s" % exc)
+        raw = None
+    if raw is None and not bridged:
+        raw = _old_zip()
+        if raw is not None:
+            print("[cappa] jmdict: offline — building the bridge pack from "
+                  "the old zip (no offline examples until a download "
+                  "succeeds)")
+    if raw is None:
+        return bridged
+    try:
+        if bridged:
+            # Windows cannot os.replace a file this process holds open; a
+            # concurrent hover can reopen it mid-close and fail the swap,
+            # which the except keeps fail-soft (bridge kept, retried next
+            # session).
+            close()
         _build(raw)
     except Exception as exc:
         print("[cappa] jmdict: pack build failed: %s" % exc)
-        return False
+        return ready()         # the bridge (or nothing) is what remains
     global _looked
     with _lock:
         _looked = False       # force a re-open of the new file
     ok = ready()
+    if ok and variant() == "examples":
+        _drop_old_zip()       # the bridge fuel is spent
     print("[cappa] jmdict: pack %s" % ("ready" if ok else "FAILED"))
     return ok
 
 
 def _download(timeout):
-    """The jmdict-eng release zip, as bytes. Kept on disk: rebuilding the
-    database after a schema change must not re-download 11 MB."""
+    """The jmdict-examples-eng release zip, as bytes. Kept on disk:
+    rebuilding the database after a schema change must not re-download
+    14 MB."""
     cached = os.path.normpath(os.path.join(PACKS_DIR, ZIP_NAME))
     if os.path.isfile(cached):
         with open(cached, "rb") as f:
@@ -394,7 +472,8 @@ def _download(timeout):
     asset = next((a for a in release.get("assets", [])
                   if _ASSET.match(a.get("name", ""))), None)
     if asset is None:
-        print("[cappa] jmdict: no jmdict-eng asset in the latest release")
+        print("[cappa] jmdict: no jmdict-examples-eng asset in the latest "
+              "release")
         return None
     print("[cappa] jmdict: downloading %s (%.1f MB)"
           % (asset["name"], asset["size"] / 1e6))
@@ -429,7 +508,7 @@ def _build(zipped):
             CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT);
             CREATE TABLE entries (
                 id INTEGER PRIMARY KEY, headword TEXT, reading TEXT,
-                common INTEGER, senses TEXT);
+                common INTEGER, senses TEXT, examples TEXT);
             CREATE TABLE lookup (key TEXT NOT NULL, id INTEGER NOT NULL);
         """)
         conn.execute("INSERT INTO meta VALUES ('schema', ?)",
@@ -437,15 +516,28 @@ def _build(zipped):
         conn.execute("INSERT INTO meta VALUES ('version', ?)",
                      (str(data.get("version", "")),))
         rows, keys = [], []
+        total_examples = 0
         for i, word in enumerate(data.get("words", [])):
             kanji = word.get("kanji") or []
             kana = word.get("kana") or []
             senses = []
+            # The release's per-sense examples, flattened to entry level in
+            # sense order (a popup shows word examples, not sense examples)
+            # and capped: [japanese, english, surface_used].
+            examples = []
             for sense in word.get("sense") or []:
                 glosses = [g["text"] for g in sense.get("gloss") or []
                            if g.get("lang", "eng") == "eng"]
                 if glosses:
                     senses.append([sense.get("partOfSpeech") or [], glosses])
+                for ex in sense.get("examples") or []:
+                    if len(examples) >= MAX_EXAMPLES:
+                        break
+                    pair = {s.get("lang"): s.get("text", "")
+                            for s in ex.get("sentences") or []}
+                    jp, en = pair.get("jpn", ""), pair.get("eng", "")
+                    if jp and en:
+                        examples.append([jp, en, ex.get("text", "")])
             if not senses:
                 continue
             common_kanji = [k for k in kanji
@@ -458,11 +550,18 @@ def _build(zipped):
             reading = kana[0]["text"] if kana else ""
             common = any(k.get("common") for k in kanji) or \
                 any(k.get("common") for k in kana)
+            total_examples += len(examples)
             rows.append((i, headword, reading, int(common),
-                         json.dumps(senses, ensure_ascii=False)))
+                         json.dumps(senses, ensure_ascii=False),
+                         json.dumps(examples, ensure_ascii=False)))
             for form in kanji + kana:
                 keys.append((form["text"], i))
-        conn.executemany("INSERT INTO entries VALUES (?,?,?,?,?)", rows)
+        # Which release fed this build: the examples variant, or the old
+        # plain zip working as the offline bridge (ensure_pack upgrades a
+        # 'plain' pack when a download later succeeds).
+        conn.execute("INSERT INTO meta VALUES ('variant', ?)",
+                     ("examples" if total_examples else "plain",))
+        conn.executemany("INSERT INTO entries VALUES (?,?,?,?,?,?)", rows)
         conn.executemany("INSERT INTO lookup VALUES (?,?)", keys)
         conn.execute("CREATE INDEX idx_lookup ON lookup(key)")
         conn.commit()
@@ -487,14 +586,15 @@ def _entries_for(form):
         return []
     with _lock:
         rows = conn.execute(
-            "SELECT e.headword, e.reading, e.senses, e.common "
+            "SELECT e.headword, e.reading, e.senses, e.common, e.examples "
             "FROM lookup l JOIN entries e ON e.id = l.id "
             "WHERE l.key = ? "
             "ORDER BY (e.headword = ?) DESC, e.common DESC, e.id",
             (form, form)
         ).fetchall()
-    return [Entry(h, r, [(tuple(p), tuple(g)) for p, g in json.loads(s)], c)
-            for h, r, s, c in rows]
+    return [Entry(h, r, [(tuple(p), tuple(g)) for p, g in json.loads(s)], c,
+                  tuple(tuple(x) for x in json.loads(e or "[]")))
+            for h, r, s, c, e in rows]
 
 
 def _to_hiragana(text):

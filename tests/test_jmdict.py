@@ -5,7 +5,7 @@ the lines whose script-run hotspots came apart as 戻 | るのも and produced a
 card for the fragment 戻. Every assertion below is a click that used to be
 wrong.
 
-Needs the JMdict pack (~11 MB, downloaded once into jmdict_packs/). Without
+Needs the JMdict pack (~14 MB, downloaded once into jmdict_packs/). Without
 it the whole file SKIPS: the pack is a runtime download like the OCR models,
 not something a checkout carries.
 """
@@ -142,6 +142,78 @@ assert "strength" in match.entry.senses[0][1][0]
 assert jmdict.word_at("拔山蓋世", 2).entry.headword == "抜山蓋世"
 assert jmdict.lookup("拔山蓋世")[0].headword == "抜山蓋世"
 print("PASS: a brush font's old kanji still find the modern entry")
+
+# ---- the pack's own example sentences (schema 3) ------------------------
+# The examples release carries Tatoeba jp/en pairs; 食べる is common enough
+# that an empty crop means the build dropped them.
+assert jmdict.variant() == "examples", jmdict.variant()
+entry = jmdict.lookup("食べる")[0]
+assert isinstance(entry.examples, tuple), type(entry.examples)
+assert entry.examples, "食べる lost its pack examples"
+for jp, en, used in entry.examples:
+    assert jp and en, (jp, en)
+    assert used == "" or used in jp, (used, jp)   # the form the sentence uses
+assert len(entry.examples) <= jmdict.MAX_EXAMPLES
+# An entry nothing was ever written about still answers with a tuple.
+assert isinstance(jmdict.lookup("抜山蓋世")[0].examples, tuple)
+print("PASS: entries carry the pack's jp/en example pairs")
+
+# ---- the offline bridge: an old zip keeps lookup alive across schema 3 --
+# A schema-2 machine upgrading OFFLINE must not lose Japanese lookup: its
+# old cached zip builds a 'plain' bridge pack, and a later session with
+# network upgrades it in place. Miniature synthetic zips keep this instant.
+import io
+import json
+import shutil
+import tempfile
+import zipfile
+
+
+def mini_zip(with_examples):
+    sense = {"partOfSpeech": ["v5r"],
+             "gloss": [{"lang": "eng", "text": "to return"}]}
+    if with_examples:
+        sense["examples"] = [{
+            "text": "戻る",
+            "sentences": [{"lang": "jpn", "text": "すぐ戻る。"},
+                          {"lang": "eng", "text": "I'll be right back."}],
+        }]
+    words = [{"kanji": [{"text": "戻る", "common": True, "tags": []}],
+              "kana": [{"text": "もどる", "common": True, "tags": []}],
+              "sense": [sense]}]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("mini.json",
+                   json.dumps({"version": "mini", "words": words},
+                              ensure_ascii=False))
+    return buf.getvalue()
+
+
+orig_dir = jmdict.PACKS_DIR
+orig_download = jmdict._download
+tmpdir = tempfile.mkdtemp(prefix="jmdict_bridge_")
+try:
+    jmdict.close()
+    jmdict.PACKS_DIR = tmpdir
+    with open(os.path.join(tmpdir, jmdict.OLD_ZIP_NAME), "wb") as f:
+        f.write(mini_zip(False))
+    jmdict._download = lambda timeout: None          # the network is down
+    assert jmdict.ensure_pack("ja"), "bridge build failed"
+    assert jmdict.variant() == "plain", jmdict.variant()
+    assert jmdict.lookup("戻る")[0].examples == ()
+    # A later session with network upgrades the bridge in place…
+    jmdict._download = lambda timeout: mini_zip(True)
+    assert jmdict.ensure_pack("ja"), "bridge upgrade failed"
+    assert jmdict.variant() == "examples", jmdict.variant()
+    assert jmdict.lookup("戻る")[0].examples, "upgrade dropped the examples"
+    # …and the spent old zip is cleaned up.
+    assert not os.path.exists(os.path.join(tmpdir, jmdict.OLD_ZIP_NAME))
+    print("PASS: an old zip bridges an offline upgrade, then upgrades itself")
+finally:
+    jmdict._download = orig_download
+    jmdict.close()
+    jmdict.PACKS_DIR = orig_dir
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 # ---- a word the pack has never heard of resolves to nothing ------------
 # (Not fullwidth latin: JMdict really does list Ｚ, 'Z; z'.)
