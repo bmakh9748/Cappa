@@ -18,7 +18,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UNIT = [
     "test_diff.py",          # frame diff: change masks + settle debounce
     "test_merge.py",         # detector fragments -> one box per text line
-    "test_classifier.py",    # junk-text tag (clock/URL/handle off cards)
     "test_tracking.py",      # ledger: live boxes, fingerprints, clear debounce
     "test_watcher.py",       # instant caption-vanished detection
     "test_translate.py",     # popup word cleanup (pure, no network)

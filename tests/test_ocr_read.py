@@ -1,8 +1,7 @@
 """detection/ocr.py reads real caption text — JAPANESE and English — from
 full-res frame crops. Multi-script reading is a hard requirement: the app is
-used on Japanese videos, and the text rules must see real text there (and
-even if they don't, fail-open means captions still work — that path is
-covered by test_classifier.py; THIS test proves the happy path).
+used on Japanese videos, and even where reads fail, fail-open means
+captions still work — THIS test proves the happy path.
 
 Windowless, but loads the rec model (~2 s). Skips cleanly if no
 Japanese-capable font is installed to render the sample."""

@@ -107,7 +107,7 @@ def selection_word(sentence, a, b):
 
 class Sentence:
     __slots__ = ("text", "box", "words", "appeared_at", "cleared_at",
-                 "ocr_conf", "junk")
+                 "ocr_conf")
 
     def __init__(self, text, box, word_spans):
         """word_spans: [(word_text, word_box), ...] left to right."""
@@ -128,11 +128,6 @@ class Sentence:
         # (card_0060: an unsupported page read at conf 0.45 made a
         # confident-looking garbage card).
         self.ocr_conf = None
-        # Why the text rules call this row junk (a watermark handle, a clock,
-        # a URL), or None. Set by the worker; junk stays CLICKABLE but must
-        # not let onto a card: a stamped row never joins a caption block
-        # (below) and never enters the transcript.
-        self.junk = None
         # Wall-clock (time.monotonic) when detection first accepted this line
         # and when its clear was noticed — the anchors the flashcard's audio
         # clip is cut from. 0.0 until set by the ledger. cleared_at stays 0.0
@@ -212,15 +207,10 @@ def caption_block(sentence, captions):
     LINE, so a two-line subtitle is two Sentences and a card made from
     either would carry only half the caption (card_0031). Grows
     transitively, so a three-line caption joins through its middle row.
-    Always contains `sentence` -- even a junk one, since clicking it is a
-    deliberate act; but a junk row NEVER joins someone else's block
-    (card_0028: the channel's '@korrathetaymi' watermark sits a row above
-    the caption, matches its glyph height, and became part of the card's
-    sentence)."""
+    Always contains `sentence`."""
     block = [sentence]
     pool = [s for s in (captions or [])
-            if s is not sentence and getattr(s, "words", None)
-            and not getattr(s, "junk", None)]
+            if s is not sentence and getattr(s, "words", None)]
     grew = True
     while grew:
         grew = False

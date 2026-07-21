@@ -85,10 +85,7 @@ class OcrTranscriptLog:
         for s in sentences:
             current.add(id(s))
             if (id(s) not in self._live and id(s) not in self._done
-                    and video_id and (getattr(s, "text", "") or "").strip()
-                    # A watermark/clock/URL is on screen, but it is not a
-                    # caption and this file is a transcript of captions.
-                    and not getattr(s, "junk", None)):
+                    and video_id and (getattr(s, "text", "") or "").strip()):
                 self._live[id(s)] = (s, video_id)
         for key in list(self._live):
             s, vid = self._live[key]

@@ -64,25 +64,6 @@ def test_row_still_up_logged_from_stamp():
         print("PASS ledger: stamped-but-listed rows log once, monos always")
 
 
-def test_stamped_junk_never_enters_the_transcript():
-    """A watermark/clock/URL is on screen but is not a caption, and this
-    file is a transcript of captions (card_0028: '@korrathetaymi', read at
-    confidence 1.000). Detection keeps such rows clickable; the worker
-    stamps them, and the ledger passes them by."""
-    with tempfile.TemporaryDirectory() as tmp:
-        log = OcrTranscriptLog(root=tmp)
-        caption = _row("DIED ON-THE", 100.0)
-        mark = _row("@korrathetaymi", 100.0)
-        mark.junk = "url/handle '@korrathetaymi'"
-        log.observe("vidJ", [caption, mark])
-        caption.cleared_at = mark.cleared_at = 101.0
-        log.observe("vidJ", [])
-        with open(os.path.join(tmp, "vidJ.jsonl"), encoding="utf-8") as f:
-            recs = [json.loads(l) for l in f]
-        assert [r["text"] for r in recs] == ["DIED ON-THE"], recs
-        print("PASS ledger: a stamped watermark never enters the transcript")
-
-
 def test_no_video_id_logs_nothing():
     """observe() only records when given a live video id. A paused/hidden/
     closed tab yields None (decided by source_wiring.live_video_id), and
@@ -129,7 +110,7 @@ def test_seconds_per_word_measures_this_videos_pace():
         print("PASS ledger: the video's own pace, from multi-word rows only")
 
 
-def test_silent_vanish_and_junk_not_logged():
+def test_silent_vanish_not_logged():
     """A row that vanished without a clear stamp (region reset) writes
     nothing — better no record than a made-up one. Empty-text rows and
     rows with no video id never enter the ledger at all."""
@@ -329,10 +310,9 @@ def test_window_hint_matches_block_rows_and_drops_inverted_ends():
 if __name__ == "__main__":
     test_row_logged_on_clear()
     test_row_still_up_logged_from_stamp()
-    test_stamped_junk_never_enters_the_transcript()
     test_no_video_id_logs_nothing()
     test_seconds_per_word_measures_this_videos_pace()
-    test_silent_vanish_and_junk_not_logged()
+    test_silent_vanish_not_logged()
     test_blip_loop_logs_once_rewatch_logs_again()
     test_loop_pass_repeats_are_logged()
     test_window_hint_recalls_first_sighting()

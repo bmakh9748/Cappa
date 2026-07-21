@@ -12,7 +12,6 @@ The map (one stage per file, chained by worker.py on a background thread):
                    (one hotspot per WORD; per CHARACTER on CJK lines; a
                    tall column is also tried as VERTICAL text, best wins)
     tracking.py    ledger: live boxes, clear debounce, drift
-    classifier.py  the junk-text tag (clock/URL/handle stays off cards)
     sentence.py    the data model a read line becomes: a Sentence of Words.
                    A CJK Word is one character -- nothing here knows where a
                    Japanese word ends, so cappa.jmdict resolves it at lookup

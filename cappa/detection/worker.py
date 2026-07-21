@@ -28,7 +28,6 @@ one only when something changed, and never more often than SCAN_INTERVAL):
                    the venv has DirectML; gpu.py)     (beside the loop)
     ocr.py         read text in accepted boxes        on accept     ~0.01 s
     tracking.py    match scans to what's already live
-    classifier.py  stamp junk TEXT (clock/URL/handle) so it stays off cards
 
 Every text line the detector finds becomes a live, hoverable caption — the
 old caption-vs-not gates (geometry, burst, baseline muting) rejected too
@@ -50,7 +49,6 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from .. import arabic, jmdict, kanjidic, lexicon
 from .capture import ScreenCapture
-from .classifier import text_verdict
 from .detector import TextDetector
 from .diff import FrameDiff, DOWNSCALE
 from .ocr import TextReader
@@ -378,16 +376,8 @@ class CaptureWorker(QObject):
             print("[cappa]   live caption content changed; re-reading")
         fresh = ledger.fresh(scan)
         for box in fresh:
-            # Read the text (~10 ms, only for genuinely new boxes). Junk
-            # text (a clock, a URL, a handle) is stamped, never rejected:
-            # the box stays clickable, but the row must not join a caption
-            # block, a card sentence, or the transcript (card_0028:
-            # '@korrathetaymi', read at confidence 1.000, joined
-            # 'DIED ON THE' as one sentence).
+            # Read the text (~10 ms, only for genuinely new boxes).
             sentence, conf = reader.read(img, box)
-            why = text_verdict(sentence.text if sentence else None, conf)
-            if why is not None and sentence is not None:
-                sentence.junk = why
             ledger.accept(box, sample, DOWNSCALE, sentence, grab_time)
             watcher.watch(box)
             events.append(("appeared", box))

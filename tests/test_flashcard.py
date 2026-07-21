@@ -324,26 +324,6 @@ tall = caption_block(stack[1], stack)
 assert tall == stack[:3], [s.text for s in tall]   # clicked row 1 + neighbours
 print("PASS: caption blocks cap at 3 lines around the clicked one")
 
-# card_0028: the channel's watermark sits one row above the caption, matches
-# its glyph height, and joined the card's sentence ('@korrathetaymi DIED
-# ON-THE'). Detection keeps it CLICKABLE -- it must never join someone
-# else's block. Geometry is the real card's, scaled to this frame.
-caption = Sentence("DIED ON-THE", (244, 510, 432, 547),
-                   [("DIED", (244, 510, 318, 547)),
-                    ("ON-THE", (330, 510, 432, 547))])
-mark = Sentence("@korrathetaymi", (220, 454, 430, 494),
-                [("@korrathetaymi", (220, 454, 430, 494))])
-for s in (caption, mark):
-    s.appeared_at = 100.0
-assert caption_block(caption, [caption, mark]) == [mark, caption], \
-    "unstamped, the watermark stacks (this is the bug)"
-mark.junk = "url/handle '@korrathetaymi'"
-assert caption_block(caption, [caption, mark]) == [caption], \
-    "a junk row must not join the caption's block"
-# ...but clicking the watermark ITSELF is a deliberate act and still works.
-assert caption_block(mark, [caption, mark])[0] is mark
-print("PASS: a stamped watermark stays clickable but never joins a card")
-
 # Rows whose boxes BLEED into each other are still one block. Geometry is
 # card_0052's: an outline/glow hardsub whose detector boxes overlap 18px
 # vertically (82px-tall rows), which the old strict no-overlap rule read as

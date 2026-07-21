@@ -16,8 +16,8 @@ genuinely NEW — a few times a minute, never per scan — so the detection
 path gets no slower.
 
 Fail-open by design: if the model can't load or a read errors, read()
-returns (None, 0.0), and callers must treat unreadable text as NO EVIDENCE,
-never as junk. Captions in scripts the model can't read worked before OCR
+returns (None, 0.0), and callers must treat unreadable text as NO
+EVIDENCE. Captions in scripts the model can't read worked before OCR
 landed and must keep working. Fail-open is never SILENT, though: a raising
 read reports itself on stderr, once per failure kind."""
 
