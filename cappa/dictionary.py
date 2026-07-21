@@ -20,6 +20,12 @@ need the video's language NAMED in settings (the response is keyed by
 language section) and an English target (en.wiktionary defines in
 English); otherwise meaning() is a pass-through to translate().
 
+The same fetched page also carries the entry's hand-picked EXAMPLE
+sentences (parsedExamples: source text, English translation, and for
+scripts like Arabic a transliteration). examples() reads them out for the
+popup's Examples tab; the per-page cache below means a popup that already
+showed the meaning gets its examples without a second request.
+
 Blocking network calls -- callers keep this off the UI thread, like
 translate(). requests does the fetch when installed (it rides in with
 deep-translator, and some machines' cert stores — this one's included —
@@ -54,6 +60,13 @@ _SECTION_FOR = {}
 
 _CACHE_MAX = 256
 _cache = {}   # (word, sentence, source_lang) -> formatted text
+
+# Parsed definition pages, keyed by the exact page title tried. One popup
+# click reads the same page twice (definitions, then examples when the tab
+# is opened) — the second read must not be a second request. None means the
+# page 404'd; network errors are NOT cached (the next click retries).
+_PAGE_CACHE_MAX = 64
+_pages = {}
 
 _TAG = re.compile(r"<[^>]+>")
 _WORDISH = re.compile(r"[^\W\d_]{3,}")
@@ -90,6 +103,17 @@ def _fetch(word):
     return r.json()
 
 
+def _page(word):
+    """_fetch through the page cache. Raises on network trouble."""
+    if word in _pages:
+        return _pages[word]
+    data = _fetch(word)
+    if len(_pages) >= _PAGE_CACHE_MAX:
+        _pages.clear()
+    _pages[word] = data
+    return data
+
+
 def lookup(word, lang):
     """Wiktionary entries for `word` in the video's language: a list of
     (part_of_speech, [sense, ...]) in page order. [] when the word has no
@@ -100,7 +124,7 @@ def lookup(word, lang):
     section = _SECTION_FOR.get(lang, lang)
     for candidate in dict.fromkeys((word.lower(), word)):
         try:
-            data = _fetch(candidate)
+            data = _page(candidate)
         except Exception:
             return None
         if data is None:
@@ -117,6 +141,38 @@ def lookup(word, lang):
                                 senses))
         if entries:
             return entries
+    return []
+
+
+def examples(word, lang):
+    """The example sentences on `word`'s Wiktionary entry, in page order:
+    [(sentence, translation, transliteration)] — plain text, "" for a field
+    the entry doesn't carry (English entries have no translation; only
+    romanized scripts have a transliteration). [] when the entry exists but
+    holds no examples (coverage is per-editor and spotty); None on network
+    trouble, mirroring lookup(). Same casing dance as lookup(), same pages,
+    same cache — a word whose meaning was already shown costs nothing."""
+    section = _SECTION_FOR.get(lang, lang)
+    for candidate in dict.fromkeys((word.lower(), word)):
+        try:
+            data = _page(candidate)
+        except Exception:
+            return None
+        if data is None:
+            continue
+        blocks = data.get(section) or []
+        if not blocks:
+            continue              # page exists, but not in this language
+        out = []
+        for entry in blocks:
+            for d in entry.get("definitions") or []:
+                for ex in d.get("parsedExamples") or []:
+                    text = _clean_gloss(ex.get("example"))
+                    if text:
+                        out.append((text,
+                                    _clean_gloss(ex.get("translation")),
+                                    _clean_gloss(ex.get("transliteration"))))
+        return out
     return []
 
 

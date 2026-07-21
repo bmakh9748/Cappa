@@ -123,6 +123,67 @@ def main():
         translate.SOURCE_LANGUAGE, translate.TARGET_LANGUAGE = (orig_source,
                                                                 orig_target)
         D._cache.clear()
+
+    # ---- examples(): the entry's parsedExamples, on the cached page ------
+    # A canned page in the real REST shape (probed 2026-07-20): examples
+    # are HTML with <b> on the headword; translation/transliteration are
+    # optional per item; a definition without examples contributes nothing.
+    PAGE = {"id": [{"partOfSpeech": "Verb", "language": "Indonesian",
+                    "definitions": [
+                        {"definition": "to eat",
+                         "parsedExamples": [
+                             {"example": "Pagi ini saya <b>makan</b> ikan.",
+                              "translation":
+                                  "This morning I <b>ate</b> fish."},
+                             {"example": "Dia suka <b>makan</b>.",
+                              "translation": "He likes to <b>eat</b>.",
+                              "transliteration": "dia suka makan"}]},
+                        {"definition": "to consume"}]}]}
+    orig_fetch = D._fetch
+    fetched = []
+
+    def fake_fetch(word):
+        fetched.append(word)
+        return PAGE
+
+    try:
+        D._pages.clear()
+        D._cache.clear()
+        D._fetch = fake_fetch
+        got = D.examples("Makan", "id")
+        assert got == [
+            ("Pagi ini saya makan ikan.", "This morning I ate fish.", ""),
+            ("Dia suka makan.", "He likes to eat.", "dia suka makan"),
+        ], got
+        # lookup() on the same word reads the SAME cached page: one fetch
+        # for the whole popup, meanings and examples both.
+        assert D.lookup("Makan", "id"), "canned page lost its definitions"
+        assert fetched == ["makan"], fetched
+        print("PASS dictionary: examples parse, and share lookup's one fetch")
+
+        # No page at all (404 on both casings): empty, not an error.
+        D._pages.clear()
+        D._fetch = lambda word: None
+        assert D.examples("ngupil", "id") == []
+        # The page exists but not in this language: also empty.
+        D._pages.clear()
+        D._fetch = fake_fetch
+        assert D.examples("makan", "sv") == []
+        # Network trouble: None, the same shape lookup() answers.
+        D._pages.clear()
+
+        def dead(word):
+            raise OSError("down")
+
+        D._fetch = dead
+        assert D.examples("makan", "id") is None
+        assert D.lookup("makan", "id") is None
+        print("PASS dictionary: examples mirror lookup's empty/failure "
+              "contract")
+    finally:
+        D._fetch = orig_fetch
+        D._pages.clear()
+        D._cache.clear()
     print("ALL PASS")
 
 
