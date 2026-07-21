@@ -43,8 +43,10 @@ MAX_POS_LINES = 3     # at most this many "pos: ..." lines on the card
 MAX_SENSES = 2        # senses kept per part of speech
 MAX_SENSE_CHARS = 90  # a long encyclopedic gloss is trimmed, not shown whole
 
-# settings.py language codes -> en.wiktionary section keys (1:1 except these).
-_SECTION_FOR = {"zh-CN": "zh"}
+# settings.py language codes -> en.wiktionary section keys. Empty since the
+# roster reduced to ar/ja/id (all 1:1); the mapping stays for the day a
+# non-1:1 code (zh-CN -> zh) returns.
+_SECTION_FOR = {}
 
 _CACHE_MAX = 256
 _cache = {}   # (word, sentence, source_lang) -> formatted text

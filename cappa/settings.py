@@ -11,33 +11,23 @@ import os
 _PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings.json")
 
-# Languages offered in the pickers: (Google/deep-translator code, display name).
-# Trim or extend freely; codes must be ones GoogleTranslator accepts.
-_LANGUAGES = [
-    ("en", "English"),
-    ("ar", "Arabic"),
-    ("es", "Spanish"),
-    ("fr", "French"),
-    ("de", "German"),
-    ("it", "Italian"),
-    ("pt", "Portuguese"),
-    ("ru", "Russian"),
-    ("tr", "Turkish"),
-    ("id", "Indonesian"),
-    ("ja", "Japanese"),
-    ("ko", "Korean"),
-    ("zh-CN", "Chinese (Simplified)"),
-    ("hi", "Hindi"),
-]
-
-# The language clicked words are translated INTO (the user's language).
-TARGET_LANGUAGES = list(_LANGUAGES)
+# Languages offered in the pickers: (Google/deep-translator code, display
+# name). A deliberate REDUCTION (2026-07-21, user call): the app teaches in
+# English only, and the sources are exactly the three languages being
+# studied — so each one can be made genuinely deep (dictionary, examples,
+# grammar anatomy, audio) instead of fourteen being shallow. "auto" left the
+# picker with the wide roster: every one of its branches means a capability
+# turned off, and a video is now always in a named language.
+TARGET_LANGUAGES = [("en", "English")]
 DEFAULT_TARGET = "en"
 
-# The language the video is IN (what the user is learning). "auto" keeps the
-# old per-word auto-detect, which fails on lone words -- naming it fixes that.
-SOURCE_LANGUAGES = [("auto", "Auto-detect")] + list(_LANGUAGES)
-DEFAULT_SOURCE = "auto"
+# The language the video is IN (what the user is learning).
+SOURCE_LANGUAGES = [
+    ("ar", "Arabic"),
+    ("id", "Indonesian"),
+    ("ja", "Japanese"),
+]
+DEFAULT_SOURCE = "id"   # the language the user studies most right now
 
 _TARGET_CODES = {code for code, _ in TARGET_LANGUAGES}
 _SOURCE_CODES = {code for code, _ in SOURCE_LANGUAGES}

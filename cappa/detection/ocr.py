@@ -42,11 +42,9 @@ VERTICAL_MIN_ASPECT = 1.6
 # settings.source_language code -> rapidocr LangRec value. Only scripts the
 # default multi-script model CANNOT read are listed; Latin/CJK languages stay
 # on the default, which measured more accurate than their per-language packs.
+# Of the reduced roster (ar/ja/id) only Arabic needs a script pack.
 _SCRIPT_MODELS = {
     "ar": "arabic",
-    "ru": "cyrillic",
-    "hi": "devanagari",
-    "ko": "korean",
 }
 
 

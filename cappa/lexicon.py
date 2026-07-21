@@ -46,9 +46,10 @@ SHORT_PIECE_MAX_RANK = 2000  # split point -- top ~2000, where real short words
                              # name 'JUNEEEEDD' tore into 'june eee dd'.
 
 # Languages whose scripts separate words with spaces -- the only ones a
-# splitter can help. CJK is excluded by omission (handled by ocr._is_cjk too).
-_PACK_LANG = {"en", "id", "ar", "es", "fr", "de", "pt", "ru", "it", "tr",
-              "nl", "pl", "vi", "hi", "fa"}
+# splitter can help. CJK is excluded by omission (handled by ocr._is_cjk
+# too). Only the reduced roster's spaced languages plus "en" (unreachable
+# from the picker, but the English pack is the test suite's fixture).
+_PACK_LANG = {"en", "id", "ar"}
 
 _lock = threading.Lock()
 _packs = {}   # lang -> {word: rank} or None (looked up, absent/failed)

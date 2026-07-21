@@ -18,15 +18,24 @@ def main():
     with tempfile.TemporaryDirectory() as d:
         S._PATH = os.path.join(d, "settings.json")
         try:
-            # Missing file -> defaults (target en, source auto).
+            # Missing file -> defaults.
             d0 = S.load()
             assert d0.target_language == S.DEFAULT_TARGET
             assert d0.source_language == S.DEFAULT_SOURCE
 
-            # Roundtrip valid choices for both.
-            S.save(S.Settings("ar", "id"))
+            # Roundtrip valid choices for both. The roster is reduced (en
+            # target; ar/id/ja sources), so the roundtrip uses a non-default
+            # source to prove it really persisted.
+            S.save(S.Settings("en", "ar"))
             got = S.load()
-            assert got.target_language == "ar" and got.source_language == "id"
+            assert got.target_language == "en" and got.source_language == "ar"
+            # A pre-reduction settings.json (dropped codes) falls back.
+            with open(S._PATH, "w", encoding="utf-8") as f:
+                json.dump({"target_language": "fr", "source_language": "es"},
+                          f)
+            old = S.load()
+            assert old.target_language == S.DEFAULT_TARGET
+            assert old.source_language == S.DEFAULT_SOURCE
             print("PASS settings: save/load roundtrip (target + source)")
 
             # Unknown codes fall back independently.
