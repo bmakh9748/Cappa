@@ -121,7 +121,6 @@ class BrowserBridge:
         self._thread = None
         self.port = port         # actual bound port (differs if port=0)
         self.error = ""
-        self.cookies_at = 0.0    # monotonic time cookies last arrived
 
     # ------------------------------------------------------------ lifecycle
     def start(self):
@@ -417,7 +416,6 @@ class BrowserBridge:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
-        self.cookies_at = time.monotonic()
         return n
 
     # ------------------------------------------------------------- handler

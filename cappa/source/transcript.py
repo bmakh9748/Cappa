@@ -49,9 +49,6 @@ class Transcript:
     def __bool__(self):
         return bool(self.tokens)
 
-    def full_text(self):
-        return " ".join(t.text for t in self.tokens)
-
     def window_for(self, ocr_text, near_t=None, min_score=MIN_SCORE,
                    radius=SEARCH_RADIUS):
         """Best [start, end] window for an OCR line, or None if nothing clears

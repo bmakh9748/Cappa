@@ -104,7 +104,7 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
     if prefs.include("audio"):
         write_audio(draft, sentence, recorder, now, source, near_t)
         _snap_to_track(draft)
-    _translate_fields(draft, translator, sentence)
+    _translate_fields(draft, translator)
     # A row clicked mid-life often clears while the card is still building
     # (translations take a beat): refresh the stamp so the metadata records
     # the row's FULL on-screen life, not the life as of the click. The audio
@@ -341,7 +341,7 @@ def _snap_to_track(draft):
         draft.notes.append("caption track correction: %s -> %s" % (old, new))
 
 
-def _translate_fields(draft, translator, sentence=None):
+def _translate_fields(draft, translator):
     if prefs.include("word_translation"):
         try:
             # Dictionary definitions when Wiktionary knows the word; the
