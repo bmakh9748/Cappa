@@ -26,12 +26,10 @@ import urllib.parse
 import urllib.request
 
 from . import winapi
+from .dictionary import TIMEOUT, USER_AGENT   # one clock, one UA string
 
 API = ("https://translate.google.com/translate_tts"
        "?ie=UTF-8&client=tw-ob&tl=%s&q=%s")
-USER_AGENT = "Cappa/0.1 (local language-learning flashcard app)"
-TIMEOUT = 6.0     # matches dictionary.py: room for a slow round-trip while
-                  # the 🔊 sits disabled, not long enough to feel dead
 MAX_CHARS = 200   # the endpoint's hard cap: 200 chars is audio, 201 is a 400
 _CACHE_MAX = 32   # ~8 KB of MP3 per word; enough for a viewing session
 _cache = {}       # (text, lang) -> mp3 bytes

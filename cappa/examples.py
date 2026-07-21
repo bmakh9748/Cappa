@@ -30,18 +30,16 @@ import urllib.request
 
 from . import dictionary, jmdict
 from . import translate as translate_mod
+from .dictionary import TIMEOUT, USER_AGENT   # one clock, one UA string
 
 LIMIT = 3       # examples the popup shows: enough to see the word in the
                 # wild, few enough that the popup doesn't blanket the caption
                 # (an open popup swallows every hotspot under its geometry)
 MAX_CHARS = 90  # skip sentences that would wrap into a paragraph
 FETCH = 10      # Tatoeba rows requested; the length filter eats some
-TIMEOUT = 6.0   # matches dictionary.py: room for a slow round-trip, short
-                # enough that the tab's "Loading…" never feels hung
 
 API = ("https://api.tatoeba.org/unstable/sentences"
        "?lang=%s&q=%s&trans%%3Alang=%s&sort=relevance&limit=%d")
-USER_AGENT = "Cappa/0.1 (local language-learning flashcard app)"
 
 # settings codes (Google's) -> Tatoeba's ISO 639-3, for the reduced roster
 # (en is the target side). A language missing here just skips the Tatoeba

@@ -50,7 +50,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from .. import arabic, jmdict, kanjidic, lexicon
 from .capture import ScreenCapture
 from .detector import TextDetector
-from .diff import FrameDiff, DOWNSCALE
+from .diff import CHANGED_FRACTION, DOWNSCALE, FrameDiff
 from .ocr import TextReader
 from .stability import CaptionWatcher
 from .tracking import CaptionLedger
@@ -84,18 +84,6 @@ SCAN_INTERVAL_CPU = 0.2    # the CPU cadence, unchanged from the CPU era:
                            # Also used when placement is UNKNOWN (gpu.py
                            # couldn't read the session) — conservative.
 RESCAN_AFTER_CLEAR = 0.15  # a cleared line usually means a new one is up
-ACTIVITY_FRACTION = 0.004  # sampled pixels changing = "something happened".
-                           # Matches diff.py's CHANGED_FRACTION. Was 0.001:
-                           # compression shimmer on a STATIC scene tripped
-                           # it every frame, so a paused video was scanned
-                           # at the full cadence forever (user report,
-                           # 2026-07-18: "no need to do it a million times a
-                           # second"). Under this bar a quiet screen scans
-                           # at the FORCED_RESCAN 1 Hz, which also nets any
-                           # appearance too subtle for the gate (~1 s worst
-                           # case, the user's own stated tolerance). A real
-                           # caption appearing measures well above 0.004 of
-                           # the sampled grid.
 FORCED_RESCAN = 1.0        # max seconds between scans while tracking, even
                            # on a quiet screen: the automatic version of the
                            # launcher's "Refresh words" — catches whatever
@@ -271,8 +259,11 @@ class CaptureWorker(QObject):
                             dirty = True
                             last_scan = 0.0
                         events = scan_events
+                        # diff's own settle bar: under it a quiet screen
+                        # scans at FORCED_RESCAN 1 Hz; a real caption
+                        # measures well above it (shimmer stays below).
                         if (diff.mask.sum()
-                                >= ACTIVITY_FRACTION * diff.mask.size):
+                                >= CHANGED_FRACTION * diff.mask.size):
                             dirty = True
                         if time.perf_counter() - last_scan >= FORCED_RESCAN:
                             dirty = True
