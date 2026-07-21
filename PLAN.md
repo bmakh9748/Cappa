@@ -1869,3 +1869,180 @@ paused/quiet screen scans at the FORCED_RESCAN 1 Hz — the user's stated
 tolerance — instead of the full cadence forever. Sim x5: ALL PASS, 0
 crashes, re-reads 0-5 per run (was dozens; the sim burns adversarial
 noise over its captions), clears all confirmed.
+
+### 2026-07-20 — the popup grows up: tabs, example sentences, a voice
+
+The user's ask: "more information on the word when I press on it — a tab
+for definitions, some example sentences, maybe the pronunciation thingy."
+Shipped as: the popup header gains a 🔊, and the body becomes two tabs,
+Meaning (the old definition content, unchanged) and Examples (the word
+inside real sentences, translations under each, clicked form bolded,
+source credited).
+
+Sources, all free/key-less/no-LLM per the house rule. Examples:
+(1) Japanese answers OFFLINE — the JMdict pack switched to the
+jmdict-examples-eng variant (14 MB vs 11), schema 2 -> 3: entries carry up
+to 5 Tatoeba jp/en pairs plus the surface form each sentence uses (what
+the popup bolds). Senses stayed 2-tuples — examples ride their own column
+— so no sense-unpack site anywhere else changed. (2) Elsewhere the word's
+own Wiktionary entry: the SAME definition endpoint already served
+parsedExamples {example, translation?, transliteration?} all along; a new
+per-page cache means meaning + examples cost one fetch. Coverage is
+spotty (tidur: 6 senses, 0 examples), so (3) Tatoeba's key-less API tops
+up to 3: exact-form search (q==word), trans:lang filter guarantees a
+translation in the user's target language, ISO 639-3 code map, ~2 s/call,
+CC-BY credit rendered under the sentences and in the README. Both web
+sources are LAZY: fetched only for a committed word AND only once the
+Examples tab is actually opened — most clicks never pay. Previews (the
+live drag) still touch nothing but the pack.
+
+Pronunciation: the free translate_tts endpoint (MP3, hard 200-char cap —
+201 is a 400, measured) fetched+cached in cappa/pronounce.py, played by
+winmm MCI in winapi.py (three commands, thread-agnostic, verified rc=0 on
+this machine; quoted paths mandatory, unique alias per play, close in
+finally or the temp file stays locked). QtMultimedia was considered and
+rejected: an event-loop-bound player + backend spin-up for a 1 s clip,
+and playback would have dragged Win32 out of winapi.py. 🔊 disarms under
+source="auto" (no voice to name) with a tooltip saying why.
+
+Tab mechanics that bit: QTabWidget sizes to its TALLEST page, so the
+hidden page gets Ignored size policy per switch (_fit_tabs) and every
+switch re-runs _place(); switching must never hide()/show() the popup —
+the overlay drops the committed word highlight the instant the popup
+stops being visible. Thread->UI stays the house pattern: two new queued
+signals (_examples_ready, _spoken) behind the same _req stale-guard as
+the translation.
+
+Found on the way, fixed: en.wiktionary rejects this machine's bare-urllib
+TLS (cert store: "certificate has expired"), so EVERY definition had been
+silently falling back to the Google guess — dictionary._fetch now goes
+requests-first (requests already ships via deep-translator; urllib stays
+the no-requests path). Tatoeba and translate_tts never minded urllib.
+
+Tests: test_examples.py (source merge/dedupe/laziness contracts, canned
+payloads in the probed API shapes), test_pronounce.py (cache, temp-file
+lifecycle, displayable failures — player faked), extensions to
+test_dictionary (examples parse + shared fetch), test_jmdict (pack pairs
+present, used-form consistency), test_word_popup (offline ja examples
+with a web-exploder armed; web laziness: nothing until the tab opens,
+once when it does; 🔊 speaks the headword; WA_DontShowOnScreen so the
+visibility-guarded signal fills land windowless). Pack rebuilt locally:
+217,974 entries, examples verified on 食べる/戻る/面倒.
+
+One regression the LIVE sweep caught: test_captions_live closed the popup
+via findChild(QPushButton) — "the first button ever created" — which
+stopped being ✕ the day the header grew a 🔊 before it. The test now asks
+for "popupClose" by name; full pass after.
+
+The adversarial review pass (five lenses, verified findings only) then
+tightened the first cut. Behavior: a partial example list assembled while
+a source was down is no longer cached (the next click retries — the same
+rule the page cache lives by); a thin pack crop (98% of example-bearing
+JMdict entries hold 1-2 pairs) no longer latches the Examples tab as done
+— the pairs render instantly, stay up while the Tatoeba top-up runs, and
+a failed top-up keeps them instead of an error line; a schema-2 machine
+upgrading OFFLINE now builds a 'plain' BRIDGE pack from its old cached
+zip (full dictionary, no examples) instead of losing Japanese lookup
+entirely, and the bridge upgrades itself in place on a later online
+session (meta 'variant' row; the spent old zip is then deleted).
+Hardening: _bolded matches on RAW text and escapes the parts separately
+(matching after escaping could land inside an entity and corrupt the
+markup); Tatoeba rows and translations flagged is_unapproved are
+skipped; pack sentences obey the same MAX_CHARS cap as the web; TTS 4xx
+answers say "no audio for this language", not "check your internet";
+say() takes still_wanted so audio fetched for a word the popup left
+behind stays unplayed; ⚠ on 🔊 resets after a successful retry. Manifest
+and docs: requests declared in requirements.txt (the python-bidi rule),
+rule 3's no-Qt list names examples/pronounce, winapi's docstring owns
+audio now, the no-asset log line names the right asset. New regression
+coverage for all of it, including a synthetic-zip bridge/upgrade test in
+test_jmdict (instant — no real pack involved).
+
+### 2026-07-21 — three languages, done properly: the reduction and the Grammar tab
+
+The user's call: stop being fourteen languages wide and one popup deep.
+The roster is now ar/id/ja teaching into en only (settings.py holds the
+two lists; "auto" left the picker — every one of its branches meant a
+capability turned off, and load() silently migrates any stale saved
+code to the defaults). The code-keyed maps shrank with it: _SCRIPT_MODELS
+to {ar: arabic}, lexicon._PACK_LANG to {en, id, ar} (en stays — it is the
+test suite's fixture), examples._ISO3 to the four live codes,
+dictionary._SECTION_FOR to empty. DEFAULT_SOURCE is now "id".
+
+And the popup grew its third tab, Grammar — the word's anatomy, per
+language, each data source probed and verified before being chosen:
+
+ARABIC — cappa/arabic.py wraps CAMeL Tools installed SLIM (--no-deps +
+six/pyrsistent/cachetools/emoji/tqdm/muddler = 20 MB pure Python; the
+full install drags ~1 GB of torch that only the neural disambiguators
+use). The GPL-2 calima-msa-r13 morphology db (40.5 MB zip, pinned URL +
+sha256 — the probe's zip hash was wrong, re-measured against the real
+asset; the r13 sibling s31 is LDC-restricted and must never be fetched)
+downloads once into arabic_packs/, jmdict-contract. Ranking by the db's
+own pos_lex_logprob beat the 89 MB MLE pack on the probe samples — no
+extra model. Form I-X is derived from the vocalized lemma's letter
+skeleton (harakat stripped WITHOUT eating the shadda, wasla/madda
+normalized, shadda expanded); verified X/V/VII/I on استغفر/يتكلمون/
+انكسر/يكتبون. Loanwords (root NTWS) say "loanword" instead of faking a
+root. Cost: ~400 MB RAM once loaded, ~2 s lazy first load — paid on the
+popup's grammar thread, never the UI.
+
+JAPANESE — cappa/kanjidic.py: the kanjidic2-en release of the SAME
+jmdict-simplified repo the JMdict pack uses (1.25 MB zip -> 1 MB sqlite,
+10,384 characters, CC BY-SA 4.0/EDRDG) — per-kanji meanings, on/kun,
+strokes (strokeCounts[0]; the rest are known miscounts), school grade
+(8 = secondary jōyō, 9/10 names), OLD-scale JLPT. The tab explains each
+deinflection step through grammar_notes.JA_GRAMMAR_NOTES — 28 one-liners
+keyed by the EXACT reason strings _RULES emits, with a tripwire test
+(key sets must stay equal) so a new rule without its note fails the
+suite.
+
+INDONESIAN — cappa/indonesian.py: Sastrawi (MIT, 1 MB, pure Python,
+5/5 on the probe words, ~28 ms) recovers the root; the affixes are read
+off the surface by diffing against it, regrowing the letter meN-/peN-
+nasal assimilation swallowed (menulis = men + (t)ulis), labeling
+circumfixes by startswith so pembelajaran's pem…bel wrapper still reads
+as pe-...-an. Labels map to ID_AFFIX_NOTES ("-an" and "-nya" added to
+the probe's ten — makanan and bukunya are too common to shrug at).
+
+The tab itself follows the Examples tab's exact laziness contract:
+committed word AND tab in front, helper thread, _req guard, latch reset
+on error. Renderers are module-level pure functions (testable without
+opening the popup).
+
+Deferred, noted for later: kanjium pitch accent as a jmdict build-time
+join (91.4% exact-key coverage measured — schema 5 when it lands); the
+kaikki.org Indonesian Wiktionary extract as an offline id pack (4.7 MB
+sqlite proven in the probe, needs a hosting decision — kaikki marks the
+source file deprecated); freeing the Arabic analyzer's 400 MB on
+language switch.
+
+The adversarial review pass (23 raw findings, 18 confirmed after
+verification agents ran the code live) then caught what mattered most —
+the Grammar tab teaching WRONG grammar. Arabic verb_form()'s check order
+was backwards twice: startswith("ان") claimed VII before the VIII shape
+could see انتظر/انتقل/انتشر (iftaʿala of ن-initial roots — among the most
+common verbs in subtitles), and s[0]=="أ" claimed IV before the
+doubled-middle test could see أَكَّد/أَثَّر (faʿʿala of hamza-initial
+roots). Both reordered with why-comments; آ (madda) now reads as the
+fused ʾā- of hamza-initial IV (آمَن was falling to III); and the IX shape
+— which an assimilated-ت Form VIII geminate (اِضْطَرّ) shares exactly —
+is now root-gated: IX only when the radicals sit at s[1:3], else an
+honest None. Indonesian: -kan imperatives (pertahankan) no longer read
+as pe-...-an circumfixes (the 'an' in 'kan' fooled endswith); -nya peels
+FIRST so kesalahannya keeps its ke-...-an; reduplications get their own
+X-X label (makan-makan was 'being -kan''d); Sastrawi's confident lies
+(berikan -> root 'ikan', fish) are pinned in an override table; fused
+di+place (dimana) stays silent rather than teaching the passive.
+Resilience: empty grammar content no longer latches (a pack landing
+mid-session retries on tab reopen), the popup names WHY a tab is empty
+(pack downloading vs library not installed — rule 7), the Japanese
+grammar path now applies the Meaning tab's exact lemma-agreement test so
+two tabs can't tell two stories, ensure_pack skips the 40 MB Arabic
+download when camel-tools can never load it, and a leftover zip cleanup
+can't fail an already-installed pack. Docs: AGENTS' UNIT wording now
+admits the pack tests' one-time downloads (SKIP offline), README's
+stale 'four unit tests' sentence fixed. All regressions pinned in
+test_arabic (20 form cases + live انتظر/يؤكد round-trips),
+test_indonesian (20 anatomy cases + di+place silence), and the X-X row
+joined ID_AFFIX_NOTES with its tripwire.
