@@ -130,7 +130,9 @@ assert overlay._popup.geometry() in overlay._interactive_rects(), (
 )
 from PySide6.QtWidgets import QPushButton
 
-overlay._popup.findChild(QPushButton).click()
+# By name: the bare findChild(QPushButton) grabbed whatever button was
+# created first, which stopped being ✕ the day the popup grew its 🔊.
+overlay._popup.findChild(QPushButton, "popupClose").click()
 assert not overlay._popup.isVisible(), "FAIL: close button did not close it"
 print("PASS: %d word hotspots; click opens popup carrying the Word, close "
       "button closes it (first: %r)" % (len(words), words[0].text))

@@ -1,17 +1,43 @@
 """The box that opens when a caption word is clicked.
 
-Shows the word (edge punctuation stripped), a divider line, and what it
-means. For JAPANESE that is a real dictionary entry, resolved offline from
-the JMdict pack the overlay already looked the word up in: the headword and
-its reading, the part-of-speech tags, the numbered senses, and — when the
-word on screen was inflected — the chain that led back to the dictionary
-form (戻って, -te → 戻る). No network call at all on that path.
+Shows the word (edge punctuation stripped), a 🔊 that pronounces it, and
+three tabs: Meaning, Examples and Grammar. For JAPANESE the meaning is a real
+dictionary entry, resolved offline from the JMdict pack the overlay already
+looked the word up in: the headword and its reading, the part-of-speech
+tags, the numbered senses, and — when the word on screen was inflected —
+the chain that led back to the dictionary form (戻って, -te → 戻る). No
+network call at all on that path.
 
 Every other language keeps the old route: `dictionary.meaning` (Wiktionary
 definitions, contextual Google translation as hint and fallback), fetched on
 a helper thread so the UI never blocks — the popup opens instantly with
 "Translating…" and fills in when the call returns, or shows the failure (no
 network) as a ⚠ line. NO LLM on either path.
+
+The Examples tab shows the word inside real sentences (cappa.examples: the
+JMdict pack's own pairs for Japanese, Wiktionary + Tatoeba elsewhere), with
+translations, the clicked form bolded, and the CC-BY credit. The pack's
+pairs are free and render immediately; the web sources cost seconds, so
+they load lazily — only for a COMMITTED word, and only once the tab is
+actually in front — on a helper thread behind the same request-id guard as
+the translation. 🔊 speaks the shown headword via cappa.pronounce (free
+TTS + winmm playback, both blocking) on a helper thread too; it is disabled
+while the video's language is "auto", which has no voice to pick.
+
+The Grammar tab is the word's anatomy, per language: Japanese explains
+each deinflection step (grammar_notes) and breaks the headword into its
+kanji (kanjidic pack — meanings, readings, strokes, grade, JLPT); Arabic
+shows the root, the verb form with its pattern one-liner, the vocalized
+lemma and the analyzer's English gloss (cappa.arabic — the first analysis
+loads a 400 MB database, which is why this tab is as lazy as Examples);
+Indonesian shows the root under the affixes with each affix explained
+(cappa.indonesian). Same laziness contract as Examples: computed only for
+a committed word with the tab in front, on a helper thread, req-guarded.
+
+Tab switches must never hide()/show() the popup — the overlay kills the
+committed word highlight the moment the popup stops being visible — and a
+switched tab re-runs _place(), because the popup's height is the height of
+the page in front (_fit_tabs).
 
 Two ways in. `show_for` is the COMMIT: it freezes the click moment and arms
 the card button. `preview_for` is the live definition of a span the user is
@@ -36,13 +62,17 @@ rects while visible, which is what lets its controls receive clicks. The
 overlay supplies `region_provider` (the tracked area to screenshot) and
 `recorder` (the audio ring buffer) — the popup owns the threading."""
 
+import html
+import re
 import threading
 
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+                               QTabWidget, QVBoxLayout, QWidget)
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
-from .. import flashcard, jmdict
+from .. import (arabic, examples, flashcard, grammar_notes, indonesian,
+                jmdict, kanjidic, pronounce)
+from .. import translate as translate_mod
 from ..detection.sentence import caption_block, click_pool
 from ..dictionary import meaning
 from ..translate import TranslationError, clean_word
@@ -80,13 +110,60 @@ _STYLE = """
         font-style: italic;
         padding: 0 2px;
     }
-    #divider {
-        background: rgba(255, 255, 255, 36);
-    }
     QLabel#translation {
         color: #c6cad8;
         font-size: 13px;
         padding: 0 2px;
+    }
+    QLabel#examples {
+        color: #c6cad8;
+        font-size: 12px;
+        padding: 0 2px;
+    }
+    QLabel#grammar {
+        color: #c6cad8;
+        font-size: 12px;
+        padding: 0 2px;
+    }
+    QLabel#exsource {
+        color: #5d6172;
+        font-size: 10px;
+        padding: 0 2px;
+    }
+    QTabWidget::pane {
+        border: none;
+        border-top: 1px solid rgba(255, 255, 255, 36);
+    }
+    QTabBar::tab {
+        color: #8a8fa2;
+        background: transparent;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: bold;
+        border: none;
+        border-bottom: 2px solid transparent;
+    }
+    QTabBar::tab:selected {
+        color: #5ad2ff;
+        border-bottom: 2px solid #5ad2ff;
+    }
+    QTabBar::tab:hover:!selected {
+        color: #c6cad8;
+    }
+    QPushButton#speak {
+        color: #bfe9ff;
+        background: rgba(90, 210, 255, 26);
+        border: none;
+        border-radius: 6px;
+        padding: 2px 7px;
+        font-size: 12px;
+    }
+    QPushButton#speak:hover {
+        background: rgba(90, 210, 255, 60);
+    }
+    QPushButton#speak:disabled {
+        color: rgba(199, 201, 212, 110);
+        background: rgba(255, 255, 255, 12);
     }
     QPushButton#anki {
         color: #bfe9ff;
@@ -121,6 +198,130 @@ _STYLE = """
 """
 
 
+# --------------------------------------------------------- the Grammar tab
+# Pure string builders (no widgets — they run on the popup's helper
+# thread). Each returns rich text, or "" when the language has nothing to
+# teach about the word; the popup shows a quiet "no notes" line then.
+
+def _dim(text):
+    return '<span style="color:#8a8fa2">%s</span>' % text
+
+
+def _para(inner):
+    return '<p style="margin:0 0 7px 0">%s</p>' % inner
+
+
+def _grammar_html(surface, lemma):
+    """The Grammar tab's content for a word, by the video's language:
+    Japanese = the inflection chain explained + a per-kanji breakdown;
+    Arabic = root, form (with its pattern one-liner), lemma and gloss;
+    Indonesian = the root under the affixes, each affix explained."""
+    lang = translate_mod.SOURCE_LANGUAGE
+    if lang == jmdict.LANG:
+        return _japanese_grammar(surface, lemma)
+    if lang == arabic.LANG:
+        return _arabic_grammar(surface)
+    if lang == indonesian.LANG:
+        return _indonesian_grammar(surface)
+    return ""
+
+
+def _japanese_grammar(surface, lemma):
+    parts = []
+    match = jmdict.word_at(surface, 0) if surface else None
+    # Same agreement test as the Meaning tab's inflection line: the match
+    # must cover the whole surface AND resolve to the lemma the overlay
+    # committed — two tabs must never tell two stories about one word.
+    covers = (match is not None and match.end == len(surface)
+              and (not lemma or match.base == lemma))
+    base = match.base if covers else (lemma or surface)
+    if covers and match.reasons:
+        steps = []
+        for reason in match.reasons:
+            note = grammar_notes.JA_GRAMMAR_NOTES.get(reason)
+            steps.append("<b>%s</b> — %s" % (html.escape(reason),
+                                             html.escape(note))
+                         if note else html.escape(reason))
+        parts.append(_para("%s → %s<br>%s" % (
+            html.escape(surface), html.escape(base), "<br>".join(steps))))
+    for k in kanjidic.breakdown(base):
+        meta = []
+        if k.strokes:
+            meta.append("%d strokes" % k.strokes)
+        if k.grade:
+            meta.append("Grade %d" % k.grade if k.grade <= 6
+                        else ("Jōyō" if k.grade == 8 else "Names"))
+        if k.jlpt:
+            meta.append("JLPT %d (old)" % k.jlpt)
+        readings = []
+        if k.onyomi:
+            readings.append("On " + "・".join(k.onyomi[:3]))
+        if k.kunyomi:
+            # '.' splits stem/okurigana and '-' marks suffix position in
+            # KANJIDIC; neither reads well raw.
+            readings.append("Kun " + "・".join(
+                r.lstrip("-").replace(".", "") for r in k.kunyomi[:4]))
+        line = "<b>%s</b>&nbsp; %s" % (
+            html.escape(k.literal), html.escape("; ".join(k.meanings[:4])))
+        for extra in (" · ".join(readings), " · ".join(meta)):
+            if extra:
+                line += "<br>" + _dim(html.escape(extra))
+        parts.append(_para(line))
+    if not parts and not kanjidic.ready():
+        # No chain and no kanji rows BECAUSE the pack isn't here yet —
+        # say so instead of an implausible "no notes" (rule 7).
+        return _para(_dim("Kanji pack not downloaded yet — it fetches in "
+                          "the background on a Japanese video."))
+    return "".join(parts)
+
+
+def _arabic_grammar(surface):
+    analysis = arabic.analyze(surface)
+    if analysis is None:
+        # Unknown word, or no machinery at all? The difference must be
+        # visible (rule 7) — status() is settled now that analyze() ran.
+        reason = arabic.status()
+        return _para(_dim(html.escape(reason))) if reason else ""
+    head = []
+    if analysis.loan:
+        head.append(_dim("Loanword — no Arabic root"))
+    elif analysis.root:
+        head.append("Root: <b>%s</b>" % html.escape(analysis.root))
+    lemma_line = html.escape(analysis.lemma)
+    if analysis.pos:
+        lemma_line += " " + _dim("(%s)" % html.escape(analysis.pos))
+    head.append(lemma_line)
+    if analysis.gloss:
+        head.append(_dim(html.escape(analysis.gloss)))
+    parts = [_para("<br>".join(head))]
+    if analysis.form:
+        note = grammar_notes.arabic_form_note(analysis.form)
+        if note:
+            pattern, translit, text = note
+            parts.append(_para("Form %s — %s <i>%s</i><br>%s" % (
+                html.escape(analysis.form), html.escape(pattern),
+                html.escape(translit), _dim(html.escape(text)))))
+        else:
+            parts.append(_para("Form %s" % html.escape(analysis.form)))
+    return "".join(parts)
+
+
+def _indonesian_grammar(surface):
+    got = indonesian.anatomy(surface)
+    if got is None:
+        reason = indonesian.status()   # settled by the anatomy() attempt
+        return _para(_dim(html.escape(reason))) if reason else ""
+    stem, labels = got
+    notes = dict(grammar_notes.ID_AFFIX_NOTES)
+    parts = [_para("Root: <b>%s</b>" % html.escape(stem))]
+    for label in labels:
+        note = notes.get(label)
+        if note:
+            parts.append(_para("<b>%s</b> — %s" % (
+                html.escape(label), _dim(html.escape(note)))))
+    return "".join(parts)
+
+
 class WordPopup(QWidget):
     # (request id, translation, error) — emitted from the fetch thread; Qt
     # queues it onto the UI thread because the emitter is a foreign thread.
@@ -129,6 +330,12 @@ class WordPopup(QWidget):
     # No request id: a built draft EXISTS on disk and must be resolved in the
     # preview whatever the popup has moved on to, or it syncs itself later.
     _built = Signal(object, str)
+    # (request id, [Example], error) from the examples-fetch thread.
+    _examples_ready = Signal(int, object, str)
+    # (request id, rich text, error) from the grammar thread.
+    _grammar_ready = Signal(int, str, str)
+    # (request id, error) from the pronounce thread: re-arms 🔊.
+    _spoken = Signal(int, str)
 
     def __init__(self, parent, region_provider=None, recorder=None,
                  source=None, captions_provider=None):
@@ -159,18 +366,25 @@ class WordPopup(QWidget):
                                          # time (it drifts while the popup sits)
         self._preview = None   # the card preview window, built on first use
 
+        self._ex_shown = None  # (text, lemma) the Examples tab was filled
+                               # for — the lazy load's "already done" latch
+        self._ex_offline = False  # pack pairs are on the tab right now, so
+                                  # a failed top-up must not blank them
+        self._gr_shown = None  # the Grammar tab's latch, same contract
+
         self._word_label = QLabel("", self)
         self._word_label.setObjectName("word")
         self._reading = QLabel("", self)   # 【もどる】, Japanese only
         self._reading.setObjectName("reading")
+        self._speak = QPushButton("🔊", self)
+        self._speak.setObjectName("speak")
+        self._speak.setCursor(Qt.PointingHandCursor)
+        self._speak.setEnabled(False)   # armed per word by _refresh_speak
+        self._speak.clicked.connect(self._say_word)
         close = QPushButton("✕", self)
         close.setObjectName("popupClose")
         close.setCursor(Qt.PointingHandCursor)
         close.clicked.connect(self.hide)
-        divider = QWidget(self)
-        divider.setObjectName("divider")
-        divider.setAttribute(Qt.WA_StyledBackground, True)
-        divider.setFixedHeight(1)
         self._tags = QLabel("", self)      # Godan verb (-ru) · intransitive
         self._tags.setObjectName("tags")
         self._tags.setWordWrap(True)
@@ -183,16 +397,56 @@ class WordPopup(QWidget):
         self._trans.setObjectName("translation")
         self._trans.setWordWrap(True)
         self._trans.setMaximumWidth(MAX_TEXT_WIDTH)
+        self._examples = QLabel("", self)  # rich text: sentences + bolding
+        self._examples.setObjectName("examples")
+        self._examples.setTextFormat(Qt.RichText)
+        self._examples.setWordWrap(True)
+        self._examples.setMaximumWidth(MAX_TEXT_WIDTH)
+        self._exsource = QLabel("", self)  # "from Tatoeba (CC BY)" credit
+        self._exsource.setObjectName("exsource")
+        self._exsource.setWordWrap(True)
+        self._exsource.setMaximumWidth(MAX_TEXT_WIDTH)
         self._anki = QPushButton("Create Anki card", self)
         self._anki.setObjectName("anki")
         self._anki.setCursor(Qt.PointingHandCursor)
         self._anki.setEnabled(False)  # a card needs the translation
         self._anki.clicked.connect(self._create_card)
 
+        # The tab pages. The pane's top border draws the divider the old
+        # single-page popup had as its own widget.
+        meaning_page = QWidget(self)
+        mv = QVBoxLayout(meaning_page)
+        mv.setContentsMargins(0, 8, 0, 0)
+        mv.setSpacing(6)
+        mv.addWidget(self._tags)
+        mv.addWidget(self._trans)
+        examples_page = QWidget(self)
+        ev = QVBoxLayout(examples_page)
+        ev.setContentsMargins(0, 8, 0, 0)
+        ev.setSpacing(4)
+        ev.addWidget(self._examples)
+        ev.addWidget(self._exsource)
+        self._grammar = QLabel("", self)   # rich text, built off-thread
+        self._grammar.setObjectName("grammar")
+        self._grammar.setTextFormat(Qt.RichText)
+        self._grammar.setWordWrap(True)
+        self._grammar.setMaximumWidth(MAX_TEXT_WIDTH)
+        grammar_page = QWidget(self)
+        gv = QVBoxLayout(grammar_page)
+        gv.setContentsMargins(0, 8, 0, 0)
+        gv.setSpacing(4)
+        gv.addWidget(self._grammar)
+        self._tabs = QTabWidget(self)
+        self._tabs.addTab(meaning_page, "Meaning")
+        self._tabs.addTab(examples_page, "Examples")
+        self._tabs.addTab(grammar_page, "Grammar")
+        self._tabs.currentChanged.connect(self._tab_changed)
+
         head = QHBoxLayout()
         head.setSpacing(6)
         head.addWidget(self._word_label)
         head.addWidget(self._reading, alignment=Qt.AlignBottom)
+        head.addWidget(self._speak, alignment=Qt.AlignVCenter)
         head.addStretch(1)
         head.addWidget(close, alignment=Qt.AlignTop)
         lay = QVBoxLayout(self)
@@ -200,14 +454,16 @@ class WordPopup(QWidget):
         lay.setSpacing(6)
         lay.addLayout(head)
         lay.addWidget(self._inflection)
-        lay.addWidget(divider)
-        lay.addWidget(self._tags)
-        lay.addWidget(self._trans)
+        lay.addWidget(self._tabs)
         lay.addSpacing(2)
         lay.addWidget(self._anki, alignment=Qt.AlignLeft)
         self.setStyleSheet(_STYLE)
         self._translated.connect(self._fill)
         self._built.connect(self._card_done)
+        self._examples_ready.connect(self._examples_done)
+        self._grammar_ready.connect(self._grammar_done)
+        self._spoken.connect(self._spoken_done)
+        self._fit_tabs()
         self.hide()
 
     def roots(self):
@@ -254,6 +510,10 @@ class WordPopup(QWidget):
                 target=self._fetch, args=(self._req, surface, sentence),
                 daemon=True,
             ).start()
+        self._refresh_speak()
+        self._refresh_examples(word, entry)
+        self._reset_grammar()
+        self._fit_tabs()
         self._place()
         self.show()
         self.raise_()
@@ -279,6 +539,10 @@ class WordPopup(QWidget):
             self._show_selection(word)
         self._anki.setText("Create Anki card")
         self._anki.setEnabled(False)
+        self._refresh_speak()
+        self._refresh_examples(word, entry)
+        self._reset_grammar()
+        self._fit_tabs()
         self._place()
         self.show()
         self.raise_()
@@ -335,6 +599,262 @@ class WordPopup(QWidget):
         self._set(self._inflection, "")
         self._set(self._tags, "")
         self._set(self._trans, "No dictionary entry — release to translate")
+
+    # ------------------------------------------------------------- the tabs
+    def _fit_tabs(self):
+        """QTabWidget's height is its TALLEST page unless the hidden pages
+        are told not to count: without this, the Meaning tab would sit on
+        dead space reserved for the Examples list. Ignored size policy on
+        the back pages keeps the popup exactly as tall as the page in
+        front; callers re-run _place() after."""
+        current = self._tabs.currentIndex()
+        for i in range(self._tabs.count()):
+            page = self._tabs.widget(i)
+            if i == current:
+                page.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            else:
+                page.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self._tabs.updateGeometry()
+
+    def _tab_changed(self, index):
+        # NEVER hide()/show() here: the overlay drops the committed word
+        # highlight the moment the popup stops being visible.
+        self._fit_tabs()
+        if index == 1:
+            self._load_examples()
+        elif index == 2:
+            self._load_grammar()
+        self._place()
+
+    def _refresh_examples(self, word, entry):
+        """Fill or arm the Examples tab for the word now shown. The JMdict
+        pack's pairs ride on the entry already in hand — no extra cost, so
+        they render immediately, previews included. The web sources cost
+        seconds, so they wait until the word is committed AND the tab is in
+        front; most clicks never open the tab and never pay. A pack crop
+        thinner than the tab's LIMIT does NOT latch the tab as done: 98% of
+        example-bearing entries hold one or two pairs, and opening the tab
+        still owes them the Tatoeba top-up (which re-includes the pack
+        pairs, so the render only ever grows)."""
+        self._ex_shown = None
+        self._ex_offline = False
+        offline = entry.examples if entry is not None else ()
+        if offline:
+            form = clean_word(word.text) or word.text
+            self._render_examples(
+                [examples.Example(jp, en, form=used or form, source="Tatoeba")
+                 for jp, en, used in offline[:examples.LIMIT]])
+            self._ex_offline = True
+            if len(offline) >= examples.LIMIT:
+                self._ex_shown = (word.text, getattr(word, "lemma", None))
+        elif self.word is None:
+            # A drag preview never fetches (network per tick); it says so
+            # with the same voice as the meaning line.
+            self._set(self._examples, "Release to load examples")
+            self._set(self._exsource, "")
+        else:
+            self._set(self._examples, "")
+            self._set(self._exsource, "")
+        if (self.word is not None and self._ex_shown is None
+                and self._tabs.currentIndex() == 1):
+            self._load_examples()
+
+    def _reset_grammar(self):
+        """Arm the Grammar tab for the word now shown — same laziness as
+        the Examples tab: nothing is computed until the word is committed
+        and the tab is actually in front (Arabic's first analysis loads a
+        400 MB database; even the cheap languages don't need to run per
+        drag tick)."""
+        self._gr_shown = None
+        if self.word is None:
+            self._set(self._grammar, "Release to see grammar")
+        else:
+            self._set(self._grammar, "")
+            if self._tabs.currentIndex() == 2:
+                self._load_grammar()
+
+    def _load_grammar(self):
+        """Start the grammar build for the committed word, once."""
+        word = self.word
+        if word is None:
+            return             # preview: nothing is committed
+        key = (word.text, getattr(word, "lemma", None))
+        if self._gr_shown == key:
+            return
+        self._gr_shown = key
+        self._set(self._grammar, "Analyzing…")
+        surface = clean_word(word.text) or word.text
+        threading.Thread(
+            target=self._fetch_grammar,
+            args=(self._req, surface, getattr(word, "lemma", None)),
+            daemon=True,
+        ).start()
+
+    def _fetch_grammar(self, req, surface, lemma):
+        """Helper thread: build the tab's rich text (Arabic pays its
+        one-time analyzer load here). Never touches widgets."""
+        try:
+            content, err = _grammar_html(surface, lemma), ""
+        except Exception:
+            content, err = "", "grammar lookup failed"
+        self._grammar_ready.emit(req, content, err)
+
+    def _grammar_done(self, req, content, err):
+        if req != self._req or not self.isVisible():
+            return
+        if err:
+            self._gr_shown = None   # reopening the tab retries
+            self._set(self._grammar, "⚠ " + err)
+        elif not content:
+            # Empty can mean "a pack is still downloading on the worker
+            # thread" — don't latch, so reopening the tab retries once
+            # the pack lands (the rebuild is milliseconds for ja/id, and
+            # a settled-absent analyzer answers instantly).
+            self._gr_shown = None
+            self._set(self._grammar, "No grammar notes for this word.")
+        else:
+            self._set(self._grammar, content)
+        self._fit_tabs()
+        self._place()
+
+    def _load_examples(self):
+        """Start the web fetch for the committed word's examples, once."""
+        word = self.word
+        if word is None:
+            return             # preview: nothing is committed, nothing loads
+        key = (word.text, getattr(word, "lemma", None))
+        if self._ex_shown == key:
+            return
+        self._ex_shown = key
+        if not self._ex_offline:
+            # With pack pairs already on screen, they stay up while the
+            # top-up runs; a blank tab says what it is doing instead.
+            self._set(self._examples, "Loading examples…")
+            self._set(self._exsource, "")
+        surface = clean_word(word.text) or word.text
+        threading.Thread(
+            target=self._fetch_examples,
+            args=(self._req, surface, getattr(word, "lemma", None)),
+            daemon=True,
+        ).start()
+
+    def _fetch_examples(self, req, surface, lemma):
+        """Helper thread: the blocking example lookup. Never touches
+        widgets; the result crosses back through _examples_ready."""
+        try:
+            items, err = examples.sentences(surface, lemma), ""
+        except examples.ExamplesError as exc:
+            items, err = [], str(exc)
+        except Exception:
+            items, err = [], "examples failed"
+        self._examples_ready.emit(req, items, err)
+
+    def _examples_done(self, req, items, err):
+        if req != self._req or not self.isVisible():
+            return  # popup moved on (new word / closed) while this ran
+        if err:
+            self._ex_shown = None   # reopening the tab retries the fetch
+            if not self._ex_offline:
+                # Pack pairs already on screen beat an error line: keep
+                # them, and only a blank tab reports the failure.
+                self._set(self._examples, "⚠ " + err)
+                self._set(self._exsource, "")
+        elif not items:
+            if not self._ex_offline:
+                self._set(self._examples, "No example sentences found.")
+                self._set(self._exsource, "")
+        else:
+            self._render_examples(items)
+        self._fit_tabs()
+        self._place()
+
+    def _render_examples(self, items):
+        parts = []
+        for ex in items:
+            line = self._bolded(ex.text, ex.form)
+            if ex.translit:
+                line += ('<br><span style="color:#8a8fa2; '
+                         'font-style:italic">%s</span>'
+                         % html.escape(ex.translit))
+            if ex.translation:
+                line += ('<br><span style="color:#8a8fa2">%s</span>'
+                         % html.escape(ex.translation))
+            parts.append('<p style="margin:0 0 7px 0">%s</p>' % line)
+        self._set(self._examples, "".join(parts))
+        names = " · ".join(dict.fromkeys(
+            ex.source for ex in items if ex.source))
+        credit = "from %s" % names if names else ""
+        if "Tatoeba" in names:
+            credit += " (CC BY)"    # Tatoeba sentences require attribution
+        self._set(self._exsource, credit)
+
+    @staticmethod
+    def _bolded(text, form):
+        """The sentence HTML-escaped, its first occurrence of the clicked
+        form bolded (case-insensitive). No match — an inflection the exact
+        search didn't literally contain — just renders plain. The match
+        runs on the RAW text and each part is escaped separately: matching
+        after escaping could land inside an entity ("amp" inside "&amp;")
+        and corrupt the markup."""
+        if form:
+            m = re.search(re.escape(form), text, re.IGNORECASE)
+            if m:
+                return (html.escape(text[:m.start()]) + "<b>"
+                        + html.escape(m.group(0)) + "</b>"
+                        + html.escape(text[m.end():]))
+        return html.escape(text)
+
+    # ---------------------------------------------------------------- audio
+    def _refresh_speak(self):
+        """Arm 🔊 for the word now shown. Auto-detect has no voice to hand
+        the TTS endpoint, so the button explains itself instead of failing
+        on click."""
+        self._speak.setText("🔊")
+        can = (translate_mod.SOURCE_LANGUAGE != "auto"
+               and bool(self._word_label.text()))
+        self._speak.setEnabled(can)
+        self._speak.setToolTip(
+            "" if can else "Name the video's language in Settings to hear it")
+
+    def _say_word(self):
+        """Speak the shown headword on a helper thread (fetch + playback
+        both block; the UI thread waits for neither)."""
+        text = self._word_label.text()
+        if not text:
+            return
+        self._speak.setEnabled(False)
+        threading.Thread(
+            target=self._speak_thread,
+            args=(self._req, text, translate_mod.SOURCE_LANGUAGE),
+            daemon=True,
+        ).start()
+
+    def _speak_thread(self, req, text, lang):
+        try:
+            # The fetch can outlive the word: audio for a popup that moved
+            # on stays unplayed (reading _req from here is safe — an int
+            # read under the GIL — and worst case plays one stale clip).
+            pronounce.say(text, lang,
+                          still_wanted=lambda: req == self._req)
+            err = ""
+        except pronounce.PronounceError as exc:
+            err = str(exc)
+        except Exception:
+            err = "audio failed"
+        self._spoken.emit(req, err)
+
+    def _spoken_done(self, req, err):
+        if req != self._req:
+            return  # a fresh word already re-armed the button
+        self._speak.setEnabled(True)
+        if err:
+            self._speak.setText("⚠")
+            self._speak.setToolTip(err)
+            print("[cappa] pronounce: " + err)
+        else:
+            # A retry that succeeded must shed the previous failure's ⚠.
+            self._speak.setText("🔊")
+            self._speak.setToolTip("")
 
     # ------------------------------------------------------------ internals
     def _capture_click_image(self):

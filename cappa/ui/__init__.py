@@ -13,8 +13,9 @@ The map (one window/widget per file):
                         captions · yt)
     startup.py          startup window = the settings home (Languages and
                         Flashcards tabs), reopened live from the launcher
-    word_popup.py       the box a clicked word opens: word · translation ·
-                        Create Anki card (card built off-thread)
+    word_popup.py       the box a clicked word opens: word · 🔊 · Meaning,
+                        Examples and Grammar tabs · Create Anki card
+                        (every fetch and the card build off-thread)
     card_preview.py     what the built card holds, shown before it is
                         delivered: Add to Anki, or Discard (deletes the draft)
     template_dialog.py  advanced card-design editor (front/back HTML + CSS)

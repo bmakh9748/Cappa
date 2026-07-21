@@ -130,4 +130,174 @@ assert popup._word_label.text() == "食べられる"
 assert "past negative" in popup._inflection.text(), popup._inflection.text()
 print("PASS: a dragged inflected span previews its dictionary form")
 
+# ======================= the tabs, 🔊, and laziness =======================
+import time
+
+from PySide6.QtCore import Qt
+
+from cappa import examples as examples_mod
+from cappa import pronounce
+
+
+def wait_until(cond, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        if cond():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+# The thread->signal fills land only on a VISIBLE popup (the stale-result
+# guards drop the rest). WA_DontShowOnScreen keeps the suite windowless
+# while letting isVisible() tell the truth.
+parent.setAttribute(Qt.WA_DontShowOnScreen, True)
+parent.show()
+
+
+assert [popup._tabs.tabText(i) for i in range(popup._tabs.count())] \
+    == ["Meaning", "Examples", "Grammar"], "tab layout changed"
+
+orig_sentences = examples_mod.sentences
+orig_say = pronounce.say
+orig_meaning = word_popup.meaning
+
+
+def exploding_sentences(word, lemma=None, limit=examples_mod.LIMIT):
+    raise AssertionError("examples.sentences must not run here")
+
+
+# ---- Japanese: pack pairs render instantly; the tab tops THIN crops up --
+examples_mod.sentences = exploding_sentences
+line = make_line("戻るのも面倒なんで")
+word = span_word(line, 4, 6)                       # 面倒 — one pack pair
+word.lemma = jmdict.word_at(word.text, 0).base
+popup.show_for(word, anchor)                       # Meaning tab in front:
+assert popup._examples.text(), "pack examples missing from the tab"
+assert "面倒" in popup._examples.text()            # …rendered, not fetched
+assert "Tatoeba" in popup._exsource.text(), popup._exsource.text()
+offline_html = popup._examples.text()
+print("PASS: pack examples render at commit, before any tab opens")
+
+# Opening the tab owes a thin crop (<LIMIT pairs) the Tatoeba top-up via
+# examples.sentences — which re-includes the pack pairs, so it only grows.
+ja_calls = []
+
+
+def ja_fake(word_text, lemma=None, limit=examples_mod.LIMIT):
+    ja_calls.append((word_text, lemma))
+    return [examples_mod.Example("面倒なことになった。",
+                                 "This got troublesome.",
+                                 form="面倒", source="Tatoeba"),
+            examples_mod.Example("面倒を見る。", "To look after someone.",
+                                 form="面倒", source="Tatoeba")]
+
+
+examples_mod.sentences = ja_fake
+popup._tabs.setCurrentIndex(1)
+assert popup.isVisible(), "a tab switch hid the popup (highlight dies)"
+# The queued result hasn't landed yet: the pack pairs must still be up,
+# not a "Loading…" line that blanks them.
+assert popup._examples.text() == offline_html, popup._examples.text()
+assert wait_until(lambda: "troublesome" in popup._examples.text())
+assert ja_calls == [("面倒", "面倒")], ja_calls
+popup._tabs.setCurrentIndex(0)
+popup._tabs.setCurrentIndex(1)      # already topped up: no second fetch
+assert ja_calls == [("面倒", "面倒")], ja_calls
+popup._tabs.setCurrentIndex(0)
+print("PASS: a thin pack crop keeps its pairs and tops up once")
+
+# ---- web languages: nothing loads until the tab is actually opened ------
+translate.SOURCE_LANGUAGE = "id"
+word_popup.meaning = lambda w, s="": "to eat"      # keep _fetch offline
+ex_calls = []
+
+
+def fake_sentences(word, lemma=None, limit=examples_mod.LIMIT):
+    ex_calls.append((word, lemma))
+    return [examples_mod.Example("Ayo makan!", "Let's eat!", form="makan",
+                                 source="Tatoeba")]
+
+
+examples_mod.sentences = fake_sentences
+line = make_line("makan enak")
+span = span_word(line, 0, 5)                       # makan, no lemma
+popup.preview_for(span, anchor)
+assert "Release" in popup._examples.text(), popup._examples.text()
+popup.show_for(span, anchor)
+assert wait_until(lambda: "to eat" in popup._trans.text())
+assert ex_calls == [], "examples fetched with the Meaning tab in front"
+popup._tabs.setCurrentIndex(1)
+assert wait_until(lambda: "Ayo" in popup._examples.text())
+assert ex_calls == [("makan", None)], ex_calls
+assert "Ayo <b>makan</b>!" in popup._examples.text(), popup._examples.text()
+assert "Let&#x27;s eat!" in popup._examples.text() \
+    or "Let's eat!" in popup._examples.text()
+assert "Tatoeba (CC BY)" in popup._exsource.text(), popup._exsource.text()
+popup._tabs.setCurrentIndex(1)      # already loaded: no second fetch
+assert ex_calls == [("makan", None)], ex_calls
+popup._tabs.setCurrentIndex(0)
+print("PASS: web examples wait for the tab, load once, bold the word")
+
+# ---- the Grammar tab: as lazy as Examples -------------------------------
+translate.SOURCE_LANGUAGE = "ja"
+gr_calls = []
+orig_grammar_html = word_popup._grammar_html
+
+
+def fake_grammar_html(surface, lemma):
+    gr_calls.append((surface, lemma))
+    return "<p><b>fake grammar</b></p>"
+
+
+word_popup._grammar_html = fake_grammar_html
+word = span_word(make_line("戻るのも面倒なんで"), 4, 6)
+word.lemma = jmdict.word_at(word.text, 0).base
+popup.show_for(word, anchor)              # Meaning tab in front
+assert gr_calls == [], "grammar built with the Meaning tab in front"
+popup._tabs.setCurrentIndex(2)
+assert popup.isVisible(), "a tab switch hid the popup"
+assert wait_until(lambda: "fake grammar" in popup._grammar.text())
+assert gr_calls == [("面倒", "面倒")], gr_calls
+popup._tabs.setCurrentIndex(0)
+popup._tabs.setCurrentIndex(2)            # latched: no rebuild
+assert gr_calls == [("面倒", "面倒")], gr_calls
+# A drag preview shows the placeholder and never computes.
+popup.preview_for(span_word(make_line("makan enak"), 0, 5), anchor)
+assert "Release" in popup._grammar.text(), popup._grammar.text()
+assert gr_calls == [("面倒", "面倒")], gr_calls
+popup._tabs.setCurrentIndex(0)
+word_popup._grammar_html = orig_grammar_html
+print("PASS: the Grammar tab waits for its turn, builds once")
+
+# ---- 🔊 speaks the shown headword off-thread ----------------------------
+translate.SOURCE_LANGUAGE = "ja"
+say_calls = []
+
+
+def fake_say(text, lang, still_wanted=None):
+    say_calls.append((text, lang))
+
+
+pronounce.say = fake_say
+word = span_word(make_line("戻るのも面倒なんで"), 4, 6)
+word.lemma = jmdict.word_at(word.text, 0).base
+popup.show_for(word, anchor)
+assert popup._speak.isEnabled(), "🔊 dead with a named language"
+popup._speak.click()
+assert wait_until(lambda: popup._speak.isEnabled())
+assert say_calls == [("面倒", "ja")], say_calls
+
+# Auto-detect has no voice: the button disarms instead of failing.
+translate.SOURCE_LANGUAGE = "auto"
+popup.preview_for(span_word(make_line("makan enak"), 0, 5), anchor)
+assert not popup._speak.isEnabled(), "🔊 armed with no language named"
+print("PASS: 🔊 speaks the headword once; auto-detect disarms it")
+
+examples_mod.sentences = orig_sentences
+pronounce.say = orig_say
+word_popup.meaning = orig_meaning
+translate.SOURCE_LANGUAGE = "ja"
+
 print("\nALL PASS")
