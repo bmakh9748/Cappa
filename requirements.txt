@@ -15,6 +15,8 @@ requests  # dictionary/pronounce/examples prefer it over urllib: this
           # machine's cert store rejects Wikimedia's TLS chain under bare
           # urllib (it rides in with deep-translator today, but the direct
           # import deserves a declaration — the python-bidi rule)
+Sastrawi  # Indonesian root stemmer (Grammar tab). MIT code; its bundled
+          # root list is Kateglo CC BY-NC-SA — fine for this personal app.
 PyAudioWPatch
 yt-dlp[default]
 # --- Arabic anatomy (cappa/arabic.py): camel-tools, installed SLIM -------
