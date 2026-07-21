@@ -25,6 +25,7 @@ UNIT = [
     "test_dictionary.py",    # Wiktionary defs: format, ordering, fallback
     "test_jmdict.py",        # Japanese: deinflection + longest-match word_at
     "test_kanjidic.py",      # Japanese: per-kanji pack for the Grammar tab
+    "test_arabic.py",        # Arabic: Form I-X classifier + morphology pack
     "test_pronounce.py",     # 🔊 path: TTS cache + temp-file lifecycle (faked)
     "test_word_popup.py",    # live drag preview (commits nothing) vs the click
     "test_lexicon.py",       # per-language word list: splits glued OCR runs

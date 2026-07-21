@@ -12,4 +12,5 @@ recordings/
 cappa/source/.cache/
 lexicon_packs/
 jmdict_packs/
+arabic_packs/
 settings.json

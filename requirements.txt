@@ -17,3 +17,17 @@ requests  # dictionary/pronounce/examples prefer it over urllib: this
           # import deserves a declaration — the python-bidi rule)
 PyAudioWPatch
 yt-dlp[default]
+# --- Arabic anatomy (cappa/arabic.py): camel-tools, installed SLIM -------
+# camel-tools' declared deps drag in ~1 GB of torch/transformers that only
+# its neural disambiguators use; the morphology analyzer needs none of it.
+# Install exactly (NOT via this file's plain resolve):
+#   pip install --no-deps camel-tools
+# The support deps it does need are declared below so they install
+# normally; cappa/arabic.py fails soft (no Arabic anatomy) when
+# camel-tools itself is absent.
+six
+pyrsistent
+cachetools
+emoji
+tqdm
+muddler
