@@ -11,5 +11,9 @@ onnxruntime-directml  # the GPU (DirectML) build — detection/gpu.py probes for
                       # FIRST — both wheels own the same package directory.
 anki
 deep-translator
+requests  # dictionary/pronounce/examples prefer it over urllib: this
+          # machine's cert store rejects Wikimedia's TLS chain under bare
+          # urllib (it rides in with deep-translator today, but the direct
+          # import deserves a declaration — the python-bidi rule)
 PyAudioWPatch
 yt-dlp[default]

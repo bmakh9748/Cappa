@@ -21,7 +21,11 @@ language section) and an English target (en.wiktionary defines in
 English); otherwise meaning() is a pass-through to translate().
 
 Blocking network calls -- callers keep this off the UI thread, like
-translate(). No Qt."""
+translate(). requests does the fetch when installed (it rides in with
+deep-translator, and some machines' cert stores — this one's included —
+reject Wikimedia's chain under bare urllib, which silently degraded every
+definition to the Google fallback); urllib remains the no-requests path.
+No Qt."""
 
 import html
 import json
@@ -63,11 +67,27 @@ def _clean_gloss(markup):
 
 
 def _fetch(word):
-    req = urllib.request.Request(
-        API % urllib.parse.quote(word, safe=""),
-        headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-        return json.loads(r.read().decode("utf-8"))
+    """The definition page for `word`, parsed; None when there is no such
+    page (404). requests first — see the module header for why bare urllib
+    is not enough on every machine."""
+    url = API % urllib.parse.quote(word, safe="")
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    try:
+        import requests
+    except ImportError:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+    r = requests.get(url, headers=headers, timeout=TIMEOUT)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()
 
 
 def lookup(word, lang):
@@ -81,12 +101,10 @@ def lookup(word, lang):
     for candidate in dict.fromkeys((word.lower(), word)):
         try:
             data = _fetch(candidate)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                continue          # no such page; maybe the other casing
-            return None
         except Exception:
             return None
+        if data is None:
+            continue              # no such page; maybe the other casing
         entries = []
         for entry in data.get(section) or []:
             senses = []
