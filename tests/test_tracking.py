@@ -133,6 +133,39 @@ assert led4.drifted(sample(200), SCALE) == [], (
 print("PASS: in-place content change retires the line; blips do not; "
       "shimmer re-accept keeps the clip anchor")
 
+# overstay suppression: a caption force-cleared for OVERSTAYING (its vanish
+# the pixel watcher never saw) is kept OUT of fresh() until its on-screen
+# content changes or clears — otherwise the still-burned-in pixels would be
+# re-accepted every scan and the hotspots would flicker back.
+led5 = CaptionLedger()
+led5.accept(CAPTION, sample(200), SCALE)
+sent = led5.suppress(CAPTION, sample(200), SCALE)
+assert sent is not None and led5.live() == [], "suppress must retire the box"
+assert sent.cleared_at > 0, "a suppressed line gets its clear stamp"
+assert led5.fresh([CAPTION_WOBBLE]) == [], "suppressed line was re-read"
+# same stale content still on screen: the suppression holds
+led5.refresh_suppressed([CAPTION_WOBBLE], sample(200), SCALE)
+assert led5.fresh([CAPTION_WOBBLE]) == [], "held while the content is unchanged"
+# a NEW line drawn in the same spot lifts the suppression -> fresh again
+led5.refresh_suppressed([CAPTION_WOBBLE], changed, SCALE)
+assert led5.fresh([CAPTION_WOBBLE]) == [CAPTION_WOBBLE], (
+    "a content change must lift the suppression"
+)
+print("PASS: overstay-suppression holds a stale line, lifts on content change")
+
+# lift on clear: the pixels leave -> the spot is fresh for the next line
+led6 = CaptionLedger()
+led6.accept(CAPTION, sample(200), SCALE)
+led6.suppress(CAPTION, sample(200), SCALE)
+led6.refresh_suppressed([], None, SCALE)   # nothing there any more
+assert led6.fresh([NEXT_LINE]) == [NEXT_LINE], "a cleared spot must be fresh"
+# reset drops suppressions too
+led6.accept(CAPTION, sample(200), SCALE)
+led6.suppress(CAPTION, sample(200), SCALE)
+led6.reset()
+assert led6.fresh([CAPTION]) == [CAPTION], "reset must clear suppressions"
+print("PASS: overstay-suppression lifts once the stale pixels clear")
+
 led.reset()
 assert led.live() == [] and led.fresh([CAPTION]) == [CAPTION]
 print("PASS: reset clears everything")

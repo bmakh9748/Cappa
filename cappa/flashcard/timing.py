@@ -48,6 +48,53 @@ def spoken_duration(words, seconds_per_word=None):
     return words * rate
 
 
+# A live caption whose vanish the pixel watcher missed (a static background
+# behind a burned-in line) can sit on the overlay long past its speech, with
+# stale hotspots while the next line is already playing. These bound the
+# force-clear backstop: the caption track's own cue end is the precise signal,
+# a word-count prediction the fallback for videos with no track. Reluctant on
+# purpose -- the pixel watcher is the fast, primary path, and a wrong clear
+# re-detects within a second.
+MIN_OVERSTAY = 2.5           # never expire a caption younger than this: normal
+                             # lines clear well before, and clearing a fresh
+                             # one would steal a word being reached for
+TRACK_OVERSTAY_MARGIN = 1.0  # seconds the playhead must be past the track's
+                             # own cue end before its on-screen line is stale
+OVERSTAY_FACTOR = 2.5        # predicted path: this many times its spoken
+                             # length...
+OVERSTAY_BASE = 3.0          # ...plus this, on screen, before a line with no
+                             # track counts as stale -- the ×length term keeps
+                             # a long sentence from being cut mid-speech
+OVERSTAY_ABS_CAP = 30.0      # no track, no playing signal: a hotspot lingering
+                             # this long is a stuck read, not a real caption
+
+
+def overstayed(age, words, rate=None, paused=None, play_time=None,
+               cue_end=None):
+    """Whether a caption on screen for `age` seconds has outlived its speech
+    and should be force-cleared. `words` is its word count, `rate` this video's
+    measured seconds-per-word (None -> the default), `paused`/`play_time` the
+    browser's reported state (paused is three-valued: True/False/None), and
+    `cue_end` the caption track's end (video seconds) for this line when it
+    confidently matched, else None.
+
+    The track cue end is the precise signal; the word-count prediction is the
+    fallback for videos with no track. Both are gated so a legitimately long
+    line is never cut mid-speech, and neither fires while paused."""
+    if age < MIN_OVERSTAY:
+        return False
+    if paused is True:
+        return False                     # a frozen frame holds its caption
+    if cue_end is not None and play_time is not None:
+        return play_time > cue_end + TRACK_OVERSTAY_MARGIN
+    if paused is False and words:
+        # Predict only when the bridge says we are DEFINITELY playing: a
+        # paused or unknown state must not race a legitimately long line.
+        return age > spoken_duration(words, rate) * OVERSTAY_FACTOR \
+            + OVERSTAY_BASE
+    return age > OVERSTAY_ABS_CAP
+
+
 def set_clip_bounds(min_clip=None, max_clip=None, auto=None):
     """Apply the user's clip-length settings process-wide. MIN_CLIP,
     MAX_CLIP and AUTO_CLIP are module globals that every window function

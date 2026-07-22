@@ -65,6 +65,10 @@ SCAN_INTERVAL_CPU = 0.2    # the CPU cadence: a CPU scan burns a core
                            # budget. Also used when placement is UNKNOWN —
                            # conservative.
 RESCAN_AFTER_CLEAR = 0.15  # a cleared line usually means a new one is up
+LIFETIME_CHECK = 0.5       # how often the overstay backstop runs (the pixel
+                           # watcher is the fast path; this only catches a
+                           # vanish it missed, so a coarse cadence is plenty
+                           # and keeps the source lookup off the hot loop)
 FORCED_RESCAN = 1.0        # max seconds between scans while tracking, even
                            # on a quiet screen: the automatic version of the
                            # launcher's "Refresh words" — catches whatever
@@ -77,7 +81,8 @@ class CaptureWorker(QObject):
     fps = Signal(float)       # measured capture rate, ~once per second
     detector_ok = Signal(bool)  # emitted once the neural model load resolves
 
-    def __init__(self, region_provider, target_fps=30, ocr_lang=None):
+    def __init__(self, region_provider, target_fps=30, ocr_lang=None,
+                 lifetime_provider=None):
         super().__init__()
         # The video's language (settings code like "ar"), deciding which rec
         # model reads caption text. None = the default multi-script model.
@@ -87,6 +92,10 @@ class CaptureWorker(QObject):
         # region_provider() -> (left, top, width, height) physical, or None
         # when there's nothing to capture (no target / parked / picking).
         self._region_provider = region_provider
+        # lifetime_provider(sentence) -> True when a live caption has outlived
+        # its speech and should be force-cleared (source_wiring.caption_over-
+        # stayed; None disables the backstop). Called on the worker thread.
+        self._lifetime_provider = lifetime_provider
         # Set by refresh() from the UI thread (atomic bool), consumed by the
         # loop: drop every detection memory and rescan right now.
         self._refresh = False
@@ -160,6 +169,7 @@ class CaptureWorker(QObject):
 
         dirty = True     # something changed since the last neural scan
         last_scan = 0.0
+        last_lifetime = 0.0   # last overstay-backstop pass (throttled)
         frames = 0
         window_start = time.perf_counter()
         try:
@@ -260,6 +270,28 @@ class CaptureWorker(QObject):
                                     + RESCAN_AFTER_CLEAR)
                         for box in ledger.expire_clears():
                             events.append(("cleared", box))
+                        # Overstay backstop: a live caption the pixel watcher
+                        # never saw vanish (a static background behind a
+                        # burned-in line) is force-cleared once it has plainly
+                        # outlived its speech. Throttled, and each verdict is
+                        # the UI's source layer (caption track cue end, else a
+                        # word-count prediction) — see source_wiring.
+                        if (self._lifetime_provider is not None
+                                and time.perf_counter() - last_lifetime
+                                >= LIFETIME_CHECK):
+                            last_lifetime = time.perf_counter()
+                            for box in ledger.live():
+                                sent = ledger.sentence(box)
+                                if sent is None:
+                                    continue
+                                try:
+                                    stale = self._lifetime_provider(sent)
+                                except Exception:
+                                    stale = False
+                                if stale and ledger.suppress(
+                                        box, diff.sample, DOWNSCALE) is not None:
+                                    watcher.unwatch(box)
+                                    events.append(("cleared", box))
                         if (dirty and not in_flight
                                 and time.perf_counter() - last_scan
                                 >= scan_interval):
@@ -316,6 +348,10 @@ class CaptureWorker(QObject):
         the events. Prints a one-line diagnostic per interesting scan so a
         terminal run shows what the detector saw."""
         events = []
+        # Reconsider suppressed (overstay-cleared) boxes: a suppression lifts
+        # the moment its stale content changes or clears, so a new caption in
+        # that spot is read normally on this very scan.
+        ledger.refresh_suppressed(scan, sample, DOWNSCALE)
         # A pending clear whose box is back with its accept-time content:
         # something briefly drew over the caption (control-bar gradient,
         # popup). Resume watching it — no events, no flicker.

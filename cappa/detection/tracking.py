@@ -91,19 +91,63 @@ class CaptionLedger:
         self._pending = []  # [box, fp, deadline, sentence] awaiting confirm
         self._drift = {}    # live box -> monotonic time its content stopped
                             # matching the accept-time fingerprint
+        self._suppressed = {}  # box -> fingerprint of a caption force-cleared
+                               # for OVERSTAYING (its vanish the pixel watcher
+                               # never saw): kept out of fresh() until its
+                               # on-screen content changes or clears
 
     def live(self):
         return list(self._live)
+
+    def sentence(self, box):
+        """The Sentence a live box is showing, or None."""
+        return self._sentences.get(box)
 
     def captions(self):
         """What the overlay renders: the live captions as Sentences."""
         return [self._sentences[box] for box in self._live]
 
     def fresh(self, scan_boxes):
-        """The scan's boxes that are genuinely new: not already live. These
-        are what gets read and accepted."""
+        """The scan's boxes that are genuinely new: not already live, and not
+        a still-suppressed stale line. These are what gets read and accepted."""
         return [box for box in scan_boxes
-                if not any(_same(box, x) for x in self._live)]
+                if not any(_same(box, x) for x in self._live)
+                and not any(_same(box, x) for x in self._suppressed)]
+
+    def suppress(self, box, sample=None, scale=1):
+        """Force a live caption off the overlay because it has plainly
+        outlived its speech -- the caption track's cue ended, or it far outran
+        its words (flashcard.timing.overstayed decides). Unlike a watcher
+        clear this is NOT debounced: the caller has external evidence. The box
+        is remembered with its CURRENT content, because the burned-in pixels
+        may still be on screen and fresh() must not re-accept the same stale
+        line every scan; refresh_suppressed lifts it the moment that content
+        changes or clears. Returns the Sentence it was showing, or None."""
+        if box not in self._live:
+            return None
+        self._live.remove(box)
+        self._misses.pop(box, None)
+        self._fps.pop(box, None)
+        self._drift.pop(box, None)
+        sent = self._sentences.pop(box, None)
+        if sent is not None:
+            sent.cleared_at = time.monotonic()
+        self._suppressed[box] = _fingerprint(box, sample, scale)
+        return sent
+
+    def refresh_suppressed(self, scan_boxes, sample=None, scale=1):
+        """Reconsider each suppressed box against the latest scan. The
+        suppression lifts as soon as the stale line is gone -- no scan box
+        overlaps it (the pixels cleared) or one does but its content CHANGED
+        (a new line drawn there) -- and holds only while the same stale
+        content is still on screen. Lifting just forgets the box, so the next
+        fresh() reads whatever is there now."""
+        for box in list(self._suppressed):
+            if not any(_same(b, box) for b in scan_boxes):
+                del self._suppressed[box]   # pixels cleared: nothing to hold
+            elif not _fp_close(_fingerprint(box, sample, scale),
+                               self._suppressed[box]):
+                del self._suppressed[box]   # content changed: a new caption
 
     def accept(self, box, sample=None, scale=1, sentence=None,
                appeared_at=0.0):
@@ -239,3 +283,4 @@ class CaptionLedger:
         self._sentences = {}
         self._pending = []
         self._drift = {}
+        self._suppressed = {}

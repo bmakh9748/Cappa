@@ -809,6 +809,9 @@ class OverlayWindow(QMainWindow):
             # The video language from Settings decides which rec model reads
             # captions (Arabic etc. need their own pack; None = default).
             ocr_lang=self._video_language,
+            # The overstay backstop: force-clear a caption whose vanish the
+            # pixel watcher missed, using the caption track / predicted pace.
+            lifetime_provider=self._sources.caption_overstayed,
         )
         self._capture_worker.moveToThread(self._capture_thread)
         self._capture_thread.started.connect(self._capture_worker.run)

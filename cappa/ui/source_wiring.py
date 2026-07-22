@@ -17,6 +17,7 @@ import time
 
 from ..audio import LoopbackRecorder
 from ..flashcard import prefs as card_prefs
+from ..flashcard import timing
 from ..source.bridge import BrowserBridge
 from ..source.ocr_transcript import OcrTranscriptLog
 from ..source.session import SourceSession
@@ -36,6 +37,10 @@ VIDEO_ID_DEBOUNCE = 1.5    # only an id STABLE this long earns a session
                            # fetch (else one download per Short scrolled
                            # past); attribution still follows the reported
                            # id instantly
+OVERSTAY_CUE_SCORE = 0.7   # a caption-track match at least this strong is
+                           # trusted to time an on-screen line's cue end for
+                           # the overstay backstop; weaker/absent -> the
+                           # word-count prediction decides instead
 
 
 def live_video_id(state, bridge_video_id):
@@ -281,6 +286,37 @@ class SourceWiring:
             self._restarts_seen = n
             return True
         return False
+
+    def caption_overstayed(self, sentence):
+        """True when a live caption has plainly outlived its speech and should
+        be force-cleared -- the fix for a burned-in line whose vanish the
+        pixel watcher missed (a static background behind it). Prefers the
+        YouTube caption track's own cue end (the playhead is past it); falls
+        back to predicting from the line's word count and this video's
+        measured pace. Called on the detection worker thread (session/bridge
+        reads are thread-safe); any trouble answers False so the loop is never
+        wedged, and the transcript lookup is skipped until the line is old
+        enough to even be a candidate."""
+        try:
+            appeared = getattr(sentence, "appeared_at", 0.0) or 0.0
+            if appeared <= 0.0:
+                return False
+            age = time.monotonic() - appeared
+            if age < timing.MIN_OVERSTAY:
+                return False
+            words = len(getattr(sentence, "words", ()) or ())
+            play = self.session.play_time()
+            paused = self.session.is_paused()
+            cue_end = None
+            text = getattr(sentence, "text", "") or ""
+            if text and play is not None:
+                match = self.session.window_for(text, near_t=play)
+                if match and match.get("score", 0.0) >= OVERSTAY_CUE_SCORE:
+                    cue_end = match.get("end")
+            rate = self.session.seconds_per_word()
+            return timing.overstayed(age, words, rate, paused, play, cue_end)
+        except Exception:
+            return False
 
     # ---------------------------------------------------------------- status
     def status_suffix(self):
