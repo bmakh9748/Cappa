@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa import indonesian
+from cappa.language.indonesian import affixes as indonesian
 
 # ---- _split: locating the root inside the surface -----------------------
 assert indonesian._split("memakan", "makan") == ("me", "")
@@ -72,5 +72,18 @@ for word in ("makan", "jalan", "dia", ""):
 for word in ("dimana", "disana", "dirumah"):
     assert indonesian.anatomy(word) is None, word
 print("PASS indonesian: unaffixed words and di+place fusions stay quiet")
+
+# AFFIX_NOTES covers every label the affix reader can emit — the tripwire
+# that a new label cannot ship noteless (and no duplicate rows).
+notes = dict(indonesian.AFFIX_NOTES)
+assert len(notes) == len(indonesian.AFFIX_NOTES), "duplicate affix"
+emittable = ({label for _p, label in indonesian._PREFIXES}
+             | {label for _s, label in indonesian._SUFFIXES}
+             | {"ke-...-an", "pe-...-an", "X-X"}
+             | {label for _r, labels in indonesian._OVERRIDES.values()
+                for label in labels})
+missing = emittable - set(notes)
+assert not missing, "affix labels without a note: %s" % sorted(missing)
+print("PASS indonesian: every emittable affix label has its note")
 
 print("\nALL PASS")

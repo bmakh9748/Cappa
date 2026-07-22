@@ -41,10 +41,8 @@ cappa/
                    arabic/        morphology.py: root/Form I-X/lemma/gloss
                                   via slim camel-tools + its pack
                                   (arabic_packs/), plus the Form I-X table
-  indonesian.py  Indonesian anatomy: Sastrawi root + affix labels. No Qt.
-  kanjidic.py    per-kanji info pack (KANJIDIC2, jmdict_packs/). No Qt.
-  grammar_notes.py  the Grammar tab's hand-written one-liners (ja reasons,
-                 ar Forms I-X, id affixes). Pure data, no Qt.
+                   indonesian/    affixes.py: Sastrawi root + affix labels,
+                                  plus the affix one-liners
   audio.py       WASAPI loopback ring buffer (LoopbackRecorder). No Qt.
   ui/            everything visible (the ONLY Qt package besides app.py
                  and detection/worker.py's signal layer)
@@ -70,9 +68,8 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
    README layout table is affected, update it too.
 3. **Qt stays in `ui/` + `app.py`**, plus the signal layer of
    `detection/worker.py`. Detection stages, `source/`, `flashcard/`, the
-   whole `language/` package, and every remaining word-data module
-   (`indonesian/grammar_notes`) plus `audio/settings/winapi` must
-   import no Qt — that is what makes them unit-testable in isolation.
+   whole `language/` package, and `audio/settings/winapi` must import no
+   Qt — that is what makes them unit-testable in isolation.
 4. **`winapi.py` owns Win32.** No raw `ctypes`/`win32gui` calls anywhere else;
    `winapi.py` itself never imports Qt.
 5. **The UI thread does no heavy work.** OCR, translation, card building,

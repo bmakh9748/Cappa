@@ -31,9 +31,8 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 | `cappa/language/examples.py` | Example sentences for the popup's Examples tab — JMdict pack (Japanese, offline), Wiktionary, Tatoeba |
 | `cappa/language/pronounce.py` | The popup's 🔊 — free Google TTS fetch, played through Windows (winmm) |
 | `cappa/language/arabic/` | Arabic anatomy — root, verb form, lemma, gloss (slim CAMeL Tools + its offline morphology pack) |
-| `cappa/indonesian.py` | Indonesian anatomy — Sastrawi root + affix identification |
+| `cappa/language/indonesian/` | Indonesian anatomy — Sastrawi root + affix identification |
 | `cappa/language/japanese/kanjidic.py` | Per-kanji info — KANJIDIC2 pack (meanings, readings, strokes, grade, JLPT) |
-| `cappa/grammar_notes.py` | The Grammar tab's hand-written one-liners (Japanese inflection reasons, Arabic Forms I–X, Indonesian affixes) |
 | `cappa/language/japanese/jmdict.py` | Japanese word lookup — JMdict + deinflection, offline. Finds where the word ends, which nothing at OCR time can know |
 | `cappa/audio.py` | WASAPI loopback ring buffer (record what you hear, clip retroactively) |
 | `cappa/ui/` | Everything you see: the overlay, corner launcher, settings window, word popup, card preview |

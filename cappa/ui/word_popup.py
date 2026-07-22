@@ -55,9 +55,9 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QTabWidget, QVBoxLayout, QWidget)
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
-from .. import flashcard, grammar_notes, indonesian
+from .. import flashcard
 from ..detection.sentence import caption_block, click_pool
-from ..language import arabic, examples, pronounce
+from ..language import arabic, examples, indonesian, pronounce
 from ..language import translate as translate_mod
 from ..language.dictionary import meaning
 from ..language.japanese import jmdict, kanjidic
@@ -298,7 +298,7 @@ def _indonesian_grammar(surface):
         reason = indonesian.status()   # settled by the anatomy() attempt
         return _para(_dim(html.escape(reason))) if reason else ""
     stem, labels = got
-    notes = dict(grammar_notes.ID_AFFIX_NOTES)
+    notes = dict(indonesian.AFFIX_NOTES)
     parts = [_para("Root: <b>%s</b>" % html.escape(stem))]
     for label in labels:
         note = notes.get(label)

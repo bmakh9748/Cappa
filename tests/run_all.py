@@ -26,7 +26,6 @@ UNIT = [
     "test_kanjidic.py",      # Japanese: per-kanji pack for the Grammar tab
     "test_arabic.py",        # Arabic: Form I-X classifier + morphology pack
     "test_indonesian.py",    # Indonesian: Sastrawi root + affix labeling
-    "test_grammar_notes.py",  # Grammar tab tables complete (reason tripwire)
     "test_examples.py",      # example sentences: pack/Wiktionary/Tatoeba merge
     "test_pronounce.py",     # 🔊 path: TTS cache + temp-file lifecycle (faked)
     "test_word_popup.py",    # live drag preview (commits nothing) vs the click

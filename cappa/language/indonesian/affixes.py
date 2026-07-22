@@ -7,7 +7,7 @@ names the base for di-/me- voice forms — lexicalized derivations
 Python port of the Nazief-Adriani stemmer, MIT, pure Python, ~28 ms a
 word) recovers the root; the affixes are then read off the surface by
 diffing it against that root, and each identified affix maps to its
-grammar_notes.ID_AFFIX_NOTES one-liner.
+AFFIX_NOTES one-liner below.
 
     anatomy("memakan")  -> ("makan", ("me-",))
     anatomy("kebersihan") -> ("bersih", ("ke-...-an",))
@@ -64,6 +64,25 @@ _OVERRIDES = {
 # than teaching the wrong rule.
 _DI_PLACES = frozenset(("mana", "sana", "sini", "situ", "rumah", "atas",
                         "bawah", "dalam", "luar", "depan", "belakang"))
+
+# The popup's one-liner per affix label anatomy() can emit, in display
+# order (test_indonesian pins the coverage). Voice: function first, then a
+# tiny example with gloss — accuracy over coverage.
+AFFIX_NOTES = (
+    ("me-", "Active verb prefix (nasal shifts: mem-/men-/meng-/meny-): memakan 'to eat (something)' from makan."),
+    ("di-", "Passive counterpart of me-: dimakan 'eaten (by someone)'."),
+    ("ber-", "Intransitive 'have / use / do': berjalan 'to walk' (jalan 'way'), bersepeda 'to ride a bike'."),
+    ("ter-", "Unintentional or resulting state: tertidur 'fell asleep (without meaning to)'; on adjectives, superlative: terbaik 'best'."),
+    ("ke-...-an", "Abstract-state noun: kebersihan 'cleanliness' (bersih 'clean'); also 'adversely affected by': kehujanan 'caught in the rain'."),
+    ("pe-...-an", "Noun for the process of the verb: pembangunan 'construction, development' (membangun 'to build')."),
+    ("-kan", "Makes the verb transitive — causative or 'for someone': membersihkan 'to clean (make clean)', membacakan 'to read aloud for (someone)'."),
+    ("-i", "Transitive suffix — action onto a place or object, often repeated: menulisi 'to write on (something)', mengunjungi 'to visit'."),
+    ("-an", "Result or object noun: makanan 'food' (makan 'to eat'), minuman 'a drink' (minum 'to drink')."),
+    ("-nya", "His/her/its — or marks the thing as known: bukunya 'his/her book; the book'."),
+    ("X-X", "Reduplication — plurality, variety, or doing something casually: jalan-jalan 'go for a stroll', makan-makan 'have a meal together'."),
+    ("se-", "'One / same / as ... as': serumah 'in the same house', sebesar 'as big as'."),
+    ("memper-", "Causative 'make more X, treat as X': memperbesar 'to enlarge' (besar 'big')."),
+)
 
 
 def _load():
