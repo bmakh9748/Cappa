@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa import kanjidic
+from cappa.language.japanese import kanjidic
 
 # ---- gating: only "ja" ever downloads anything --------------------------
 assert kanjidic.ensure_pack("ar") is False

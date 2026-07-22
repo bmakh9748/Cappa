@@ -32,9 +32,9 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 | `cappa/language/pronounce.py` | The popup's 🔊 — free Google TTS fetch, played through Windows (winmm) |
 | `cappa/arabic.py` | Arabic anatomy — root, verb form, lemma, gloss (slim CAMeL Tools + its offline morphology pack) |
 | `cappa/indonesian.py` | Indonesian anatomy — Sastrawi root + affix identification |
-| `cappa/kanjidic.py` | Per-kanji info — KANJIDIC2 pack (meanings, readings, strokes, grade, JLPT) |
+| `cappa/language/japanese/kanjidic.py` | Per-kanji info — KANJIDIC2 pack (meanings, readings, strokes, grade, JLPT) |
 | `cappa/grammar_notes.py` | The Grammar tab's hand-written one-liners (Japanese inflection reasons, Arabic Forms I–X, Indonesian affixes) |
-| `cappa/jmdict.py` | Japanese word lookup — JMdict + deinflection, offline. Finds where the word ends, which nothing at OCR time can know |
+| `cappa/language/japanese/jmdict.py` | Japanese word lookup — JMdict + deinflection, offline. Finds where the word ends, which nothing at OCR time can know |
 | `cappa/audio.py` | WASAPI loopback ring buffer (record what you hear, clip retroactively) |
 | `cappa/ui/` | Everything you see: the overlay, corner launcher, settings window, word popup, card preview |
 | `cappa/detection/` | Everything that finds captions, one stage per file — capture → diff → **neural text detection** (PP-OCRv5 via ONNX) → OCR → clear-watching — on a background thread; every text line found becomes hoverable words |

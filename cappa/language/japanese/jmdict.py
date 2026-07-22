@@ -48,7 +48,7 @@ import threading
 import urllib.request
 
 PACKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "..", "jmdict_packs")
+                         "..", "..", "..", "jmdict_packs")
 DB_NAME = "jmdict-eng.sqlite3"
 ZIP_NAME = "jmdict-examples-eng.json.zip"  # kept so a rebuild costs no
                                            # download; the -examples variant
@@ -251,6 +251,42 @@ def _family(tag):
     if tag.startswith("adj-i"):
         return ADJ
     return None
+
+
+# One grammar note per deinflection 'reason' _RULES above can emit — a
+# Match's reasons chain maps each step through this table (test_jmdict
+# pins the key sets equal). Unknown keys fail soft to the raw reason
+# string. Voice: function first, then a tiny example with gloss.
+GRAMMAR_NOTES = {
+    "-te iru": "Ongoing action or resulting state: 食べている 'is eating', 知っている 'knows'.",
+    "-te iru (polite)": "Polite -te imasu — ongoing action or resulting state: 食べています 'is eating'.",
+    "-te iru (contraction)": "Casual speech drops the い of -te iru: 食べてる 'is eating'.",
+    "-te oku": "Do in advance, leave it done for later: 買っておく 'buy (ready for later)'.",
+    "-te oku (contraction)": "Casual -toku, squeezed from -te oku: 買っとく '(I'll) buy it (for later)'.",
+    "-te aru": "State left by a deliberate action: 書いてある '(it) is written (someone wrote it)'.",
+    "-te shimau": "Completely done, often with regret — 'end up doing': 忘れてしまう 'end up forgetting'.",
+    "-te shimau (contraction)": "Casual -chau/-jau, squeezed from -te shimau: 食べちゃう 'end up eating'.",
+    "-te iku": "Change or motion away from here/now — 'go on doing': 増えていく 'will keep increasing'.",
+    "-te kuru": "Change or motion toward here/now — 'come to, has been doing': 見えてくる 'comes into view'.",
+    "-te kureru": "Someone kindly does it for me/us: 教えてくれる '(they) tell me (as a favor)'.",
+    "-te morau": "Get someone to do it — the favor received: 教えてもらう 'have (them) tell me'.",
+    "-te miru": "Try doing and see: 食べてみる 'try eating'.",
+    "-te": "Te-form — links to the next clause or an auxiliary; alone it is a casual request: 待って 'wait'.",
+    "past": "Plain past (-ta; adjectives -katta): 食べた 'ate', 高かった 'was expensive'.",
+    "polite": "Polite -masu form, neutral politeness: 食べます 'eat(s)'.",
+    "negative": "Plain negative (-nai; adjectives -ku nai): 食べない 'doesn't eat', 高くない 'not expensive'.",
+    "past negative": "Plain past negative -nakatta: 食べなかった 'didn't eat'.",
+    "potential": "Can, be able to: 読める 'can read' (from 読む 'read').",
+    "potential/passive": "-rareru — 'can do' or 'is done to'; context decides: 食べられる 'can eat / is eaten'.",
+    "passive": "Passive — the subject is acted on: 招待される 'is invited'.",
+    "causative": "Causative — make or let someone do: 勉強させる 'make (someone) study'.",
+    "conditional": "-eba conditional — 'if/when': 食べれば 'if (you) eat', 高ければ 'if it's expensive'.",
+    "volitional": "Volitional — 'let's / I'll': 行こう 'let's go', 食べよう 'let's eat'.",
+    "imperative": "Plain command, blunt: 待て 'wait!', 食べろ 'eat!'.",
+    "-tai": "Want to do: 食べたい 'want to eat'.",
+    "adverbial": "Adjective -ku form used as an adverb: 早く 'quickly' (from 早い 'fast').",
+    "noun form": "Adjective -sa form — the quality as a measurable noun: 高さ 'height' (from 高い 'high').",
+}
 
 
 # Readable labels for the tags a popup shows. Anything unlisted prints raw.

@@ -10,8 +10,8 @@ For SPACED scripts a Word is still a word. For CJK a Word is one
 CHARACTER, because nothing at OCR time knows where a Japanese word ends:
 the recogniser's own kanji-run/kana-run grouping cuts at the okurigana
 boundary, tearing 戻る into 戻 | るのも. The word is found at LOOKUP time
-instead — `cappa.jmdict` resolves the character under the cursor to the
-whole word it belongs to — and `span_word()` fuses that character range
+instead — the jmdict module resolves the character under the cursor to
+the whole word it belongs to — and `span_word()` fuses that character range
 back into one Word for the popup and the card. Without a dictionary pack
 `script_span()` reproduces the old kanji/kana grouping, so nothing gets
 worse.

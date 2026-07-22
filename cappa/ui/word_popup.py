@@ -14,10 +14,10 @@ a helper thread so the UI never blocks — the popup opens instantly with
 "Translating…" and fills in when the call returns, or shows the failure (no
 network) as a ⚠ line. NO LLM on either path.
 
-The Examples tab shows the word in real sentences (cappa.language.examples), loaded
-lazily for a committed word with the tab in front (_refresh_examples holds
-the contract). 🔊 speaks the headword via cappa.language.pronounce on a helper
-thread; disabled when the language has no voice.
+The Examples tab shows the word in real sentences (language/examples.py),
+loaded lazily for a committed word with the tab in front (_refresh_examples
+holds the contract). 🔊 speaks the headword via language/pronounce.py on a
+helper thread; disabled when the language has no voice.
 
 The Grammar tab is the word's anatomy per language (_grammar_html), under
 the same laziness contract as Examples — Arabic's first analysis loads a
@@ -55,12 +55,12 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QTabWidget, QVBoxLayout, QWidget)
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
-from .. import (arabic, flashcard, grammar_notes, indonesian, jmdict,
-                kanjidic)
+from .. import arabic, flashcard, grammar_notes, indonesian
 from ..detection.sentence import caption_block, click_pool
 from ..language import examples, pronounce
 from ..language import translate as translate_mod
 from ..language.dictionary import meaning
+from ..language.japanese import jmdict, kanjidic
 from ..language.translate import TranslationError, clean_word
 from .card_preview import CardPreview
 
@@ -224,7 +224,7 @@ def _japanese_grammar(surface, lemma):
     if covers and match.reasons:
         steps = []
         for reason in match.reasons:
-            note = grammar_notes.JA_GRAMMAR_NOTES.get(reason)
+            note = jmdict.GRAMMAR_NOTES.get(reason)
             steps.append("<b>%s</b> — %s" % (html.escape(reason),
                                              html.escape(note))
                          if note else html.escape(reason))

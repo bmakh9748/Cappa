@@ -14,8 +14,8 @@ The map (one stage per file, chained by worker.py on a background thread):
     tracking.py    ledger: live boxes, clear debounce, drift
     sentence.py    the data model a read line becomes: a Sentence of Words.
                    A CJK Word is one character -- nothing here knows where a
-                   Japanese word ends, so cappa.jmdict resolves it at lookup
-                   time and span_word() fuses the range back into one Word
+                   Japanese word ends, so the jmdict module resolves it at
+                   lookup time; span_word() fuses the range into one Word
     worker.py      the background thread gluing it all together — plus its
                    scan helper thread, so neural scans run BESIDE the loop
                    and frame grabs never pause for one

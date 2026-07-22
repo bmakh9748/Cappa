@@ -35,6 +35,9 @@ cappa/
                    examples.py    example sentences: pack/Wiktionary/Tatoeba
                    pronounce.py   word audio: Google TTS + winmm playback
                    lexicon.py     word-frequency packs (split glued OCR runs)
+                   japanese/      jmdict.py (lookup + deinflection + word_at
+                                  + grammar notes) and kanjidic.py (per-kanji
+                                  info), both offline packs
   arabic.py      Arabic anatomy: root/form/lemma via slim camel-tools +
                  its morphology pack (arabic_packs/). No Qt.
   indonesian.py  Indonesian anatomy: Sastrawi root + affix labels. No Qt.
@@ -67,9 +70,8 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
 3. **Qt stays in `ui/` + `app.py`**, plus the signal layer of
    `detection/worker.py`. Detection stages, `source/`, `flashcard/`, the
    whole `language/` package, and every remaining word-data module
-   (`arabic/indonesian/kanjidic/grammar_notes/jmdict`) plus
-   `audio/settings/winapi` must import no Qt — that is what makes them
-   unit-testable in isolation.
+   (`arabic/indonesian/grammar_notes`) plus `audio/settings/winapi` must
+   import no Qt — that is what makes them unit-testable in isolation.
 4. **`winapi.py` owns Win32.** No raw `ctypes`/`win32gui` calls anywhere else;
    `winapi.py` itself never imports Qt.
 5. **The UI thread does no heavy work.** OCR, translation, card building,

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QApplication, QWidget
 
-from cappa import jmdict
+from cappa.language.japanese import jmdict
 from cappa.language import translate
 from cappa.detection.sentence import Sentence, span_word
 from cappa.ui import word_popup

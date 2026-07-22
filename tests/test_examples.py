@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cappa.language.examples as E
-from cappa import jmdict
+from cappa.language.japanese import jmdict
 from cappa.language import dictionary, translate
 
 

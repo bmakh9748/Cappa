@@ -38,8 +38,9 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .. import arabic, jmdict, kanjidic
+from .. import arabic
 from ..language import lexicon
+from ..language.japanese import jmdict, kanjidic
 from .detector import TextDetector
 from .diff import CHANGED_FRACTION, DOWNSCALE, FrameDiff, ScreenCapture
 from .ocr import TextReader

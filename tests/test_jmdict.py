@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa import jmdict
+from cappa.language.japanese import jmdict
 from cappa.detection.sentence import (Sentence, is_cjk, script_span,
                                       selection_word, span_word)
 
@@ -37,6 +37,20 @@ assert jmdict._fold_old_kanji("拔山蓋世") == "抜山蓋世"
 assert jmdict._fold_old_kanji("學校圖書館") == "学校図書館"
 assert jmdict._fold_old_kanji("戻る") == "戻る"        # modern text untouched
 assert "抜山蓋世" in {f for f, _r, _t in jmdict._deinflect("拔山蓋世")}
+
+# GRAMMAR_NOTES is the tripwire twin of _RULES: adding a deinflection rule
+# without its grammar note (or renaming a reason) must fail the suite, not
+# quietly show a bare reason in the popup.
+_reasons = {reason for _t, _b, _i, _o, reason in jmdict._RULES}
+_keys = set(jmdict.GRAMMAR_NOTES)
+assert _keys == _reasons, (
+    "notes missing for %s / extra notes %s"
+    % (sorted(_reasons - _keys), sorted(_keys - _reasons)))
+for _reason, _note in jmdict.GRAMMAR_NOTES.items():
+    # One tight line each: non-empty, sentence-final, popup-sized.
+    assert _note and _note.endswith(".") and len(_note) < 160, (_reason,
+                                                                _note)
+print("PASS: every deinflection reason has its grammar one-liner")
 print("PASS: deinflection unwinds te-forms, contractions, katakana and "
       "old kanji")
 

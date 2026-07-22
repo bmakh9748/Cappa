@@ -303,7 +303,7 @@ class TextReader:
         CHARACTER: the recogniser's own grouping is by script run, which is
         exactly the okurigana boundary (戻|るのも, 面白|い) — the one place a
         Japanese word never breaks. The word is found later, by dictionary
-        lookup from the character under the cursor (cappa.jmdict)."""
+        lookup from the character under the cursor (the jmdict module)."""
         info = res.word_results[0] if res.word_results else None
         if info is None or not getattr(info, "line_txt_len", 0):
             return []

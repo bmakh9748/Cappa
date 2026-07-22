@@ -11,8 +11,9 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import Qt, QRect, QTimer, QThread
 from PySide6.QtGui import QPainter, QColor, QPen, QCursor, QFont
 
-from .. import jmdict, winapi
+from .. import winapi
 from ..language import translate as translate_mod
+from ..language.japanese import jmdict
 from ..detection.sentence import (is_cjk, script_span, selection_word,
                                   span_word)
 from ..detection.worker import CaptureWorker
