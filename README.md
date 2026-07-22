@@ -30,13 +30,15 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 | `cappa/language/dictionary.py` | Word meanings — Wiktionary definitions, Google as hint + fallback |
 | `cappa/language/examples.py` | Example sentences for the popup's Examples tab — JMdict pack (Japanese, offline), Wiktionary, Tatoeba |
 | `cappa/language/pronounce.py` | The popup's 🔊 — free Google TTS fetch, played through Windows (winmm) |
+| `cappa/language/lexicon.py` | Per-language word-frequency packs — splits words OCR glued together |
 | `cappa/language/arabic/` | Arabic anatomy — root, verb form, lemma, gloss (slim CAMeL Tools + its offline morphology pack) |
 | `cappa/language/indonesian/` | Indonesian anatomy — Sastrawi root + affix identification |
 | `cappa/language/japanese/kanjidic.py` | Per-kanji info — KANJIDIC2 pack (meanings, readings, strokes, grade, JLPT) |
 | `cappa/language/japanese/jmdict.py` | Japanese word lookup — JMdict + deinflection, offline. Finds where the word ends, which nothing at OCR time can know |
 | `cappa/audio.py` | WASAPI loopback ring buffer (record what you hear, clip retroactively) |
+| `cappa/screen_recorder.py` | Rolling MP4 debug recorder of the tracked area (`recordings/`, self-capped) |
 | `cappa/ui/` | Everything you see: the overlay, corner launcher, settings window, word popup, card preview |
-| `cappa/detection/` | Everything that finds captions, one stage per file — capture → diff → **neural text detection** (PP-OCRv5 via ONNX) → OCR → clear-watching — on a background thread; every text line found becomes hoverable words |
+| `cappa/detection/` | Everything that finds captions, one stage per file — grab+diff → **neural text detection** (PP-OCRv5 via ONNX) → OCR → clear-watching — on a background thread; every text line found becomes hoverable words |
 | `cappa/source/` | Video-source truth: Cappa's own transcript times the clips; VTT parsing + OCR-line alignment (text provenance), yt-dlp/ffmpeg, browser bridge |
 | `cappa/flashcard/` | A clicked word → a card draft folder under `cards/card_NNNN/` (audio window choice, screenshot, provenance); the preview then delivers it to Anki (`anki_sync.py` — live via AnkiConnect when Anki is open, into its collection file when closed) or deletes it |
 | `extension/` | "Cappa Bridge" browser extension: which video + position → the bridge |

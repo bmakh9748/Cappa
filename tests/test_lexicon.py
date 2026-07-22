@@ -1,4 +1,4 @@
-"""cappa/lexicon.py — the word-list splitter. A tiny synthetic pack written
+"""cappa/language/lexicon.py — the word-list splitter. A tiny synthetic pack written
 to a temp dir stands in for a downloaded language pack; no network."""
 
 import os

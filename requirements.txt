@@ -4,7 +4,7 @@ mss
 numpy
 rapidocr
 python-bidi  # rapidocr imports it on every RTL (arabic) read but doesn't declare it
-onnxruntime-directml  # the GPU (DirectML) build — detection/gpu.py probes for
+onnxruntime-directml  # the GPU (DirectML) build — detector.py probes for
                       # it; plain `onnxruntime` also works but scans on CPU
                       # at the smaller working size (slower, misses small text).
                       # Upgrading an old venv: `pip uninstall onnxruntime`
@@ -19,13 +19,13 @@ Sastrawi  # Indonesian root stemmer (Grammar tab). MIT code; its bundled
           # root list is Kateglo CC BY-NC-SA — fine for this personal app.
 PyAudioWPatch
 yt-dlp[default]
-# --- Arabic anatomy (cappa/arabic.py): camel-tools, installed SLIM -------
+# --- Arabic anatomy (language/arabic/): camel-tools, installed SLIM ------
 # camel-tools' declared deps drag in ~1 GB of torch/transformers that only
 # its neural disambiguators use; the morphology analyzer needs none of it.
 # Install exactly (NOT via this file's plain resolve):
 #   pip install --no-deps camel-tools
 # The support deps it does need are declared below so they install
-# normally; cappa/arabic.py fails soft (no Arabic anatomy) when
+# normally; the arabic package fails soft (no Arabic anatomy) when
 # camel-tools itself is absent.
 six
 pyrsistent

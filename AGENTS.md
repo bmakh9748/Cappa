@@ -15,7 +15,8 @@ commit*.
 1. This file.
 2. The package maps: every package's `__init__.py` docstring lists its files
    and one line each on what they do (`cappa/detection/`, `cappa/source/`,
-   `cappa/flashcard/`, `cappa/ui/`). **They are the authoritative maps.**
+   `cappa/flashcard/`, `cappa/ui/`, `cappa/language/` and its per-language
+   subpackages). **They are the authoritative maps.**
 3. Only then the modules you intend to change.
 
 `README.md` is the user-facing overview. `PLAN.md` is the append-only build
@@ -44,6 +45,8 @@ cappa/
                    indonesian/    affixes.py: Sastrawi root + affix labels,
                                   plus the affix one-liners
   audio.py       WASAPI loopback ring buffer (LoopbackRecorder). No Qt.
+  screen_recorder.py  rolling MP4 debug recorder of the tracked area
+                 (recordings/, self-capped). No Qt.
   ui/            everything visible (the ONLY Qt package besides app.py
                  and detection/worker.py's signal layer)
   detection/     finds captions on screen; one pipeline stage per file,

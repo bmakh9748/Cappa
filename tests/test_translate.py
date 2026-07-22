@@ -1,4 +1,4 @@
-"""Unit test for cappa/translate.py — the word cleanup the popup shows, and
+"""Unit test for cappa/language/translate.py — the word cleanup the popup shows, and
 the context-marking round trip (mark the word in its sentence, pull the
 marked span back out of the translation).
 

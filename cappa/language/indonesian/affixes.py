@@ -32,7 +32,7 @@ _stemmer = None
 _failed = False    # Sastrawi missing: remembered, not retried per click
 
 
-# Surface prefix chunk -> the affix row it belongs to in ID_AFFIX_NOTES.
+# Surface prefix chunk -> the affix row it belongs to in AFFIX_NOTES.
 # Longest first so memper- wins over me-, meng- over me-. The peN-/ke-
 # rows label as circumfixes only when the -an tail is present (handled in
 # anatomy()); a bare pe-/ke- prefix stays unlabeled rather than mislabeled.
@@ -177,7 +177,7 @@ def _reduplication(w):
 def anatomy(word):
     """(root, affix labels) for an affixed word, or None when there is
     nothing to teach (no stemmer, unaffixed, root not locatable, or a
-    known trap where a label would lie). Labels are ID_AFFIX_NOTES keys:
+    known trap where a label would lie). Labels are AFFIX_NOTES keys:
     circumfix/prefix first, inner suffixes next, the -nya enclitic last."""
     w = (word or "").lower()
     hit = _OVERRIDES.get(w)

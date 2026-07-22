@@ -1,4 +1,4 @@
-"""Unit test: Indonesian word anatomy (cappa.indonesian).
+"""Unit test: Indonesian word anatomy (cappa.language.indonesian).
 
 _split() and the affix labeler are pure and always run (fed a known root
 directly). The Sastrawi-backed half SKIPS when the package is absent —
