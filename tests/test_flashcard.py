@@ -17,7 +17,7 @@ from cappa.detection.sentence import (Sentence, Word, caption_block,
 from cappa.flashcard import build_draft, prefs
 from cappa.flashcard.template import default_template, infer_placements
 from cappa.flashcard.timing import (MAX_CLIP, MIN_CLIP, audio_window,
-                                    shrink_to_max, spoken_duration,
+                                    overstayed, shrink_to_max, spoken_duration,
                                     widen_to_min)
 from cappa.settings import DEFAULT_CARD_FIELDS
 
@@ -199,6 +199,25 @@ assert spoken_duration(10, 0.01) == 10 * 0.12          # clamped fast floor
 assert spoken_duration(10, 5.0) == 10 * 0.60           # clamped slow ceiling
 assert spoken_duration(15, 0.30) > spoken_duration(4, 0.30)   # the whole point
 print("PASS: spoken_duration scales the tail by words × this video's pace")
+
+# overstayed: the caption-display backstop. A fresh line is never expired; a
+# paused frame holds its caption; the caption track's cue end is the precise
+# signal; a word-count prediction is the fallback for videos with no track;
+# and with no signal at all only an absurdly old hotspot (ABS_CAP) is cleared.
+assert overstayed(1.0, 5, paused=False) is False           # younger than MIN
+assert overstayed(20.0, 5, paused=True) is False           # a frozen frame holds
+# track cue ended and the playhead is well past it -> stale
+assert overstayed(20.0, 5, paused=False, play_time=30.0, cue_end=20.0) is True
+# ...but only just past its cue end -> the line is still its own
+assert overstayed(20.0, 5, paused=False, play_time=20.5, cue_end=20.0) is False
+# predicted: on screen far longer than a 3-word line takes to say (playing)
+assert overstayed(30.0, 3, paused=False) is True
+# predicted never cuts a long line mid-speech: a 15-word line at 6s is fine
+assert overstayed(6.0, 15, rate=0.30, paused=False) is False
+# no track, unknown pause state (no bridge): only ABS_CAP can clear it
+assert overstayed(10.0, 3, paused=None) is False
+assert overstayed(40.0, 3, paused=None) is True
+print("PASS: overstayed clears a stale caption by cue end / prediction / cap")
 
 # The settings sliders retune the bounds live: the window functions read the
 # module globals at call time, not import-time copies.
@@ -522,5 +541,95 @@ got = infer_placements({"front": "{{Word Translation}}",
 assert got["word"] == "off" and got["word_translation"] == "front", got
 assert got["audio"] == "back", got
 print("PASS: a saved design reads back into Front/Back/Off placements")
+
+# Breakdown + Word audio: the two opt-in fields. ON -> the draft gathers the
+# word's anatomy (language/grammar) and a TTS reading of the headword
+# (pronounce.fetch), both faked here so the test stays offline. OFF (the
+# default) -> neither is gathered and neither leaves a note. A TTS failure is
+# a note, never a raise.
+from cappa.language import grammar as grammar_mod
+from cappa.language import pronounce as pronounce_mod
+from cappa.language import translate as translate_mod
+
+orig_anatomy = grammar_mod.anatomy_html
+orig_fetch = pronounce_mod.fetch
+orig_src = translate_mod.SOURCE_LANGUAGE
+gr_seen, tts_seen = [], []
+
+
+def fake_anatomy(surface, lemma):
+    gr_seen.append((surface, lemma))
+    return "<p><b>%s</b> → base</p>" % surface
+
+
+def fake_fetch(text, lang):
+    tts_seen.append((text, lang))
+    return b"ID3fake-mp3-bytes"
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    sentence = Sentence(
+        "hello world", (10, 20, 120, 50),
+        [("hello", (10, 20, 55, 50)), ("world", (60, 20, 120, 50))])
+    sentence.appeared_at = 100.0
+    sentence.cleared_at = 102.0
+    grammar_mod.anatomy_html = fake_anatomy
+    pronounce_mod.fetch = fake_fetch
+    translate_mod.SOURCE_LANGUAGE = "ja"
+    try:
+        prefs.set_card_fields({"breakdown": "back", "word_audio": "back"})
+        draft = build_draft(
+            sentence.words[1], None, FakeRecorder(), out_dir=tmp,
+            translator=fake_translate, screenshot_png=b"\x89PNG\r\n\x1a\n")
+        folder = draft.folder_path
+        assert gr_seen == [("world", None)], gr_seen
+        assert tts_seen == [("world", "ja")], tts_seen
+        assert "→ base" in read_text(os.path.join(folder, "breakdown.txt"))
+        with open(os.path.join(folder, "word_audio.mp3"), "rb") as f:
+            assert f.read() == b"ID3fake-mp3-bytes"
+        with open(os.path.join(folder, "metadata.json"),
+                  encoding="utf-8") as f:
+            meta = json.load(f)
+        assert "→ base" in meta["breakdown"]
+        assert meta["word_audio"] == "word_audio.mp3"
+        assert meta["notes"] == [], meta["notes"]
+
+        # OFF (default): neither gathered, no file, no note.
+        gr_seen.clear()
+        tts_seen.clear()
+        prefs.set_card_fields(None)
+        draft2 = build_draft(
+            sentence.words[1], None, FakeRecorder(), out_dir=tmp,
+            translator=fake_translate, screenshot_png=b"\x89PNG\r\n\x1a\n")
+        assert gr_seen == [] and tts_seen == []
+        assert not os.path.exists(
+            os.path.join(draft2.folder_path, "word_audio.mp3"))
+        with open(os.path.join(draft2.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            meta2 = json.load(f)
+        assert meta2["breakdown"] == "" and meta2["word_audio"] is None
+        assert meta2["notes"] == [], meta2["notes"]
+
+        # A TTS failure is a note, never a raise; the rest of the card stands.
+        def boom_fetch(text, lang):
+            raise pronounce_mod.PronounceError("no audio for this language")
+
+        pronounce_mod.fetch = boom_fetch
+        prefs.set_card_fields({"word_audio": "back"})
+        draft3 = build_draft(
+            sentence.words[1], None, FakeRecorder(), out_dir=tmp,
+            translator=fake_translate, screenshot_png=b"\x89PNG\r\n\x1a\n")
+        assert not os.path.exists(
+            os.path.join(draft3.folder_path, "word_audio.mp3"))
+        with open(os.path.join(draft3.folder_path, "metadata.json"),
+                  encoding="utf-8") as f:
+            meta3 = json.load(f)
+        assert any("word audio" in n for n in meta3["notes"]), meta3["notes"]
+    finally:
+        grammar_mod.anatomy_html = orig_anatomy
+        pronounce_mod.fetch = orig_fetch
+        translate_mod.SOURCE_LANGUAGE = orig_src
+        prefs.set_card_fields(None)
+print("PASS: breakdown + word audio gather when on, skip cleanly when off")
 
 print("ALL PASS")

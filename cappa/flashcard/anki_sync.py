@@ -102,6 +102,8 @@ def _card_fields(folder):
             os.path.join(folder, "sentence_translation.txt")),
         "Screenshot": "",
         "Audio": "",
+        "Breakdown": _read(os.path.join(folder, "breakdown.txt")),
+        "Word Audio": "",
     }
 
 
@@ -112,6 +114,7 @@ def _media_refs(folder, card_id, fields):
     for src_name, field, wrap in (
         ("screenshot.png", "Screenshot", '<img src="%s">'),
         ("audio.wav", "Audio", "[sound:%s]"),
+        ("word_audio.mp3", "Word Audio", "[sound:%s]"),
     ):
         src = os.path.join(folder, src_name)
         if os.path.isfile(src):
@@ -156,14 +159,42 @@ def available():
         return False
 
 
-def _sync_live(folders, deck):
-    _invoke("createDeck", deck=deck)   # Anki's own get-or-create by name
+def _ensure_model_live():
+    """Ensure the notetype exists and matches the app's CURRENT design. Absent
+    -> created. Present -> add any field the design has gained (fields are only
+    ever added, never removed -- that would drop card data) and refresh the
+    templates/CSS to the current design, so a field turned on in settings
+    (Breakdown, Word Audio, or any placement change) actually shows on the
+    card. The app owns this notetype (it has its own template editor), so
+    keeping it in sync is intended, not a clobber. Best-effort: an older
+    AnkiConnect without the model-editing actions keeps the old notetype and
+    the card still adds (Anki drops unknown field names)."""
+    t = prefs.template()
     if NOTETYPE not in _invoke("modelNames"):
-        t = prefs.template()
         _invoke("createModel", modelName=NOTETYPE,
                 inOrderFields=FIELD_NAMES, css=t.get("css", ""),
                 cardTemplates=[{"Name": "Cappa", "Front": t.get("front", ""),
                                 "Back": t.get("back", "")}])
+        return
+    try:
+        have = _invoke("modelFieldNames", modelName=NOTETYPE) or []
+        for name in FIELD_NAMES:
+            if name not in have:
+                _invoke("modelFieldAdd", modelName=NOTETYPE, fieldName=name)
+        _invoke("updateModelTemplates", model={
+            "name": NOTETYPE,
+            "templates": {"Cappa": {"Front": t.get("front", ""),
+                                    "Back": t.get("back", "")}}})
+        _invoke("updateModelStyling",
+                model={"name": NOTETYPE, "css": t.get("css", "")})
+    except Exception as exc:
+        print("[cappa] anki sync: couldn't update the notetype (%s) — new "
+              "card pieces may not show until it does" % exc)
+
+
+def _sync_live(folders, deck):
+    _invoke("createDeck", deck=deck)   # Anki's own get-or-create by name
+    _ensure_model_live()
     added = 0
     for folder in folders:
         card_id = os.path.basename(folder)
@@ -221,19 +252,37 @@ def _backup(path):
 
 
 def _col_notetype(col):
-    nt = col.models.by_name(NOTETYPE)
-    if nt is not None:
-        return nt
     t = prefs.template()
-    nt = col.models.new(NOTETYPE)
-    for fname in FIELD_NAMES:
-        col.models.add_field(nt, col.models.new_field(fname))
-    tmpl = col.models.new_template("Cappa")
-    tmpl["qfmt"], tmpl["afmt"] = t.get("front", ""), t.get("back", "")
-    col.models.add_template(nt, tmpl)
-    nt["css"] = t.get("css", "")
-    col.models.add_dict(nt)
-    return col.models.by_name(NOTETYPE)
+    nt = col.models.by_name(NOTETYPE)
+    if nt is None:
+        nt = col.models.new(NOTETYPE)
+        for fname in FIELD_NAMES:
+            col.models.add_field(nt, col.models.new_field(fname))
+        tmpl = col.models.new_template("Cappa")
+        tmpl["qfmt"], tmpl["afmt"] = t.get("front", ""), t.get("back", "")
+        col.models.add_template(nt, tmpl)
+        nt["css"] = t.get("css", "")
+        col.models.add_dict(nt)
+        return col.models.by_name(NOTETYPE)
+    # Existing notetype: add any field the design has gained (only ever added,
+    # never removed -- that would drop card data) and refresh templates/CSS to
+    # the current design, so a field turned on in settings shows on the card.
+    # The app owns this notetype. Best-effort -- a save failure leaves the old
+    # notetype, and the card still adds without the new piece.
+    try:
+        have = {f["name"] for f in nt["flds"]}
+        for fname in FIELD_NAMES:
+            if fname not in have:
+                col.models.add_field(nt, col.models.new_field(fname))
+        tmpl = nt["tmpls"][0]
+        tmpl["qfmt"], tmpl["afmt"] = t.get("front", ""), t.get("back", "")
+        nt["css"] = t.get("css", "")
+        col.models.update_dict(nt)
+        nt = col.models.by_name(NOTETYPE)
+    except Exception as exc:
+        print("[cappa] anki sync: couldn't update the notetype (%s) — new "
+              "card pieces may not show until it does" % exc)
+    return nt
 
 
 def _sync_closed(folders, deck, collection_path):

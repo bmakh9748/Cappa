@@ -9,6 +9,8 @@ import time
 from difflib import SequenceMatcher
 
 from ..detection.sentence import CaptionBlock, caption_block
+from ..language import grammar, pronounce
+from ..language import translate as translate_mod
 from ..language.dictionary import meaning
 from ..language.translate import TranslationError, clean_word, translate
 from . import prefs, timing
@@ -196,6 +198,14 @@ def build_draft(word, region, recorder, out_dir=CARDS_DIR, translator=translate,
         write_audio(draft, sentence, recorder, now, source, near_t)
         _snap_to_track(draft)
     _translate_fields(draft, translator)
+    # The word's anatomy (from the on-screen surface + lemma, exactly as the
+    # popup's Grammar tab) and a TTS reading of the studied headword. Gathered
+    # AFTER _snap_to_track so the spoken word is the caption-corrected one. Off
+    # in the settings -> not gathered at all (no note, per prefs' contract).
+    if prefs.include("breakdown"):
+        _write_breakdown(draft, word)
+    if prefs.include("word_audio"):
+        _write_word_audio(draft)
     # A row clicked mid-life often clears while the card is still building
     # (translations take a beat): refresh the stamp so the metadata records
     # the row's FULL on-screen life, not the life as of the click. The audio
@@ -451,6 +461,45 @@ def _translate_fields(draft, translator):
             draft.sentence_translation = translator(draft.sentence)
         except TranslationError as exc:
             draft.notes.append("sentence translation: %s" % exc)
+
+
+def _write_breakdown(draft, word):
+    """Fill the Breakdown field with the word's anatomy — the SAME rich text
+    the popup's Grammar tab shows (language/grammar.anatomy_html), read off the
+    on-screen surface and the resolved lemma. Fail-soft: any lookup trouble is
+    a note, never a raise."""
+    surface = clean_word(getattr(word, "text", "")) or getattr(word, "text", "")
+    lemma = getattr(word, "lemma", None)
+    try:
+        draft.breakdown = grammar.anatomy_html(surface, lemma) or ""
+    except Exception as exc:
+        draft.notes.append("breakdown lookup failed: %s" % exc)
+
+
+def _write_word_audio(draft):
+    """Fetch a TTS reading of the studied headword into word_audio.mp3 — the
+    same free Google endpoint the popup's 🔊 uses (pronounce.fetch, no LLM).
+    Auto/blank language cannot be spoken (the endpoint needs a named voice);
+    every trouble is a note, never a raise."""
+    text = draft.word
+    lang = translate_mod.SOURCE_LANGUAGE
+    if not text or lang in ("", "auto"):
+        return
+    try:
+        data = pronounce.fetch(text, lang)
+    except pronounce.PronounceError as exc:
+        draft.notes.append("word audio: %s" % exc)
+        return
+    except Exception as exc:
+        draft.notes.append("word audio failed: %s" % exc)
+        return
+    path = os.path.join(draft.folder_path, "word_audio.mp3")
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+        draft.word_audio_path = path
+    except OSError as exc:
+        draft.notes.append("word audio save failed: %s" % exc)
 
 
 def _write_screenshot(draft, region, screenshotter, screenshot_png,

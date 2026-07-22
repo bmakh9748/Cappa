@@ -11,8 +11,10 @@ default_template() GENERATES the default design from the user's field
 placements: flip a field to the other side (or off) in the settings and
 the default follows. A custom template saved in the advanced editor is
 used verbatim instead (cappa.flashcard.prefs decides which one applies).
-anki_sync.sync() creates the Anki notetype from the current design the
-first time a card needs it."""
+anki_sync.sync() keeps the Anki notetype in step with this design -- it
+creates the notetype the first time a card needs it and, on later syncs,
+adds any field the design has gained and refreshes the faces/CSS to match,
+so turning a field on really does make it appear on the card."""
 
 import re
 
@@ -26,6 +28,8 @@ ANKI_FIELD_NAMES = {
     "sentence_translation": "Sentence Translation",
     "screenshot": "Screenshot",
     "audio": "Audio",
+    "breakdown": "Breakdown",
+    "word_audio": "Word Audio",
 }
 
 # One HTML snippet per field, wrapped in a conditional so a card missing
@@ -60,6 +64,16 @@ _CSS = """\
   border-radius: 8px;
 }
 .audio { margin-top: 10px; }
+.word-audio { margin-top: 10px; }
+.breakdown {
+  font-size: 15px;
+  line-height: 1.4;
+  text-align: left;
+  margin: 14px auto 0;
+  max-width: 30em;
+  color: #3a3f4c;
+}
+.breakdown b { color: #1d2029; }
 hr#answer {
   border: none;
   border-top: 1px solid #c9cdd8;
@@ -82,6 +96,8 @@ hr#answer {
 }
 .nightMode .word-translation { color: #5ad2ff; }
 .nightMode .sentence-translation { color: #9aa0b4; }
+.nightMode .breakdown { color: #c6cad8; }
+.nightMode .breakdown b { color: #eaeaf0; }
 .nightMode hr#answer { border-top-color: #3a3f52; }
 """
 

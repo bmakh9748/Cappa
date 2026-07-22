@@ -64,6 +64,7 @@ class FakeAnki:
     def __init__(self):
         self.decks = set()
         self.models = set()
+        self.model_fields = {}   # modelName -> [field names], for migration
         self.notes = []      # {"deck", "model", "fields", "tags"}
         self.media = {}      # filename -> bytes
 
@@ -86,7 +87,21 @@ class FakeAnki:
     def _createModel(self, p):
         assert p["inOrderFields"] == anki_sync.FIELD_NAMES
         self.models.add(p["modelName"])
+        self.model_fields[p["modelName"]] = list(p["inOrderFields"])
         return {}
+
+    def _modelFieldNames(self, p):
+        return list(self.model_fields.get(p["modelName"], []))
+
+    def _modelFieldAdd(self, p):
+        self.model_fields.setdefault(p["modelName"], []).append(p["fieldName"])
+        return None
+
+    def _updateModelTemplates(self, p):
+        return None
+
+    def _updateModelStyling(self, p):
+        return None
 
     def _findNotes(self, p):
         assert p["query"].startswith("tag:")
@@ -216,6 +231,29 @@ try:
             col.close()
         print("PASS: only the new card syncs; a lost receipt is adopted "
               "back without duplicating")
+
+        # The notetype tracks the design: turn Breakdown on, sync a new card,
+        # and the card template must gain {{Breakdown}} so a field switched on
+        # in settings actually renders (fields added, faces refreshed).
+        import cappa.flashcard.prefs as prefs
+        prefs.set_card_fields({"breakdown": "back"})
+        try:
+            _make_card(cards_dir, "card_0005", "hej", "hej tam")
+            assert anki_sync.sync(cards_dir=cards_dir, source_language="ja",
+                                  collection_path=col_path) == 1
+            col = Collection(col_path)
+            try:
+                nt = col.models.by_name(anki_sync.NOTETYPE)
+                names = {f["name"] for f in nt["flds"]}
+                assert {"Breakdown", "Word Audio"} <= names, names
+                assert "{{Breakdown}}" in nt["tmpls"][0]["afmt"], (
+                    nt["tmpls"][0]["afmt"])
+            finally:
+                col.close()
+            print("PASS: the notetype tracks the design — a field turned on "
+                  "gains its template slot")
+        finally:
+            prefs.set_card_fields(None)
 finally:
     anki_sync._transport = old_transport
 
@@ -254,5 +292,16 @@ try:
         assert fake.media == media_before
         assert os.path.isfile(_receipt(cards_dir, "card_0001"))
         print("PASS: live re-run re-sends nothing and adopts a lost receipt")
+
+        # Migration: a notetype from before a field existed (only the first
+        # six) gains Breakdown + Word Audio on the next sync, so the new
+        # pieces can render on old and new cards alike.
+        fake.model_fields[anki_sync.NOTETYPE] = anki_sync.FIELD_NAMES[:6]
+        _make_card(cards_dir, "card_0003", "czesc", "czesc wam")
+        assert flashcard.sync_to_anki(cards_dir=cards_dir,
+                                      source_language="ja") == 1
+        assert "Breakdown" in fake.model_fields[anki_sync.NOTETYPE]
+        assert "Word Audio" in fake.model_fields[anki_sync.NOTETYPE]
+        print("PASS: an existing notetype gains new fields on the next sync")
 finally:
     anki_sync._transport = old_transport

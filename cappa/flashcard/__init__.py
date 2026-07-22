@@ -8,7 +8,8 @@ The map (one ingredient per file):
 
     builder.py     build_draft: assembles one card into cards/card_NNNN --
                    text, sentence provenance, translations, snap-to-track
-                   correction, click-time PNG capture/write
+                   correction, click-time PNG capture/write, and the two
+                   opt-in extras (grammar breakdown, TTS word audio)
     clip.py        the audio: picks the caption window (text vs position
                    match) and cuts it -- source audio, loopback, fallbacks
     timing.py      window maths: pre/postroll, min/max clip (the appear/clear

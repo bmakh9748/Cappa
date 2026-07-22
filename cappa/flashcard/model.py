@@ -9,8 +9,9 @@ class CardDraft:
 
     __slots__ = (
         "word", "word_surface", "word_translation", "sentence",
-        "sentence_translation",
+        "sentence_translation", "breakdown",
         "folder_path", "metadata_path", "image_path", "audio_path",
+        "word_audio_path",
         "audio_seconds", "audio_window", "screenshot_source", "word_box",
         "sentence_box", "word_index", "sentence_verified", "appeared_at",
         "cleared_at", "created_at", "notes", "source_meta", "assembled",
@@ -24,10 +25,16 @@ class CardDraft:
         self.word_translation = ""
         self.sentence = sentence
         self.sentence_translation = ""
+        # The word's anatomy as rich text (language/grammar.anatomy_html),
+        # gathered only when the Breakdown field is on. "" otherwise.
+        self.breakdown = ""
         self.folder_path = None
         self.metadata_path = None
         self.image_path = None
         self.audio_path = None
+        # A TTS reading of the headword (word_audio.mp3), gathered only when
+        # the Word audio field is on. None otherwise.
+        self.word_audio_path = None
         self.audio_seconds = 0.0
         self.audio_window = None
         self.screenshot_source = None

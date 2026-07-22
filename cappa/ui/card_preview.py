@@ -253,6 +253,10 @@ class CardPreview(QWidget):
             return self._image(holder, draft.image_path)
         if key == "audio":
             return self._audio(holder, draft.audio_path, draft.audio_seconds)
+        if key == "word_audio":
+            return self._word_audio(holder, draft.word_audio_path)
+        if key == "breakdown":
+            return self._breakdown(holder, draft.breakdown)
         text = {
             "word": draft.word,
             "word_translation": draft.word_translation,
@@ -267,6 +271,29 @@ class CardPreview(QWidget):
         label.setMaximumWidth(MAX_TEXT_WIDTH)
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         return label
+
+    def _breakdown(self, holder, html_text):
+        """The word's anatomy as rich text -- the same markup the popup's
+        Grammar tab and the card show."""
+        if not html_text:
+            return _missing(holder, "— empty")
+        label = QLabel(holder)
+        label.setObjectName("fieldValue")
+        label.setTextFormat(Qt.RichText)
+        label.setText(html_text)
+        label.setWordWrap(True)
+        label.setMaximumWidth(MAX_TEXT_WIDTH)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        return label
+
+    def _word_audio(self, holder, path):
+        if not path or not os.path.isfile(path):
+            return _missing(holder, "— no word audio")
+        button = QPushButton("▶  Say the word", holder)
+        button.setObjectName("play")
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(lambda: _play_mp3(path))
+        return button
 
     def _image(self, holder, path):
         if not path or not os.path.isfile(path):
@@ -374,3 +401,15 @@ def _play(path):
                            | winsound.SND_NODEFAULT)
     except Exception as exc:
         print("[cappa] clip playback failed:", exc)
+
+
+def _play_mp3(path):
+    """Play an MP3 the word-audio field carries. winsound is WAV-only, so this
+    goes through winapi's MCI player on a daemon thread (the same call
+    pronounce.say uses) -- the UI never blocks for the clip's length."""
+    def run():
+        try:
+            winapi.play_mp3_blocking(path)
+        except Exception as exc:
+            print("[cappa] word-audio playback failed:", exc)
+    threading.Thread(target=run, daemon=True).start()

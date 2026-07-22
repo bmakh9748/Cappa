@@ -58,6 +58,11 @@ CARD_FIELDS = [
     ("sentence_translation", "Sentence translation", CARD_BACK),
     ("screenshot", "Screenshot", CARD_FRONT),
     ("audio", "Audio", CARD_FRONT),
+    # The word's anatomy (Japanese: conjugation chain + per-kanji info) and a
+    # TTS reading of the headword. Both off by default — opt-in extras the
+    # Flashcards tab turns on; keying off means no grammar build, no TTS fetch.
+    ("breakdown", "Breakdown", CARD_OFF),
+    ("word_audio", "Word audio", CARD_OFF),
 ]
 DEFAULT_CARD_FIELDS = {key: default for key, _, default in CARD_FIELDS}
 

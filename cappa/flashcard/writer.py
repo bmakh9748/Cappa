@@ -57,6 +57,7 @@ def write_artifacts(draft):
                 draft.word_translation)
     _write_text(os.path.join(folder, "sentence_translation.txt"),
                 draft.sentence_translation)
+    _write_text(os.path.join(folder, "breakdown.txt"), draft.breakdown)
     if draft.notes:
         _write_text(os.path.join(folder, "notes.txt"), "\n".join(draft.notes))
 
@@ -87,6 +88,11 @@ def _metadata(draft, folder):
         "sentence": draft.sentence,
         "word_translation": draft.word_translation,
         "sentence_translation": draft.sentence_translation,
+        # The word's anatomy rich text (Breakdown field) and a TTS reading of
+        # the headword (Word audio field) — gathered only when those fields
+        # are on. Added keys, never renamed (rule 10).
+        "breakdown": draft.breakdown,
+        "word_audio": _relpath(draft.word_audio_path, folder),
         "sentence_verified": draft.sentence_verified,
         "word_index": draft.word_index,
         "word_box": list(draft.word_box) if draft.word_box else None,
