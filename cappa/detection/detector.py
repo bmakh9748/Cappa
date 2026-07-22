@@ -7,7 +7,7 @@ heuristics; every text line it finds becomes a live, hoverable caption.
 The model runs through onnxruntime — RapidOCR ships the same PP-OCRv5 weights
 pre-converted to ONNX — instead of PaddlePaddle's executor: same boxes, ~7x
 faster, and Paddle's oneDNN fast path crashes on Windows. On a machine with a
-GPU the session goes to DirectML (gpu.py decides) and the working size grows:
+GPU the session goes to DirectML (gpu_available below) and the working size grows:
 the scan gets sharper AND no slower — see TARGET_SIDE_GPU. The
 worker still calls scan() only when the frame actually changed, throttled —
 never per-frame. The frame is shrunk before inference (cost is roughly
@@ -19,8 +19,6 @@ if loading fails, scan() returns [] and the app keeps running without caption
 detection rather than crashing."""
 
 import sys
-
-from . import gpu
 
 TARGET_SIDE = 736    # CPU working size: shrink the long side to this. On a
                      # full 1920x1080 capture 736 still finds ~26px captions
@@ -62,6 +60,36 @@ def _same_line(a, b):
     return gap <= MERGE_GAP * max(ah, bh)
 
 
+# Device choice for BOTH neural stages (ocr.py borrows these two). The
+# probe and the truth can disagree — the wheel lists the DirectML provider
+# even with no usable adapter; rapidocr then quietly creates the session on
+# CPU. Nothing here can crash the load path.
+
+def gpu_available():
+    """True when the installed onnxruntime BUILD ships the DirectML
+    provider. The wheel, not the adapter: a session can still land on CPU
+    (see session_device) — never make a final tuning decision on this."""
+    try:
+        import onnxruntime
+        return "DmlExecutionProvider" in onnxruntime.get_available_providers()
+    except Exception:
+        return False
+
+
+def session_device(module):
+    """'gpu' or 'cpu': where `module`'s ONNX session ACTUALLY landed
+    (rapidocr's det/rec modules each hold their engine at .session) — or
+    None when rapidocr's internals have shifted and the truth can't be
+    read. Callers must treat None as UNKNOWN (report it, tune
+    conservatively), never substitute the install probe here: this is the
+    one channel that exposes a session that silently fell back to CPU."""
+    try:
+        provider = module.session.session.get_providers()[0]
+        return "gpu" if "Dml" in provider else "cpu"
+    except Exception:
+        return None
+
+
 class TextDetector:
     def __init__(self, target_side=None, min_score=MIN_SCORE):
         # None -> sized to the device (see TARGET_SIDE_GPU); _ensure()
@@ -69,7 +97,7 @@ class TextDetector:
         # landed on CPU. An explicit target_side is never second-guessed.
         self._auto_sized = target_side is None
         if target_side is None:
-            target_side = TARGET_SIDE_GPU if gpu.available() else TARGET_SIDE
+            target_side = TARGET_SIDE_GPU if gpu_available() else TARGET_SIDE
         self._target_side = target_side
         self._min_score = min_score
         self._model = None
@@ -204,9 +232,9 @@ class TextDetector:
                 "Det.limit_type": "max",
                 # GPU when the venv has it; rapidocr falls back to CPU on
                 # its own when the provider list disagrees (fail-open).
-                "EngineConfig.onnxruntime.use_dml": gpu.available(),
+                "EngineConfig.onnxruntime.use_dml": gpu_available(),
             })
-            self._device = gpu.session_device(self._model.text_det)
+            self._device = session_device(self._model.text_det)
             # _detect()'s fused normalise assumes mean = std = 0.5 (what
             # every PP-OCR det pack ships). Check the loaded pack once; a
             # mismatch just keeps the wrapper path, never wrong boxes.

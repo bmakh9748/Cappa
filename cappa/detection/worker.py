@@ -149,8 +149,8 @@ class CaptureWorker(QObject):
                                    daemon=True)
         scanner.start()
 
-        # Cadence keyed to where the sessions actually LANDED (gpu.py's
-        # truth channel), not the install probe: unknown placement gets
+        # Cadence keyed to where the sessions actually LANDED (detector's
+        # session_device), not the install probe: unknown placement gets
         # the conservative CPU cadence.
         scan_interval = (SCAN_INTERVAL if detector.device == "gpu"
                          else SCAN_INTERVAL_CPU)

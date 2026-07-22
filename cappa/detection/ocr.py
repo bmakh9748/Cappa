@@ -26,7 +26,7 @@ import sys
 import numpy as np
 
 from .. import lexicon
-from . import gpu
+from .detector import gpu_available, session_device
 from .sentence import Sentence, is_cjk
 
 PAD = 4      # px of context around the crop; rec likes breathing room
@@ -168,7 +168,7 @@ class TextReader:
             return
         self._script = script
         self._model = self._models.get(script)
-        self._device = (gpu.session_device(self._model.text_rec)
+        self._device = (session_device(self._model.text_rec)
                         if self._model is not None else None)
         self._failed = False  # a new model deserves a fresh load attempt
         self._read_errors = set()  # ...and fresh failure reporting
@@ -375,7 +375,7 @@ class TextReader:
                 # CPU, 7 vs 9 ms/read, and it keeps both neural stages on
                 # one device); rapidocr falls back to CPU on its own when
                 # the provider list disagrees (fail-open).
-                "EngineConfig.onnxruntime.use_dml": gpu.available(),
+                "EngineConfig.onnxruntime.use_dml": gpu_available(),
             }
             if self._script:
                 self._model = self._load_script_model(base)
@@ -383,7 +383,7 @@ class TextReader:
                 self._model = RapidOCR(params=base)
             self._models[self._script] = self._model  # cached for the
             # process's life — see __init__ on why it must never be dropped
-            self._device = gpu.session_device(self._model.text_rec)
+            self._device = session_device(self._model.text_rec)
         except Exception as exc:  # missing package / download failure
             self._failed = True
             print("cappa: text reading unavailable (%s: %s) — detection "
