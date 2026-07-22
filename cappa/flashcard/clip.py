@@ -4,7 +4,7 @@ THE WINDOW RULE: the clip is the clicked caption BLOCK's on-screen life. Every r
 looked up in this run's transcript (plus its live ledger stamps); the
 EARLIEST appearance is the start and the LATEST clear is the end, used as-is
 — those stamps are already detector-lag-corrected, so no buffer is added
-(HEAD_BUFFER/TAIL_TRIM are 0; card_0006). Taking the
+(card_0006). Taking the
 earliest logged sighting absorbs detection churn: a row the ledger cleared
 and re-accepted mid-life (card_0002: animated art next to the glyphs)
 anchors at the caption's real pop, not its rebirth.
@@ -45,13 +45,6 @@ from .timing import audio_window, shrink_to_max, widen_to_min
 # from it when the track is human-made (card_0018).
 SOURCE_STRONG_SCORE = 0.75
 
-# No buffer (card_0006): the transcript's appeared/cleared are already
-# detector-lag-corrected, so a head buffer starts the clip early and a
-# tail trim chops the last word. Named so a deliberate ring-out lead/tail
-# can be dialed back in.
-HEAD_BUFFER = 0.0
-TAIL_TRIM = 0.0
-
 # Slack when deciding whether a track match is the SAME occurrence as the
 # on-screen life it would extend (vs. a duplicate line elsewhere). A
 # fragment we detected sits inside the true window, so a real match always
@@ -68,7 +61,7 @@ SILENT_CLIP_PEAK = 100
 # END belongs on the card. A SEEN clear needs no buffer — its stamp already
 # trails the real vanish (user call); only the pause path, where the line
 # is still up and the true end unknown, gets this small tail past the click.
-PAUSE_TAIL = 0.4
+PAUSE_TAIL = 0.2
 # A mid-life click on a PLAYING video may wait this long for the row's
 # vanish before the clip's end is chosen: the source audio is a FILE (it
 # can wait; the old loopback ring buffer couldn't), and the clear stamp is
@@ -318,10 +311,11 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
     if near_t is not None:
         draft.source_meta["click_position"] = round(near_t, 3)
 
-    # The user's buffers, then the user's min/max clip settings — the cap
-    # centres on the click so the clicked word stays inside a long block.
-    start = max(0.0, match["start"] - HEAD_BUFFER)
-    end = match["end"] - TAIL_TRIM
+    # The user's min/max clip settings — the cap centres on the click so
+    # the clicked word stays inside a long block. No head/tail buffer: the
+    # window's stamps are already detector-lag-corrected (card_0006).
+    start = max(0.0, match["start"])
+    end = match["end"]
     start, end = widen_to_min(start, end, timing.MIN_CLIP, floor=0.0)
     start, end = shrink_to_max(start, end, timing.max_clip(), center=near_t)
     # Nothing past the video's end can play: a predicted end that overruns
@@ -338,8 +332,6 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         "matched_by": match["by"],
         "start": start,
         "end": end,
-        "head_buffer": HEAD_BUFFER,
-        "tail_trim": TAIL_TRIM,
         "score": draft.source_meta["match_score"],
         "caption_text": draft.source_meta["caption_text"],
         "lang": meta.get("caption_lang"),
