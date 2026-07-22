@@ -2046,3 +2046,45 @@ stale 'four unit tests' sentence fixed. All regressions pinned in
 test_arabic (20 form cases + live انتظر/يؤكد round-trips),
 test_indonesian (20 anatomy cases + di+place silence), and the X-X row
 joined ID_AFFIX_NOTES with its tripwire.
+
+### 2026-07-22 — the great shed: bloat out, history to where it belongs
+
+The user's ask: commit the popup wave properly ("bit by bit"), then cut
+the bloat — "huge folders and some tiny files that can be combined some
+things useless… the comments are also excessive… a lot of constants that
+are bloat."
+
+The wave landed as fourteen one-concern commits (roster reduction, the
+requests-first TLS fix, winmm playback, pronounce, the examples pack
+switch, kanjidic, arabic, indonesian, grammar_notes, examples, the popup
+UI, the worker's pack warming, docs, this log) — the shared files
+(dictionary.py, requirements.txt, run_all.py) staged as intermediate
+versions so each commit is coherent alone.
+
+Then the cleanup, each its own commit:
+
+- classifier.py retires (user call): the junk-text tag was the last
+  remnant of the caption-vs-not classifiers, and the whole Sentence.junk
+  plumbing went with it — stamp, block/transcript exclusion, tests.
+  KNOWN TRADE: card_0028's guard is gone; a watermark that stacks with a
+  caption can join its card sentence again. One revert brings it back.
+- Duplicate constants collapse: examples/pronounce import dictionary's
+  TIMEOUT and USER_AGENT instead of carrying copies whose comments said
+  "matches dictionary.py"; worker's gate reads diff's CHANGED_FRACTION
+  directly (they were synced by hand since the 07-18 shimmer fix).
+- Dead code out: Transcript.full_text (no caller), bridge.cookies_at
+  (written, never read), _translate_fields' unread sentence parameter —
+  each verified against dynamic access before deletion.
+- Tiny files fold inward: latency.py's two constants into
+  detection/__init__ (import-light as ever), capture.py's ScreenCapture
+  into diff.py (frame intake is one stage), provenance.py and
+  screenshot.py into builder.py (single-consumer helpers). gpu.py,
+  prefs.py, model.py and logo.py stay — each has two-plus consumers or
+  is a real seam.
+- The comment diet (~200 lines): review dates, user quotes, was-X-before
+  tuning archaeology and paragraphs restating a neighbour's docstring
+  compress to the current why; card citations and tunables' one-liners
+  all survive. AGENTS rule 12 now pins the discipline: comments carry
+  the why, history lives here.
+
+Suite: ALL PASS (29 unit files) after every step.
