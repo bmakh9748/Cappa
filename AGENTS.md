@@ -97,6 +97,11 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
 11. **New setting = four touches:** a field in `settings.py`, a row in
     `ui/startup.py`, the push in `app.py`'s `apply_settings()`, and module
     state in the consuming module (read at call time, so Save applies live).
+12. **Comments carry the why, not the history.** One or two lines per
+    constraint. Dates, user quotes, rejected alternatives, measurement
+    diaries and "was X before" narration belong in `PLAN.md`, not code;
+    a constraint stated fully in one place is a one-line pointer everywhere
+    else. `card_NNNN` citations stay (rule 10).
 
 ## Tests
 
