@@ -10,6 +10,9 @@ studied language below it. The map:
                    Tatoeba top-up
     pronounce.py   word audio: free Google TTS fetch + winmm playback
     lexicon.py     per-language word-frequency packs: splits glued OCR runs
+    grammar.py     the word's anatomy as rich text (inflection chain +
+                   kanji / root+form / affixes) — the popup's Grammar tab
+                   and the card's Breakdown field share it
 
 Every module and subpackage here is Qt-free and blocking — the UI calls
 them from helper threads. Free, key-less endpoints only (the house rule)."""

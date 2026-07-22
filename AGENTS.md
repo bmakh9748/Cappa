@@ -35,6 +35,8 @@ cappa/
                    dictionary.py  meanings: Wiktionary first, Google fallback
                    examples.py    example sentences: pack/Wiktionary/Tatoeba
                    pronounce.py   word audio: Google TTS + winmm playback
+                   grammar.py     the word's anatomy as rich text (popup's
+                                  Grammar tab + the card's Breakdown field)
                    lexicon.py     word-frequency packs (split glued OCR runs)
                    japanese/      jmdict.py (lookup + deinflection + word_at
                                   + grammar notes) and kanjidic.py (per-kanji

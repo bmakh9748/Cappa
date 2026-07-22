@@ -244,15 +244,15 @@ print("PASS: web examples wait for the tab, load once, bold the word")
 # ---- the Grammar tab: as lazy as Examples -------------------------------
 translate.SOURCE_LANGUAGE = "ja"
 gr_calls = []
-orig_grammar_html = word_popup._grammar_html
+orig_anatomy_html = word_popup.grammar.anatomy_html
 
 
-def fake_grammar_html(surface, lemma):
+def fake_anatomy_html(surface, lemma):
     gr_calls.append((surface, lemma))
     return "<p><b>fake grammar</b></p>"
 
 
-word_popup._grammar_html = fake_grammar_html
+word_popup.grammar.anatomy_html = fake_anatomy_html
 word = span_word(make_line("戻るのも面倒なんで"), 4, 6)
 word.lemma = jmdict.word_at(word.text, 0).base
 popup.show_for(word, anchor)              # Meaning tab in front
@@ -269,7 +269,7 @@ popup.preview_for(span_word(make_line("makan enak"), 0, 5), anchor)
 assert "Release" in popup._grammar.text(), popup._grammar.text()
 assert gr_calls == [("面倒", "面倒")], gr_calls
 popup._tabs.setCurrentIndex(0)
-word_popup._grammar_html = orig_grammar_html
+word_popup.grammar.anatomy_html = orig_anatomy_html
 print("PASS: the Grammar tab waits for its turn, builds once")
 
 # ---- 🔊 speaks the shown headword off-thread ----------------------------
