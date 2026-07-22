@@ -2088,3 +2088,38 @@ Then the cleanup, each its own commit:
   the why, history lives here.
 
 Suite: ALL PASS (29 unit files) after every step.
+
+### 2026-07-22b — the root unclutters: cappa/language/, and two more dead dials
+
+The user's ask: "a bunch of files just in the cappa folder… organise all
+the language specific things in a big folder each having their own
+folder… things like dictionary and examples in the big language folder…
+does gpu really need its own file… there is headbuffer and tail trim at
+0 0 and if there is tail trim then why is there pause tail."
+
+Shipped, each its own commit:
+
+- gpu.py folds into detector.py (gpu_available/session_device; ocr.py
+  borrows both). Twelve lines of code did not need a file.
+- HEAD_BUFFER/TAIL_TRIM deleted: 0.0-valued dials nothing turned, plus
+  their subtract-nothing arithmetic and their never-read metadata keys.
+  PAUSE_TAIL is NOT one of them — it is the guessed tail for a click on
+  a line still up during a pause, where the true end was never seen.
+- cappa/language/ is born: translate, dictionary, examples, pronounce,
+  lexicon (the any-language machinery) at its root; japanese/ (jmdict +
+  kanjidic), arabic/ (morphology.py), indonesian/ (affixes.py) below.
+  grammar_notes.py dissolved into the languages that own its tables:
+  the JA notes beside jmdict._RULES whose keys they must match, the
+  Form I-X table beside verb_form(), the affix notes beside the
+  splitter — each with its tripwire moved into that language's test.
+  Pack-dir paths gained their extra levels (verified resolving).
+  cappa/ root: 14 loose modules -> 7.
+
+Naming lesson: indonesian/anatomy.py holding def anatomy() collided with
+the package __init__'s re-export (the function shadowed the submodule) —
+renamed affixes.py.
+
+Suite: ALL PASS (29 unit files) after every commit; a three-agent
+verification pass (stale refs / doc truth / import graph) came back clean
+except doc nits, fixed, including two pre-existing map gaps
+(screen_recorder.py, README's lexicon row).
