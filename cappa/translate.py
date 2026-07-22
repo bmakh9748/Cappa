@@ -13,21 +13,12 @@ instant and off the network.
 with double quotes inside the sentence, the whole thing is translated, and
 the marked span of the result is the answer — Google translates the word
 as the sentence uses it (Arabic معروف alone comes back as the noun
-'favor'; inside وغير معروف it becomes 'known'). Quotes usually survive
-translation; whenever they don't (dropped, moved, or Google leaves the
-quoted word untranslated) the bare-word translation is the fallback, so
-context can only improve on the old behaviour, never lose it. The quotes
-can also DRIFT: when the marked word fuses with a neighbour into one
-phrase, Google puts the quotes around the neighbour's translation
-(card_0047: SEKALIAN came back "GET OUT" — DIKELUARIN's meaning). A span
-whose back-translation names a different word of the sentence is rejected
-the same way, falling back to the bare word.
+'favor'; inside وغير معروف it becomes 'known'). Marks that get dropped or
+drift onto a neighbour (card_0047) fall back to the bare word (see
+_extract_marked and _span_points_elsewhere).
 
-Case: hardsub captions SHOUT, and Google half-guesses all-caps words it
-would translate fine in lowercase (card_0052: KELAR -> 'GONE', kelar ->
-'finished'). Fully-uppercase input is therefore translated in lowercase,
-and the answer keeps Google's natural casing — a card full of shouted
-translations is unreadable (user call: never mirror the caption's caps).
+Case: all-caps input is translated in lowercase and the answer keeps
+Google's casing (card_0052; see _deshout).
 
 SOURCE_LANGUAGE defaults to auto-detect, but auto-detect fails on lone words
 (a bare "BAWA" comes back "BAWA"): naming the video's language via the settings

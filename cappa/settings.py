@@ -12,12 +12,9 @@ _PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings.json")
 
 # Languages offered in the pickers: (Google/deep-translator code, display
-# name). A deliberate REDUCTION (2026-07-21, user call): the app teaches in
-# English only, and the sources are exactly the three languages being
-# studied — so each one can be made genuinely deep (dictionary, examples,
-# grammar anatomy, audio) instead of fourteen being shallow. "auto" left the
-# picker with the wide roster: every one of its branches means a capability
-# turned off, and a video is now always in a named language.
+# name). Deliberately small: English-only teaching, and just the three
+# studied source languages so each gets real depth; no "auto" — every
+# capability needs a named language.
 TARGET_LANGUAGES = [("en", "English")]
 DEFAULT_TARGET = "en"
 

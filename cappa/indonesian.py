@@ -53,8 +53,7 @@ _NASAL_HEADS = ("meny", "men", "mem", "meng", "peny", "pen", "pem", "peng")
 # Sastrawi picks a wrong-but-plausible segmentation for a few very common
 # words (berikan is beri + -kan 'give!', not ber- + ikan 'to have fish';
 # berpegangan is ber- + pegang + -an 'hold on', not ber- + gang). The
-# popup must never teach the fish reading — verified traps are pinned
-# (review 2026-07-21).
+# popup must never teach the fish reading — verified traps are pinned.
 _OVERRIDES = {
     "berikan": ("beri", ("-kan",)),
     "berpegangan": ("pegang", ("ber-", "-an")),

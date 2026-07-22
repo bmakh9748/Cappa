@@ -53,11 +53,10 @@ DB_NAME = "jmdict-eng.sqlite3"
 ZIP_NAME = "jmdict-examples-eng.json.zip"  # kept so a rebuild costs no
                                            # download; the -examples variant
                                            # since schema 3
-OLD_ZIP_NAME = "jmdict-eng.json.zip"  # the pre-examples cache a schema-2
-                                      # machine still holds: no examples in
-                                      # it, but the full dictionary — the
-                                      # offline BRIDGE when the new zip
-                                      # can't be fetched at upgrade time
+OLD_ZIP_NAME = "jmdict-eng.json.zip"  # the pre-examples cached zip: the
+                                      # offline BRIDGE when the examples
+                                      # zip can't be fetched at upgrade
+                                      # time (see ensure_pack).
 SCHEMA_VERSION = "3"
 
 MAX_EXAMPLES = 5   # jp/en pairs kept per entry (sense order, so the best
@@ -86,12 +85,9 @@ MAX_SCAN = 12     # longest substring tried from the clicked character. The
 MAX_DEPTH = 5     # deinflection rules chained per candidate: やっといてくれ
                   # needs all five (imperative, -te kuru, -te, -te oku
                   # contraction, -te) to reach やる.
-LOOKBACK = 8      # how far word_at() searches BACK for a word that covers
-                  # the clicked character. Scanning only forward (which is
-                  # all Yomitan does) answers a click on 倒 in 面倒 with the
-                  # lone kanji 倒, 'reverse; inversion'. Cappa's hotspots are
-                  # per character, so it can afford to ask which WORD the
-                  # character is inside.
+LOOKBACK = 8      # how far word_at() searches BACK for a word covering the
+                  # clicked character (rationale and the 面倒 case: word_at's
+                  # docstring).
 
 # Part-of-speech families a deinflection rule can demand. JMdict's own tags
 # are finer (v5r, v5k, vs-i, ...); _family() folds them onto these.

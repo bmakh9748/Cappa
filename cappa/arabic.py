@@ -190,7 +190,7 @@ def verb_form(lemma, root=""):
     root, when known) breaks the one tie shapes can't (IX vs an
     assimilated Form VIII geminate).
 
-    Check order is load-bearing (review 2026-07-21, verified live):
+    Check order is load-bearing:
     the VIII shape runs before VII because انتظر (iftaʿala, root ن ظ ر)
     also starts with ان; the doubled-middle II test runs before IV
     because أَكَّد (faʿʿala, hamza-initial root) also starts with أ."""
@@ -202,12 +202,8 @@ def verb_form(lemma, root=""):
     if n == 6 and s.startswith("است"):        # است...
         return "X"
     if n == 5:
-        if s[0] == "ا" and s[2] == "ت":            # ا?ت... (before VII —
-            return "VIII"                               # انتظر is VIII; a
-                                                        # true VII of a
-                                                        # ت-initial root
-                                                        # doesn't exist in
-                                                        # MSA)
+        if s[0] == "ا" and s[2] == "ت":            # ا?ت... (before VII: no
+            return "VIII"                          # ت-initial Form VII in MSA)
         if s.startswith("ان"):                     # ان...
             return "VII"
         if s[0] == "ت" and s[2] == s[3]:                # ت + doubled
@@ -226,10 +222,7 @@ def verb_form(lemma, root=""):
         return None
     if n == 4:
         if s[1] == s[2]:                                     # doubled middle
-            return "II"                            # (before IV — أَكَّد is
-                                                   # hamza-initial II; a
-                                                   # true IV never doubles
-                                                   # THIS position)
+            return "II"  # (before IV: a true IV never doubles this position)
         if s[0] == "أ":                                 # أ...
             return "IV"
         if s[0] == "ا" and s[1] == "ا":            # آ fused from ʾa+ā:

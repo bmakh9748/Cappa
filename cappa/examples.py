@@ -180,10 +180,8 @@ def sentences(word, lemma=None, limit=LIMIT):
     if not out and failed:
         raise ExamplesError("no examples — check your internet")
     if not failed or len(out) >= limit:
-        # A list assembled while a source was DOWN is not the answer, it is
-        # what was salvageable: cache only complete or fully-answered
-        # results, so the next click retries the failed source (the same
-        # rule dictionary.py's page cache lives by).
+        # Cache only complete or fully-answered results, so the next click
+        # retries the failed source (dictionary.py's page-cache rule).
         if len(_cache) >= _CACHE_MAX:
             _cache.clear()
         _cache[key] = out
