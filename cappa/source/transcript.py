@@ -23,14 +23,11 @@ from difflib import SequenceMatcher
 _EDGE = re.compile(r"^\W+|\W+$", re.UNICODE)  # leading/trailing punctuation
 MIN_SCORE = 0.65          # below this we report no confident match
 SEARCH_RADIUS = 20.0      # seconds around near_t to consider (when given)
-WORD_MAX = 1.0            # effective cap on one token's spoken duration. The
-                          # rolling-VTT parser sets a token's end to the NEXT
-                          # token's start, so the last word before a silence
-                          # carries the whole silence in its raw end
-                          # (card_0061: 'lagi' spanned 8.2s) — and that one
-                          # phantom-long word poisoned every gap and span
-                          # test around it, cutting the real sentence out of
-                          # the position window.
+WORD_MAX = 1.0            # cap on one token's spoken duration: the rolling
+                          # VTT parser sets a token's end to the NEXT token's
+                          # start, so the last word before a silence carries
+                          # the whole silence in its raw end (card_0061:
+                          # 'lagi' spanned 8.2s).
 _SHRINK = 1               # candidate window may be at most 1 word shorter...
 _GROW = 2                 # ...and up to 2 longer than the OCR line. Asymmetric
                           # on purpose: a shorter window can perfectly match a
@@ -79,10 +76,8 @@ class Transcript:
         if best is None or best[0] < min_score:
             return None
         score, i, j = best
-        # The last token's end is capped like window_at's (card_0075): in the
-        # rolling format a word's raw end is the NEXT word's start, so an
-        # uncapped end absorbs the inter-sentence silence and the clip runs
-        # into the next line's audio.
+        # Last token's end capped like window_at's (card_0075) — see
+        # _capped_end and the WORD_MAX note.
         return {
             "start": self.tokens[i].start,
             "end": _capped_end(self.tokens[j - 1]),
@@ -156,13 +151,9 @@ class Transcript:
             return None
         i0, j0, capped = sentence_slice(self.tokens, m["i"], m["j"])
         if capped:
-            # The sentence grew to the SENTENCE_MAX runaway cap without ever
-            # hitting a real boundary: an unpunctuated auto-caption track has
-            # no sentence structure here, so "the sentence containing this
-            # line" became the whole neighbourhood. Completing against that
-            # merges unrelated sentences into the card (card_0032: a clean
-            # 7-word line ballooned to 40 words spanning the first 15s). No
-            # confident sentence -> the caller keeps the clean on-screen line.
+            # No real boundary before SENTENCE_MAX (see sentence_slice):
+            # completing would merge unrelated sentences into the card
+            # (card_0032) — keep the clean on-screen line.
             return None
         words = [(t.text, t.start, _capped_end(t))
                  for t in self.tokens[i0:j0] if not _marker(t)]

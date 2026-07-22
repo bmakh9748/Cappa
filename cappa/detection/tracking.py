@@ -1,9 +1,9 @@
 """Bookkeeping between neural scans: which captions are live.
 
 Every detector scan reports ALL text on screen, and every text line becomes
-a live caption (the caption-vs-not gates are gone — user call, 2026-07-09);
-the ledger's job is knowing what is ALREADY live so a line is read once, not
-on every scan, and noticing when a live line leaves or changes. Each live
+a live caption; the ledger's job is knowing what is ALREADY live so a line
+is read once, not on every scan, and noticing when a live line leaves or
+changes. Each live
 box carries a coarse content fingerprint of the pixels inside, taken at
 accept time: it's what tells a blip from a real clear (resurrect) and spots
 a line replaced in place (drifted).
@@ -28,19 +28,13 @@ from .sentence import Sentence
 MATCH_OVERLAP = 0.55   # intersection / smaller-area to call two boxes "same"
 MISS_LIMIT = 3         # consecutive scans not seeing a live caption = stale
 CLEAR_CONFIRM = 0.18   # seconds a clear stays pending before it surfaces —
-                       # long enough for a confirming scan to resurrect a
-                       # blip. Was 0.35, sized for the 0.2 s scan cadence;
-                       # scans now come every ~0.05-0.1 s (async pipeline),
-                       # so a blip still gets 2+ scans and a real clear
-                       # surfaces twice as fast (boxes lingered — user
-                       # report, 2026-07-18)
+                       # long enough that a blip gets 2+ confirming scans at
+                       # the ~0.05-0.1 s cadence to resurrect it
 FP_BLOCKS = (2, 4)     # fingerprint grid over the box (rows, cols)
 FP_TOLERANCE = 8       # max per-block grey delta (0-255) = "same content".
-                       # Was 14: loose enough that a new caption line over a
-                       # remembered spot could read as "unchanged" and stay
-                       # muted — the words were on screen but unclickable
-                       # until a manual refresh. An untouched box drifts by
-                       # ~0-4, so 8 still absorbs wobble and compression.
+                       # An untouched box drifts ~0-4, so 8 absorbs wobble
+                       # and compression while a replaced line still reads
+                       # changed.
 DRIFT_CONFIRM = 0.30   # seconds a live box's content must STAY different
                        # from its accept-time fingerprint before it's retired
                        # as replaced-in-place — a control-bar gradient

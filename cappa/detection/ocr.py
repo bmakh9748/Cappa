@@ -226,11 +226,9 @@ class TextReader:
         elif text:
             spans = [(text, box)]  # no geometry: the line is one hotspot
         if text and not any(_spaceless(ch) for ch in text):
-            # A word the recogniser GLUED to its neighbour is split back
-            # apart by the lexicon -- but only into pieces that are every
-            # one a real word, so a genuine word is never torn and an OCR
-            # letter-error is left alone. No pack for the language -> no
-            # change. Never CJK: spacelessness there is correct.
+            # Un-glue words the recogniser joined, via the lexicon
+            # (see _lexicon_split); never CJK: spacelessness there is
+            # correct.
             split_text = _lexicon_split(text, self._lang)
             if split_text != text:
                 spans = _respan(spans, split_text)

@@ -89,13 +89,11 @@ class SourceSession:
                     self._fetching = False
 
     def _load_inner(self, url, lang, vid):
-        """Captions, then audio — and a caption failure does NOT skip the
-        audio. The clip windows come from the SCREEN (2026-07-07); the track
-        only fills edges and corrects text, so a caption-less video is still
-        a perfectly good audio source. This used to `return` on caption
-        failure, which meant no caption track -> source audio NEVER
-        downloaded -> every card limped on the loopback buffer (cards
-        0001/0002: 'audio not downloaded yet' minutes into the video)."""
+        """Captions, then audio — a caption failure must NOT skip the audio
+        download (cards 0001/0002: skipping it left every card limping on
+        loopback audio). The clip windows come from the SCREEN (2026-07-07);
+        the track only fills edges and corrects text, so a caption-less
+        video is still a perfectly good audio source."""
         captionless = False
         try:
             transcript = youtube.fetch_transcript(url, lang=lang)
@@ -368,10 +366,8 @@ class SourceSession:
             with self._lock:
                 if self.audio_ready:
                     return self._audio_path
-                # Captions failing is NOT a reason to skip the retry — a
-                # caption-less video's audio is still the best clip source
-                # (this gate used to require transcript_ready, the same
-                # disease _load_inner had). Only "no video at all" stops it.
+                # Caption failure never skips the retry (see _load_inner);
+                # only "no video at all" stops it.
                 url, vid = self._url, self._video_id
                 captionless = not self.transcript_ready
             if not url or vid is None:

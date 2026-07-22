@@ -18,27 +18,18 @@ on the loop against that snapshot, exactly as when it was synchronous. A
 reset/refresh bumps a generation counter and a stale in-flight result is
 dropped on arrival.
 
-The chain, one stage per file (cheap stages run every frame, the expensive
-one only when something changed, and never more often than SCAN_INTERVAL):
+The chain is mapped, one stage per file, in the package __init__; cheap
+stages run every frame, the neural scan only on change and never more often
+than SCAN_INTERVAL.
 
-    diff.py        grab + what changed since last     every frame   ~10 ms
-                   frame
-    stability.py   watch live captions for vanishing  every frame   <1 ms
-    detector.py    neural text detection (GPU when    on change     ~0.04-0.1 s
-                   the venv has DirectML; gpu.py)     (beside the loop)
-    ocr.py         read text in accepted boxes        on accept     ~0.01 s
-    tracking.py    match scans to what's already live
-
-Every text line the detector finds becomes a live, hoverable caption — the
-old caption-vs-not gates (geometry, burst, baseline muting) rejected too
-many real words and were deleted (user call, 2026-07-09). A caption's life:
-it appears -> the diff sees change -> the next throttled scan boxes it ->
-the ledger says it's new -> OCR reads it -> "appeared" is emitted and the
-watcher starts guarding its pixels -> the line ends -> the watcher notices
-within a frame or two -> the clear is held PENDING while a follow-up scan
-confirms it (a brief overlay sliding over the caption must not flicker it)
--> "cleared" is emitted, and the next line is usually already on screen for
-that same follow-up scan."""
+Every text line the detector finds becomes a live, hoverable caption. A
+caption's life: it appears -> the diff sees change -> the next throttled
+scan boxes it -> the ledger says it's new -> OCR reads it -> "appeared" is
+emitted and the watcher starts guarding its pixels -> the line ends -> the
+watcher notices within a frame or two -> the clear is held PENDING while a
+follow-up scan confirms it (a brief overlay sliding over the caption must
+not flicker it) -> "cleared" is emitted, and the next line is usually
+already on screen for that same follow-up scan."""
 
 import queue
 import sys
@@ -62,26 +53,16 @@ def _printable(s):
     return s.encode(enc, "backslashreplace").decode(enc)
 
 
-SCAN_INTERVAL = 0.05       # min seconds between GPU scan SUBMISSIONS (the
-                           # cadence is a true interval now that scans run
-                           # beside the loop — the old starvation ceiling is
-                           # gone: frame grabs continue during a scan, so a
-                           # tighter cadence no longer blinds the watcher).
-                           # Playing video keeps `dirty` set, so this is the
-                           # appear-latency floor during playback. One
-                           # in-flight job at a time means the real throttle
-                           # is the scan itself (~40-90 ms after the direct
-                           # det path landed); this just stops a fast GPU
-                           # from scanning unchanged pixels back-to-back.
-                           # Sim-measured through the fast path: see PLAN
-                           # 2026-07-18d.
-SCAN_INTERVAL_CPU = 0.2    # the CPU cadence, unchanged from the CPU era:
-                           # a CPU scan burns a core whether or not it
-                           # blocks the loop, and 0.2 was the measured
-                           # sweet spot for that budget (0.5s -> 169-834 ms
-                           # appear latency, 0.2s -> 197-538 ms; 0.15 worse).
-                           # Also used when placement is UNKNOWN (gpu.py
-                           # couldn't read the session) — conservative.
+SCAN_INTERVAL = 0.05       # min seconds between scan SUBMISSIONS. Playing
+                           # video keeps `dirty` set, so this is the
+                           # appear-latency floor during playback; with one
+                           # in-flight job the real throttle is the scan
+                           # itself (~40-90 ms) — this just stops a fast
+                           # GPU rescanning unchanged pixels back-to-back.
+SCAN_INTERVAL_CPU = 0.2    # the CPU cadence: a CPU scan burns a core
+                           # regardless, and 0.2 s measured best for that
+                           # budget. Also used when placement is UNKNOWN —
+                           # conservative.
 RESCAN_AFTER_CLEAR = 0.15  # a cleared line usually means a new one is up
 FORCED_RESCAN = 1.0        # max seconds between scans while tracking, even
                            # on a quiet screen: the automatic version of the
@@ -144,11 +125,8 @@ class CaptureWorker(QObject):
                  if reader.ready else "FAILED (no text rules)"))
 
         # The scan helper thread (see the module docstring): one job in
-        # flight at a time, the result consumed by the loop next pass.
-        # The detector belongs to THIS thread from here on; the loop keeps
-        # the reader/watcher/ledger. A job carries everything its apply
-        # step needs, so a scan is judged against the frame it actually
-        # scanned, not whatever is on screen when it finishes.
+        # flight at a time; the detector belongs to THIS thread from here
+        # on.
         scan_jobs = queue.Queue(maxsize=1)
         scan_results = queue.Queue()
         scan_done = threading.Event()  # lets _pace wake the moment a scan
@@ -343,16 +321,10 @@ class CaptureWorker(QObject):
         for box in ledger.resurrect(scan, sample, DOWNSCALE):
             watcher.watch(box)
             print("[cappa]   blip: caption re-confirmed, clear suppressed")
-        # A live caption whose content stopped matching its accept-time
-        # fingerprint MAY have been replaced in place (new line, same spot,
-        # no clean vanish between) — or the video's compression shimmer
-        # just drifted the pixels under unchanged text. Re-read BEFORE
-        # surfacing anything (user report, 2026-07-18: the same caption
-        # was re-read in a loop). Same text -> silently re-accept: the
-        # original Sentence rides through (appeared_at keeps anchoring the
-        # audio clip), the fingerprint re-baselines to the current pixels,
-        # the watcher never stops guarding, no events, no flicker. Only a
-        # text that actually READS differently is a real replacement.
+        # Drifted content MAY be a replacement in place — or mere
+        # compression shimmer. Re-read BEFORE surfacing anything: same
+        # text re-accepts silently, different text is a real clear (full
+        # contract: CaptionLedger.drifted).
         for box, old in ledger.drifted(sample, DOWNSCALE):
             sentence, conf = reader.read(img, box)
             if (old is not None and sentence is not None and sentence.text

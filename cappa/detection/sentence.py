@@ -6,15 +6,15 @@ hands the popup a Word that already knows its text, its place on screen,
 and — through .sentence — the full line it came from. That is exactly the
 payload the popup's meaning lookup (and the Anki card) needs.
 
-The Japanese word-unit decision landed here (2026-07-09). For SPACED
-scripts a Word is still a word. For CJK a Word is one CHARACTER, because
-nothing at OCR time knows where a Japanese word ends: the recogniser's own
-kanji-run/kana-run grouping cuts at the okurigana boundary, tearing 戻る
-into 戻 | るのも. The word is found at LOOKUP time instead — `cappa.jmdict`
-resolves the character under the cursor to the whole word it belongs to —
-and `span_word()` fuses that character range back into one Word for the
-popup and the card. Without a dictionary pack `script_span()` reproduces
-the old kanji/kana grouping, so nothing gets worse.
+For SPACED scripts a Word is still a word. For CJK a Word is one
+CHARACTER, because nothing at OCR time knows where a Japanese word ends:
+the recogniser's own kanji-run/kana-run grouping cuts at the okurigana
+boundary, tearing 戻る into 戻 | るのも. The word is found at LOOKUP time
+instead — `cappa.jmdict` resolves the character under the cursor to the
+whole word it belongs to — and `span_word()` fuses that character range
+back into one Word for the popup and the card. Without a dictionary pack
+`script_span()` reproduces the old kanji/kana grouping, so nothing gets
+worse.
 
 Plain data, no Qt. Boxes are (l, t, r, b) region-local physical px."""
 

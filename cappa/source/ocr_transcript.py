@@ -13,10 +13,8 @@ you record?".
 The files are a RECORD, never an oracle. window_hint() — the recall a card
 leans on when its own appearance was born of a pause or a seek — answers
 only from what THIS run of the app watched, and that memory dies with the
-process (user call, 2026-07-08: "you can take from only this instance of
-the app being open... when i reopen, taking from the past times its been
-open is bad"). A card's timing may cite a caption this run saw pop; never
-one a file remembers.
+process (user call, 2026-07-08). A card's timing may cite a caption this
+run saw pop; never one a file remembers.
 
 Best-effort by design: no video id means the row isn't logged (nothing to
 file it under), a mapping the bridge can't make leaves the video-time fields
@@ -34,16 +32,11 @@ TRANSCRIPTS_DIR = os.path.join(
     "transcripts",
 )
 REPEAT_GAP = 10.0   # the same text clearing again within this many seconds
-                    # is a blip loop (something flickering over a PAUSED
-                    # frame clears/resurrects the same row endlessly), not a
-                    # re-watch: log it once. Deliberate re-reads — a rewind —
-                    # clear well apart and are all welcome (user call: every
-                    # read is an observation, duplicates always match).
-                    # EXEMPT across playback passes: a Short under 10 s loops
-                    # INSIDE this window, and every pass after the first was
-                    # being discarded as a blip — a row seen in a NEW pass
-                    # (the bridge's pass counter moved) is a genuine
-                    # observation however soon it recurs.
+                    # IN THE SAME pass is a blip loop (flicker over a paused
+                    # frame), logged once. A row seen in a NEW pass (the
+                    # bridge's counter moved) is a genuine observation
+                    # however soon — a sub-10 s looping Short recurs inside
+                    # this window.
 HINT_RADIUS = 120.0  # window_hint only trusts sightings this close to the
                      # click: a stock phrase repeated elsewhere in the video
                      # must not lend its timing to this row
@@ -122,10 +115,8 @@ class OcrTranscriptLog:
             "appeared_monotonic": round(appeared, 3),
             "cleared_monotonic": round(cleared, 3),
             # The read's confidence, so "was OCR unsure?" can be checked
-            # against a row's on-screen LIFE (cleared-appeared): the open
-            # question is whether captions too quick to read come back
-            # low-confidence (a usable trigger) or just confidently wrong /
-            # missing entirely (not one). An added key, never a renamed one.
+            # against a row's on-screen life. An added key, never a renamed
+            # one.
             "ocr_conf": round(conf, 3) if conf is not None else None,
         }
         vid = _safe_vid(video_id)

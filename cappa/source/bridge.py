@@ -56,14 +56,11 @@ RESTART_EPS = 1.5    # a backward jump landing at or under this is a RESTART
 END_EPS = 2.0        # ...and a restart must WRAP: the previous sample sat
                      # within this of the video's reported duration. An AD
                      # resets the player clock to 0 mid-video and a video
-                     # change starts a new clock at 0 — both used to count
-                     # as restarts, and each one force-cleared detection
-                     # (user report, 2026-07-14: "so slow to see words" —
-                     # every false restart wiped the hotspots for a rescan).
-                     # One report gap of slack: the wrap's last sample lands
-                     # up to ~1 s before the true end. Duration unknown
-                     # (live streams, older extension) falls back to the
-                     # landing rule alone.
+                     # change starts a new clock at 0 — neither counts as a
+                     # restart. One report gap of slack: the wrap's last
+                     # sample lands up to ~1 s before the true end. Duration
+                     # unknown (live streams, older extension) falls back to
+                     # the landing rule alone.
 PASS_SLACK = 2.0     # mono_at: how far beyond a pass's SAMPLED video-time
                      # range video_t may sit and still count as played in
                      # that pass — one or two report gaps of lead (the pass
@@ -114,8 +111,7 @@ class BrowserBridge:
         # new playthrough — source_wiring watches this to force-clear
         # detection, so an identical caption one loop later gets a fresh
         # appear stamp instead of keeping the previous pass's. Never bumped
-        # by a video change or an ad resetting the player clock: those
-        # false restarts wiped detection over and over (2026-07-14).
+        # by an ad clock reset or a video change (see END_EPS).
         self.restart_count = 0
         self._server = None
         self._thread = None
@@ -369,12 +365,9 @@ class BrowserBridge:
         if after:
             window.append(after[0])
         pairs = list(zip(window, window[1:]))
-        # Playback starts over at a restart (the same video wrapping to its
-        # top — the flag is decided at append time, where the duration is
-        # known): whatever happened before it can't poison a stamp after
-        # it, so only the pairs past the LAST restart in the window are
-        # judged. An ad reset or a video change carries no flag and stays
-        # a seek, exactly as before.
+        # Judge only pairs past the LAST restart in the window (flag
+        # decided at append time, where duration is known): playback starts
+        # over there, so nothing earlier can poison a later stamp.
         start = 0
         for k, (_s1, s2) in enumerate(pairs):
             if s2[4]:

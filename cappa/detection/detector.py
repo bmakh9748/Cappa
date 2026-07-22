@@ -5,13 +5,10 @@ on millions of samples. It replaces hand-tuned "does this look like text"
 heuristics; every text line it finds becomes a live, hoverable caption.
 
 The model runs through onnxruntime — RapidOCR ships the same PP-OCRv5 weights
-pre-converted to ONNX — instead of PaddlePaddle's executor. Same model, same
-boxes, ~7x faster (measured ~55 vs ~375 ms on the same synthetic frame;
-real 1920px captures cost ~112 ms on CPU at the CPU working size. Paddle
-can't use its oneDNN fast path on Windows without crashing, and its plain
-executor is that much slower). On a machine
-with a GPU the session goes to DirectML (gpu.py decides) and the working
-size grows: the scan gets sharper AND no slower — see TARGET_SIDE_GPU. The
+pre-converted to ONNX — instead of PaddlePaddle's executor: same boxes, ~7x
+faster, and Paddle's oneDNN fast path crashes on Windows. On a machine with a
+GPU the session goes to DirectML (gpu.py decides) and the working size grows:
+the scan gets sharper AND no slower — see TARGET_SIDE_GPU. The
 worker still calls scan() only when the frame actually changed, throttled —
 never per-frame. The frame is shrunk before inference (cost is roughly
 quadratic in side length; captions are big and survive shrinking) and box
@@ -25,20 +22,12 @@ import sys
 
 from . import gpu
 
-TARGET_SIDE = 736    # CPU working size: shrink the long side to this before
-                     # inference. Sized for the worst common case: on a full
-                     # 1920x1080 browser capture, 736 still finds ~26px
-                     # captions (measured: 480 finds NOTHING there, 640
-                     # misses small ones); smaller captures (popouts,
-                     # selected areas) shrink less or not at all and scan
-                     # proportionally faster.
-TARGET_SIDE_GPU = 1280  # GPU working size. Measured (GTX 1660, DirectML):
-                     # 104 ms/scan vs the CPU path's 112 ms at 736 — and on
-                     # a dense 1920px browser frame it boxes 55 text lines
-                     # where 736 boxes 8. The CPU-era shrink was the quality
-                     # ceiling, not the model; the GPU can afford to keep
-                     # the small text. (1280 over 960: 16 ms dearer, 55
-                     # lines vs 34 on that same frame.)
+TARGET_SIDE = 736    # CPU working size: shrink the long side to this. On a
+                     # full 1920x1080 capture 736 still finds ~26px captions
+                     # (480 finds nothing, 640 misses small ones).
+TARGET_SIDE_GPU = 1280  # GPU working size: measured (GTX 1660) ~same
+                     # latency as CPU@736 (104 vs 112 ms) while boxing 55
+                     # text lines vs 8 on a dense 1920px frame.
 MIN_SCORE = 0.6      # detection confidence gate (the model's box_thresh)
 MERGE_GAP = 0.9      # of line height: max horizontal gap between fragments
                      # of the same text line (big/spaced/italic styles come
@@ -75,13 +64,9 @@ def _same_line(a, b):
 
 class TextDetector:
     def __init__(self, target_side=None, min_score=MIN_SCORE):
-        # None -> sized to the device: the GPU affords a bigger working
-        # size at lower latency than the CPU manages at 736 (measured, see
-        # TARGET_SIDE_GPU). The install probe only picks the INTENTION;
-        # _ensure() re-checks where the session actually landed and drops
-        # back to CPU sizing if DirectML wasn't usable after all (VM,
-        # broken driver). An explicit target_side always wins and is
-        # never second-guessed.
+        # None -> sized to the device (see TARGET_SIDE_GPU); _ensure()
+        # re-checks placement and drops to CPU sizing when the session
+        # landed on CPU. An explicit target_side is never second-guessed.
         self._auto_sized = target_side is None
         if target_side is None:
             target_side = TARGET_SIDE_GPU if gpu.available() else TARGET_SIDE
@@ -172,20 +157,13 @@ class TextDetector:
         return merge_lines(boxes)
 
     def _detect(self, frame, scale, cv2, np):
-        """One det pass running rapidocr's det module directly — its ONNX
-        session and DBNet postprocess — with OUR pre/post plumbing. Why:
-        the wrapper's DetPreProcess normalises in float64 and recopies
-        twice, ~32 ms of CPU per scan at the GPU working size (measured),
-        for a tensor this produces byte-identically in ~7 ms —
-        (x/255 - .5)/.5 is x*(2/255)-1, and PP-OCR det packs all use
-        mean = std = 0.5 (checked at load; scan() falls back to the
-        wrapper otherwise). One fused resize replaces the old
-        shrink-then-round pair, and the postprocess is handed the FULL
-        frame shape so it maps boxes straight back to full resolution —
-        no second coordinate pass. Box parity with the wrapper verified
-        on real captures (0.0 px drift, pre-fuse; box counts identical
-        after). `frame` is BGRA; the alpha plane is split off free
-        rather than sliced off with a copy."""
+        """One det pass on rapidocr's det session with our pre/post
+        plumbing: the wrapper's DetPreProcess normalises in float64
+        (~32 ms/scan at GPU size) where this tensor is byte-identical in
+        ~7 ms — PP-OCR det packs use mean=std=0.5 (checked at load; scan()
+        falls back otherwise). One fused resize; the postprocess gets the
+        FULL frame shape so boxes map straight to full resolution. `frame`
+        is BGRA; the alpha plane is split off free."""
         det = self._model.text_det
         h, w = frame.shape[:2]
         rh = int(round(h * scale / 32) * 32)

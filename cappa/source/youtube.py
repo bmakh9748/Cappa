@@ -9,11 +9,8 @@ card instead of crashing the overlay.
 Fetched captions and audio cache per videoId under source/.cache, so a video is
 pulled once and every later card on it is instant.
 
-Operational caveat, since materialized: YouTube format extraction now REQUIRES
-a JavaScript runtime plus yt-dlp's challenge solver scripts (yt-dlp-ejs, from
-pip install "yt-dlp[default]"). _ydl_opts enables both deno and node; the
-machine must have one of them installed or audio downloads fail with
-'Requested format is not available' while captions keep working."""
+Audio caveat: format extraction needs a JS runtime (deno or node) plus
+yt-dlp's solver scripts — see _ydl_opts."""
 
 import os
 import subprocess

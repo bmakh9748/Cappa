@@ -4,14 +4,10 @@ detector.py and ocr.py both run ONNX sessions through rapidocr; this file
 answers two different questions about that. available() is the INSTALL
 probe: is the DirectML build of onnxruntime present (any DX12 adapter, no
 CUDA toolkit — the wheel requirements.txt names)? session_device() is the
-TRUTH: where did a session actually land? They can disagree — the wheel
-lists DmlExecutionProvider even on a machine with no usable adapter (VM,
-broken driver), where onnxruntime quietly creates the session on CPU
-instead. So callers use available() only to pick an INTENDED sizing before
-any session exists, then re-check session_device() once the session is
-real and drop back to CPU sizing when placement went to CPU. rapidocr
-handles the placement itself either way — nothing here can crash the
-load path."""
+TRUTH: where did a session actually land? They can disagree (the wheel
+lists the provider even with no usable adapter) — see each function's
+docstring. rapidocr handles the placement itself either way — nothing
+here can crash the load path."""
 
 
 def available():
