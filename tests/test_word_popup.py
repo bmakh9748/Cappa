@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QApplication, QWidget
 
-from cappa import jmdict, translate
+from cappa import jmdict
+from cappa.language import translate
 from cappa.detection.sentence import Sentence, span_word
 from cappa.ui import word_popup
 from cappa.ui.word_popup import WordPopup
@@ -135,8 +136,8 @@ import time
 
 from PySide6.QtCore import Qt
 
-from cappa import examples as examples_mod
-from cappa import pronounce
+from cappa.language import examples as examples_mod
+from cappa.language import pronounce
 
 
 def wait_until(cond, timeout=5.0):

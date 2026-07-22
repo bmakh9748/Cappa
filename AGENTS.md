@@ -29,11 +29,12 @@ cappa/
   app.py         Qt setup; startup window -> overlay + launcher wiring
   winapi.py      ALL raw Win32/DWM/ctypes. Knows Windows, never Qt.
   settings.py    persisted user settings (settings.json). No Qt.
-  translate.py   sentence/word translation (free Google endpoint). No Qt.
-  dictionary.py  word meanings: Wiktionary first, Google hint/fallback. No Qt.
-  examples.py    example sentences: JMdict pack (ja, offline), Wiktionary,
-                 Tatoeba top-up. No Qt.
-  pronounce.py   word audio: free Google TTS fetch + winmm playback. No Qt.
+  language/      the word-data layer, all No Qt:
+                   translate.py   sentence/word translation (free Google)
+                   dictionary.py  meanings: Wiktionary first, Google fallback
+                   examples.py    example sentences: pack/Wiktionary/Tatoeba
+                   pronounce.py   word audio: Google TTS + winmm playback
+                   lexicon.py     word-frequency packs (split glued OCR runs)
   arabic.py      Arabic anatomy: root/form/lemma via slim camel-tools +
                  its morphology pack (arabic_packs/). No Qt.
   indonesian.py  Indonesian anatomy: Sastrawi root + affix labels. No Qt.
@@ -64,11 +65,11 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
    or splitting a file means updating that map in the same change. If the
    README layout table is affected, update it too.
 3. **Qt stays in `ui/` + `app.py`**, plus the signal layer of
-   `detection/worker.py`. Detection stages, `source/`, `flashcard/`, and
-   every word-data module (`translate/dictionary/examples/pronounce/
-   arabic/indonesian/kanjidic/grammar_notes/jmdict/lexicon/audio/settings/
-   winapi`) must import no Qt — that is what makes them unit-testable in
-   isolation.
+   `detection/worker.py`. Detection stages, `source/`, `flashcard/`, the
+   whole `language/` package, and every remaining word-data module
+   (`arabic/indonesian/kanjidic/grammar_notes/jmdict`) plus
+   `audio/settings/winapi` must import no Qt — that is what makes them
+   unit-testable in isolation.
 4. **`winapi.py` owns Win32.** No raw `ctypes`/`win32gui` calls anywhere else;
    `winapi.py` itself never imports Qt.
 5. **The UI thread does no heavy work.** OCR, translation, card building,

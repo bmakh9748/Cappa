@@ -30,7 +30,7 @@ import urllib.request
 # "<lang>.txt" per language, each line "word count", most-common first
 # (the FrequencyWords / OpenSubtitles format).
 PACKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "..", "lexicon_packs")
+                         "..", "..", "lexicon_packs")
 _SOURCE = ("https://raw.githubusercontent.com/hermitdave/FrequencyWords/"
            "master/content/2018/%s/%s_50k.txt")
 

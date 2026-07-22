@@ -26,10 +26,10 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 | `cappa/app.py` | Qt setup + `main()`: startup window → overlay + launcher |
 | `cappa/winapi.py` | All Win32/DWM calls (no Qt) |
 | `cappa/settings.py` | Persisted user settings (`settings.json`) |
-| `cappa/translate.py` | Sentence/word translation — deep-translator's free Google endpoint, **never an LLM** |
-| `cappa/dictionary.py` | Word meanings — Wiktionary definitions, Google as hint + fallback |
-| `cappa/examples.py` | Example sentences for the popup's Examples tab — JMdict pack (Japanese, offline), Wiktionary, Tatoeba |
-| `cappa/pronounce.py` | The popup's 🔊 — free Google TTS fetch, played through Windows (winmm) |
+| `cappa/language/translate.py` | Sentence/word translation — deep-translator's free Google endpoint, **never an LLM** |
+| `cappa/language/dictionary.py` | Word meanings — Wiktionary definitions, Google as hint + fallback |
+| `cappa/language/examples.py` | Example sentences for the popup's Examples tab — JMdict pack (Japanese, offline), Wiktionary, Tatoeba |
+| `cappa/language/pronounce.py` | The popup's 🔊 — free Google TTS fetch, played through Windows (winmm) |
 | `cappa/arabic.py` | Arabic anatomy — root, verb form, lemma, gloss (slim CAMeL Tools + its offline morphology pack) |
 | `cappa/indonesian.py` | Indonesian anatomy — Sastrawi root + affix identification |
 | `cappa/kanjidic.py` | Per-kanji info — KANJIDIC2 pack (meanings, readings, strokes, grade, JLPT) |

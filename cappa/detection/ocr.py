@@ -25,7 +25,7 @@ import sys
 
 import numpy as np
 
-from .. import lexicon
+from ..language import lexicon
 from .detector import gpu_available, session_device
 from .sentence import Sentence, is_cjk
 

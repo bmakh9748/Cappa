@@ -40,7 +40,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import jmdict
+from .. import jmdict
 from . import translate as translate_mod
 from .translate import TranslationError
 

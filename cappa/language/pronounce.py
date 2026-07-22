@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import winapi
+from .. import winapi
 from .dictionary import TIMEOUT, USER_AGENT   # one clock, one UA string
 
 API = ("https://translate.google.com/translate_tts"

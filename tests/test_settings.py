@@ -10,7 +10,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cappa.settings as S
-from cappa import translate
+from cappa.language import translate
 
 
 def main():

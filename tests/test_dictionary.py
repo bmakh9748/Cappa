@@ -8,9 +8,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import cappa.dictionary as D
-from cappa import translate
-from cappa.translate import TranslationError
+import cappa.language.dictionary as D
+from cappa.language import translate
+from cappa.language.translate import TranslationError
 
 
 def main():

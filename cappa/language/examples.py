@@ -28,7 +28,8 @@ import json
 import urllib.parse
 import urllib.request
 
-from . import dictionary, jmdict
+from .. import jmdict
+from . import dictionary
 from . import translate as translate_mod
 from .dictionary import TIMEOUT, USER_AGENT   # one clock, one UA string
 

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 
 from . import settings as settings_mod
-from . import translate
+from .language import translate
 from . import winapi
 from .flashcard.prefs import set_card_fields, set_card_template
 from .flashcard.timing import set_clip_bounds

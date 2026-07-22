@@ -9,8 +9,8 @@ import time
 from difflib import SequenceMatcher
 
 from ..detection.sentence import CaptionBlock, caption_block
-from ..dictionary import meaning
-from ..translate import TranslationError, clean_word, translate
+from ..language.dictionary import meaning
+from ..language.translate import TranslationError, clean_word, translate
 from . import prefs, timing
 from .clip import SOURCE_STRONG_SCORE, write_audio
 from .model import CardDraft

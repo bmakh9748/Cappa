@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa.translate import _deshout, _extract_marked, _mark, clean_word
+from cappa.language.translate import _deshout, _extract_marked, _mark, clean_word
 
 CASES = [
     ("hello,", "hello"),              # trailing comma from the line

@@ -1,4 +1,4 @@
-"""Unit test: example-sentence gathering (cappa.examples). Network-free:
+"""Unit test: example-sentence gathering (cappa.language.examples). Network-free:
 the Tatoeba GET and the Wiktionary reader are monkeypatched with canned
 payloads shaped like the real responses (probed 2026-07-20); the pack leg
 runs _from_pack against a hand-built jmdict.Entry, so no pack is needed
@@ -9,8 +9,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import cappa.examples as E
-from cappa import dictionary, jmdict, translate
+import cappa.language.examples as E
+from cappa import jmdict
+from cappa.language import dictionary, translate
 
 
 def entry_with(examples):

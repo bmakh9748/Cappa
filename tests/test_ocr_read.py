@@ -18,7 +18,7 @@ from difflib import SequenceMatcher
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from cappa import lexicon
+from cappa.language import lexicon
 from cappa.detection.ocr import TextReader, _lexicon_split, _respace, _respan
 
 # _lexicon_split (pure): a glued run is broken ONLY into pieces that are

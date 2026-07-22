@@ -1,4 +1,4 @@
-"""Unit test: the pronunciation path (cappa.pronounce). Network-free and
+"""Unit test: the pronunciation path (cappa.language.pronounce). Network-free and
 silent: the TTS fetch is monkeypatched with canned MP3-ish bytes and the
 winmm player with a recorder — what's tested is the contract around them
 (cache, temp-file lifecycle, displayable failures)."""
@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import cappa.pronounce as P
+import cappa.language.pronounce as P
 from cappa import winapi
 
 

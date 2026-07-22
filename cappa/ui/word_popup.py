@@ -14,9 +14,9 @@ a helper thread so the UI never blocks — the popup opens instantly with
 "Translating…" and fills in when the call returns, or shows the failure (no
 network) as a ⚠ line. NO LLM on either path.
 
-The Examples tab shows the word in real sentences (cappa.examples), loaded
+The Examples tab shows the word in real sentences (cappa.language.examples), loaded
 lazily for a committed word with the tab in front (_refresh_examples holds
-the contract). 🔊 speaks the headword via cappa.pronounce on a helper
+the contract). 🔊 speaks the headword via cappa.language.pronounce on a helper
 thread; disabled when the language has no voice.
 
 The Grammar tab is the word's anatomy per language (_grammar_html), under
@@ -55,12 +55,13 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QTabWidget, QVBoxLayout, QWidget)
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
-from .. import (arabic, examples, flashcard, grammar_notes, indonesian,
-                jmdict, kanjidic, pronounce)
-from .. import translate as translate_mod
+from .. import (arabic, flashcard, grammar_notes, indonesian, jmdict,
+                kanjidic)
 from ..detection.sentence import caption_block, click_pool
-from ..dictionary import meaning
-from ..translate import TranslationError, clean_word
+from ..language import examples, pronounce
+from ..language import translate as translate_mod
+from ..language.dictionary import meaning
+from ..language.translate import TranslationError, clean_word
 from .card_preview import CardPreview
 
 MARGIN = 10           # gap between the word and the popup

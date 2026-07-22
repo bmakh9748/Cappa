@@ -7,7 +7,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa import lexicon
+from cappa.language import lexicon
 
 
 def _with_pack(lang, words):
