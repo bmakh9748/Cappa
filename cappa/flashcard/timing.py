@@ -16,18 +16,16 @@ MIN_CLIP = 1.0       # no card audio shorter than this, however brief the line
 
 # The Auto length setting: instead of the user's fixed cap, let the clip
 # fit whatever window the sentence actually needs (its caption cue or its
-# on-screen life), bounded only by this safety ceiling. 8s, not the old 5s:
-# measured over every punctuated caption track in source/.cache, a real
-# spoken sentence runs 2.12s at the median, 6.96s at p90 and 9.29s at p95 --
-# a 5s ceiling silently truncated one sentence in five, which is the wrong
-# trade now that a card aims at the whole sentence.
+# on-screen life), bounded by this ceiling. Measured caption sentences run
+# 2.1s median / 7.0s p90 / 9.3s p95: a 5s cap truncated one sentence in
+# five.
 AUTO_MAX_CLIP = 8.0
 AUTO_CLIP = False    # module state like MIN/MAX_CLIP; set from settings
 
 # A caption still on screen has not finished being SPOKEN, and how much is
 # left depends on how many of its words are still to come -- a 15-word line
-# that popped 100ms ago needs far more tail than a 4-word one (user call,
-# 2026-07-08). The rate is measured from the video's own captions
+# that popped 100ms ago needs far more tail than a 4-word one.
+# The rate is measured from the video's own captions
 # (source.seconds_per_word()); these bound a nonsense estimate, and the
 # default stands in until enough rows have been watched.
 SECONDS_PER_WORD = 0.30      # ~3.3 words/s: unhurried speech

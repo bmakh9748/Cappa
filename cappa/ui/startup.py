@@ -299,8 +299,7 @@ class StartupWindow(QWidget):
             self._combo.addItem(name, code)
 
         # First-run only: starting the app is this page's own big action,
-        # not a footer button -- so it never appears among the flashcard
-        # settings and Save/Cancel never swap into its place.
+        # not a footer button.
         self._start_hint = QLabel("You can change everything later from the "
                                   "launcher's Settings.")
         self._start_hint.setObjectName("hint")

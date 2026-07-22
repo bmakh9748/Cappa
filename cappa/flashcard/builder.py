@@ -232,7 +232,7 @@ def _boxes_overlap(ref, other):
 
 def _fill_sentence(rows, sent, low_conf=OCR_SHAKY_CONF):
     """Merge OUR transcript rows with the track SENTENCE they sit in — the
-    word-at-a-time fix (user spec, 2026-07-09): our transcript's words are
+    word-at-a-time fix: our transcript's words are
     always taken first; the track only reveals that the sentence extends
     beyond what OCR caught and fills the words OCR missed; a low-confidence
     row loses its say and the track speaks there instead. Timing likewise:
@@ -444,15 +444,9 @@ def _translate_fields(draft, translator):
 
     if draft.sentence and prefs.include("sentence_translation"):
         # Translate the sentence FLAT (space-joined, exactly as the card
-        # displays it). A caption wrapping across two rows is almost always
-        # one sentence broken for visual WIDTH, not at a clause boundary, so
-        # the line break is noise. An earlier version glued the rows with a
-        # comma to help one clause-boundary card (card_0074); it wrecked the
-        # far more common mid-clause wrap — "tadi kucing" / "saya melahirkan"
-        # became "tadi kucing, saya melahirkan" -> "the cat, I gave birth"
-        # instead of the correct "my cat gave birth" (user-reported). Google
-        # parses the natural flat sentence correctly; the stray comma was the
-        # whole problem.
+        # displays it): caption wraps break for WIDTH, not clauses — the
+        # comma join tried for card_0074 garbled mid-clause wraps ("the
+        # cat, I gave birth").
         try:
             draft.sentence_translation = translator(draft.sentence)
         except TranslationError as exc:

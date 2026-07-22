@@ -32,7 +32,7 @@ def discard_draft(draft):
     Deleting it is not a tidiness choice: sync() delivers every card_ folder
     that carries no receipt, so a rejected draft left on disk would ride the
     NEXT card's save into Anki. A folder that already has a receipt IS in
-    Anki and is left alone -- that copy is the user's (2026-07-08 rule).
+    Anki and is left alone -- that copy is the user's.
     Returns whether the folder went away."""
     folder = draft.folder_path
     if not folder or not os.path.isdir(folder):

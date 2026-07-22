@@ -14,25 +14,14 @@ a helper thread so the UI never blocks — the popup opens instantly with
 "Translating…" and fills in when the call returns, or shows the failure (no
 network) as a ⚠ line. NO LLM on either path.
 
-The Examples tab shows the word inside real sentences (cappa.examples: the
-JMdict pack's own pairs for Japanese, Wiktionary + Tatoeba elsewhere), with
-translations, the clicked form bolded, and the CC-BY credit. The pack's
-pairs are free and render immediately; the web sources cost seconds, so
-they load lazily — only for a COMMITTED word, and only once the tab is
-actually in front — on a helper thread behind the same request-id guard as
-the translation. 🔊 speaks the shown headword via cappa.pronounce (free
-TTS + winmm playback, both blocking) on a helper thread too; it is disabled
-while the video's language is "auto", which has no voice to pick.
+The Examples tab shows the word in real sentences (cappa.examples), loaded
+lazily for a committed word with the tab in front (_refresh_examples holds
+the contract). 🔊 speaks the headword via cappa.pronounce on a helper
+thread; disabled when the language has no voice.
 
-The Grammar tab is the word's anatomy, per language: Japanese explains
-each deinflection step (grammar_notes) and breaks the headword into its
-kanji (kanjidic pack — meanings, readings, strokes, grade, JLPT); Arabic
-shows the root, the verb form with its pattern one-liner, the vocalized
-lemma and the analyzer's English gloss (cappa.arabic — the first analysis
-loads a 400 MB database, which is why this tab is as lazy as Examples);
-Indonesian shows the root under the affixes with each affix explained
-(cappa.indonesian). Same laziness contract as Examples: computed only for
-a committed word with the tab in front, on a helper thread, req-guarded.
+The Grammar tab is the word's anatomy per language (_grammar_html), under
+the same laziness contract as Examples — Arabic's first analysis loads a
+400 MB database.
 
 Tab switches must never hide()/show() the popup — the overlay kills the
 committed word highlight the moment the popup stops being visible — and a
@@ -50,11 +39,7 @@ buffer around when the sentence was on screen) via cappa.flashcard, also off
 the UI thread.
 
 The gathered draft goes NOWHERE by itself: it opens the card preview
-(ui/card_preview.py), which shows what the card would carry and owns the two
-exits -- Add to Anki (still no export step, no import dialog: the card lands
-live in the open app through the AnkiConnect add-on, or in the collection
-file when Anki is closed) and Discard (which deletes the draft folder,
-because an unreceipted folder would otherwise ride the next save).
+(ui/card_preview.py), which owns the two exits -- Add to Anki and Discard.
 
 A child of the overlay, so it parks/hides with it and is excluded from
 capture along with it. The overlay adds its geometry to the interactive

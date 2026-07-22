@@ -85,8 +85,6 @@ class Launcher(QWidget):
         self._menu.addAction("Pick window", on_pick)
         self._act_select = self._menu.addAction("Select area", on_region)
         self._act_select.setEnabled(False)  # until a window is tracked
-        # Force a full re-scan of the tracked region — the alternative to
-        # nudging the window size to make detection look again.
         self._act_refresh = self._menu.addAction("Refresh words", on_refresh)
         self._act_refresh.setEnabled(False)  # nothing to rescan until tracking
         self._act_refresh.setShortcut(QKeySequence("Ctrl+Alt+Shift+R"))

@@ -9,11 +9,8 @@ read, a sentence polluted by on-screen furniture, a clip that landed off the
 word -- become visible before they reach Anki instead of after. Nothing is
 editable yet: the two exits are Add to Anki and Discard.
 
-DISCARD DELETES THE DRAFT FOLDER, and must: sync() delivers every card_
-folder without an anki_synced.txt receipt, so a rejected draft left on disk
-would ride the next card's save into Anki (flashcard/writer.discard_draft).
-A draft the user never resolved -- app quit with the preview open -- keeps
-that old behaviour and rides the next save.
+DISCARD DELETES THE DRAFT FOLDER, and must: an unreceipted draft rides the
+next save into Anki (see flashcard/writer.discard_draft).
 
 A top-level window, not an overlay child like the word popup: the tracked
 region can be far smaller than the preview (a narrow Select area) and the

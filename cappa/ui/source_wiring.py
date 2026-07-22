@@ -21,29 +21,21 @@ from ..source.bridge import BrowserBridge
 from ..source.ocr_transcript import OcrTranscriptLog
 from ..source.session import SourceSession
 
-RECORDER_LINGER = 5.0   # bridge silent this long -> pause the audio recorder.
-                        # The extension posts only from a VISIBLE YouTube tab
-                        # (content.js skips document.hidden) and the bridge
-                        # already holds reports for 5s, so the recorder stops
-                        # ~10s after the user leaves the tab.
-DOT_STALE = 2.0      # extension silent this long -> the yt dot goes dark.
-                     # The content script posts ~700ms ticks from a VISIBLE
-                     # tab, so three missed ticks means the tab was closed
-                     # or hidden. The dot reacts here, near-instantly; the
-                     # RECORDER keeps its longer linger above — stop/start
-                     # churn on every tab flick is costly, a dark dot isn't.
+RECORDER_LINGER = 5.0   # bridge silent this long -> pause the recorder
+                        # (~10s after leaving the tab: visible-tab-only
+                        # reports + the bridge's 5s hold)
+DOT_STALE = 2.0      # ~3 missed ~700ms extension ticks -> yt dot goes dark;
+                     # the recorder keeps RECORDER_LINGER — stop/start churn
+                     # is costly, a dark dot isn't
 CAPTION_RETRY_WAIT = 20.0  # cooldown between caption-fetch retries
 CAPTION_RETRY_MAX = 2      # retries per video: transient failures (a bot
                            # check before the extension's cookies landed, a
                            # network blip) heal; a genuinely captionless
                            # video stops costing fetches after two tries
-VIDEO_ID_DEBOUNCE = 1.5    # a Shorts scroll rewrites the reported video id
-                           # every ~700 ms report; only an id STABLE this
-                           # long earns a session fetch (metadata, captions,
-                           # an audio download — one per short scrolled past
-                           # otherwise). Caption ATTRIBUTION still follows
-                           # the reported id instantly: rows must land under
-                           # the video actually on screen.
+VIDEO_ID_DEBOUNCE = 1.5    # only an id STABLE this long earns a session
+                           # fetch (else one download per Short scrolled
+                           # past); attribution still follows the reported
+                           # id instantly
 
 
 def live_video_id(state, bridge_video_id):
@@ -53,9 +45,7 @@ def live_video_id(state, bridge_video_id):
     was hidden, closed, or isn't YouTube at all); a paused report is a
     frozen frame, not caption life. In either case whatever the overlay is
     reading is NOT this video's caption and must not land in its transcript
-    under the last-known id (which used to happen: the id persisted after
-    the reports stopped, so text from another tab/app was logged as if it
-    were the video's)."""
+    under the last-known id."""
     if state is None or state.get("paused"):
         return None
     return bridge_video_id
@@ -64,19 +54,13 @@ def live_video_id(state, bridge_video_id):
 class SourceWiring:
     def __init__(self, video_language=None, on_tip=None):
         self._on_tip = on_tip or (lambda text: None)
-        # System-audio recorder: rolling buffer so a clicked word's clip is
-        # already captured when they click. NOT unconditional (user call:
-        # recording their system audio while they're off the YouTube tab is
-        # not okay): once the extension has reported a visible YouTube tab,
-        # _gate_recorder pauses capture whenever those reports stop, and
-        # resumes when they're back. Sessions where the extension never
-        # speaks keep the old always-on recorder — it's the only audio their
-        # cards can get. Fail-soft — no device just means no audio.
+        # Rolling system-audio buffer so a clicked word's clip is already
+        # captured at click time. Privacy-gated by _gate_recorder (see its
+        # docstring); extension-less sessions record continuously.
+        # Fail-soft — no device just means no audio.
         self.recorder = LoopbackRecorder()
-        # Card audio OFF in settings leaves the whole video machinery
-        # without a customer: don't record, don't auto-select videos, no
-        # caption/audio downloads (the user's call: "if i'm not using audio
-        # i really don't need you to track the video"). poll() re-reads the
+        # Card audio OFF in settings stands the whole video machinery down:
+        # no recording, no auto-select, no downloads. poll() re-reads the
         # setting each tick, so the panel retunes it live.
         self._audio_off = not card_prefs.include("audio")
         if self._audio_off:
@@ -138,9 +122,8 @@ class SourceWiring:
         if self.bridge.error:
             print("[cappa] browser bridge: " + self.bridge.error)
         # The media cache (downloaded audio/captions) is a convenience, not
-        # a record: prune it to its cap so closed sessions don't pile up
-        # gigabytes (user worry, 2026-07-07). cards/ and transcripts/ are
-        # the app's memory and are never pruned.
+        # a record: prune it to its cap. cards/ and transcripts/ are the
+        # app's memory and are never pruned.
         try:
             from ..source.youtube import prune_cache
             n = prune_cache()
@@ -209,12 +192,9 @@ class SourceWiring:
             self._retry_captions(vid, state)
 
     def _retry_captions(self, vid, state):
-        """A caption fetch that failed can be transient (bot check before the
-        extension's cookies arrived, a network blip) — but it used to be
-        PERMANENT: the session refused the same video and the poll never
-        re-selected it, so the dot sat red for the whole watch unless the
-        user changed videos (which is why it kept coming back on tab
-        switches). Retry a couple of times with a cooldown instead."""
+        """Retry a transiently failed caption fetch (bot check before the
+        extension's cookies landed, a network blip) a couple of times with
+        a cooldown."""
         r_vid, tries, at = self._caption_retry
         if r_vid != vid:
             r_vid, tries, at = vid, 0, 0.0

@@ -194,9 +194,8 @@ class OverlayWindow(QMainWindow):
         """The word under the cursor, and nothing else: captions stay
         undecorated until the user reaches for one. Link-hover look: a
         barely-there lift over the word plus a crisp accent underline —
-        clean, and readable over any video content. (A glyph-exact hue
-        tint was tried and rejected: compression noise makes the stroke
-        masks ragged on real video.)"""
+        clean, and readable over any video content (a glyph-exact tint
+        reads ragged on compressed video)."""
         rect, _word = self._hover_word
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)

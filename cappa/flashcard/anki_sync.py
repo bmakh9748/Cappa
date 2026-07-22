@@ -9,7 +9,7 @@ probing AnkiConnect's port.
 
 Delivery is per-card and once: a delivered folder gets an anki_synced.txt
 receipt and is never touched again, so whatever the user edits or deletes
-IN Anki stays that way (user call 2026-07-08: "just the card i saved").
+IN Anki stays that way.
 A failed delivery leaves no receipt and simply rides the next save; a
 card already in Anki (found by its cappa::card_NNNN tag) is adopted, not
 duplicated. Both routes write the same tag, notetype name ("Cappa card")

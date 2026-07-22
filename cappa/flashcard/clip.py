@@ -1,16 +1,15 @@
 """Choose the audio window and cut one card's clip.
 
-THE WINDOW RULE (user spec, 2026-07-09 — 'it is not complicated'): the clip
-is the clicked caption BLOCK's on-screen life. Every row of the block is
+THE WINDOW RULE: the clip is the clicked caption BLOCK's on-screen life. Every row of the block is
 looked up in this run's transcript (plus its live ledger stamps); the
 EARLIEST appearance is the start and the LATEST clear is the end, used as-is
 — those stamps are already detector-lag-corrected, so no buffer is added
-(HEAD_BUFFER/TAIL_TRIM are 0; user call 2026-07-09c, card_0006). Taking the
+(HEAD_BUFFER/TAIL_TRIM are 0; card_0006). Taking the
 earliest logged sighting absorbs detection churn: a row the ledger cleared
 and re-accepted mid-life (card_0002: animated art next to the glyphs)
 anchors at the caption's real pop, not its rebirth.
 
-THE CAPTION TRACK FILLS AND EXTENDS THE END (user amend, 2026-07-09b/c):
+THE CAPTION TRACK FILLS AND EXTENDS THE END:
 when the track's own words strongly match the sentence, its window fills an
 edge we never observed, and extends the END outward when our clear came
 early (churn / a quick click loses the tail). The START, though, is floored
@@ -46,13 +45,10 @@ from .timing import audio_window, shrink_to_max, widen_to_min
 # from it when the track is human-made (card_0018).
 SOURCE_STRONG_SCORE = 0.75
 
-# No buffer around the block's on-screen life (user call, 2026-07-09c,
-# card_0006): the transcript's appeared/cleared are ALREADY corrected for
-# the detector's reaction time (ocr_transcript writes appeared_video with
-# APPEAR_LAG subtracted; the live-stamp path subtracts it too), so a head
-# buffer starts the clip too early and a tail trim chops the last word.
-# Kept as named constants so a deliberate ring-out lead/tail can be dialed
-# back in later without hunting the arithmetic.
+# No buffer (card_0006): the transcript's appeared/cleared are already
+# detector-lag-corrected, so a head buffer starts the clip early and a
+# tail trim chops the last word. Named so a deliberate ring-out lead/tail
+# can be dialed back in.
 HEAD_BUFFER = 0.0
 TAIL_TRIM = 0.0
 
@@ -68,12 +64,6 @@ SAME_OCCURRENCE_TOL = 1.0
 # no audio — and the note says what happened.
 SILENT_CLIP_PEAK = 100
 
-# NOTE on stamps: a mapped appearance/clear is ALREADY corrected for the
-# pipeline's measured reaction time (detection APPEAR_LAG / CLEAR_LAG,
-# subtracted before the bridge mapping). Those measured numbers
-# plus the user's HEAD_BUFFER/TAIL_TRIM are the ONLY time ever added or
-# taken — no worst-case padding (deleted 2026-07-09, user call: the same
-# row watched three times stamped within ~170 ms).
 # Hardsubs leave with their speech: nothing past the sentence's on-screen
 # END belongs on the card. A SEEN clear needs no buffer — its stamp already
 # trails the real vanish (user call); only the pause path, where the line
@@ -157,14 +147,10 @@ def _await_clear(sentence, source, timeout=CLEAR_WAIT):
 def _live_end(source, near_t, sentence=None, t_appear=None):
     """Where a row STILL on screen after the wait finishes being SPOKEN.
 
-    The old bound was 'the freshest playback position, plus a flat 0.4s'.
-    That treats a fifteen-word line that popped 100 ms ago exactly like a
-    four-word one, and it quietly assumes the clicked word is the word being
-    spoken — it rarely is, since the user reads the line first and clicks
-    after (user call, 2026-07-08). Instead: a line takes `words × this
-    video's measured pace` to say, so it ends that long after it APPEARED,
-    whenever the click landed inside it. Playback's own position is still the
-    floor — audio already heard is audio the line covered.
+    A line takes `words × this video's measured pace` to say, so it ends
+    that long after it APPEARED (the user reads first, then clicks — the
+    clicked word is rarely the one being spoken). Playback's own position
+    is still the floor — audio already heard is audio the line covered.
 
     Falls back to the flat tail when the line's appearance or word count is
     unknown. Cutting PAST the click is legal because the clip comes from the
@@ -222,8 +208,8 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
     # The caption track's window for THIS sentence's text (window_for =
     # the exact matched words, not the run-on position blob). When it
     # strongly matches it IS the spoken sentence, and it's the fallback the
-    # on-screen life leans on for any edge detection missed (user call,
-    # 2026-07-09b). Also _snap_to_track's ground truth for OCR misreads.
+    # on-screen life leans on for any edge detection missed. Also
+    # _snap_to_track's ground truth for OCR misreads.
     track = None
     text = getattr(sentence, "text", "") or ""
     if text:
@@ -281,26 +267,12 @@ def _write_from_source(draft, sentence, source, near_t=None, recorder=None):
         seen_start = min(starts) if starts else None
         seen_end = max(ends) if ends else None
 
-        # On-screen life is primary. The matched track fills an edge we
-        # never saw, and EXTENDS the END outward — our clear is often lost
-        # early (churn, a quick click, a re-detection), so the sentence can
-        # keep being spoken past it. But the START is floored at our own
-        # observed appearance: the caption's words weren't on screen before
-        # we saw it pop, so an EARLIER track start is just the ASR's lead
-        # and must not pull the clip back (card_0006: we cleanly saw the
-        # line appear at 49.05, the auto track's 'jangan' tag sat at 48.42,
-        # and the clip opened on the previous sentence).
-        #
-        # (When our own appearance is ITSELF a fragment — a churn/pause hid
-        # the real pop, card_0004 — this floor is wrong and the track's
-        # earlier start was right; telling the two apart is the deferred
-        # reconciliation logged in PLAN.md. For now the clean-appearance
-        # case wins.)
-        #
-        # Only the SAME occurrence extends: window_for can return a DUPLICATE
-        # of this line elsewhere in the video, and that far window must not
-        # hijack the clip. "Same" = the track overlaps the on-screen life
-        # (or, with no life, sits around the click).
+        # The track leg of the window rule (module docstring): fill unseen
+        # edges, extend only the END; the START is floored at our observed
+        # appearance — an earlier track tag is ASR lead (card_0006; the
+        # churn-fragment caveat is card_0004, deferred in PLAN.md). Only
+        # the SAME occurrence may extend — window_for can return a
+        # duplicate line elsewhere.
         t_start, start_from = seen_start, "onscreen"
         t_end, end_from = seen_end, "onscreen"
         if strong_track and _same_occurrence(track, seen_start, seen_end,
