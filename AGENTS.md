@@ -38,8 +38,9 @@ cappa/
                    japanese/      jmdict.py (lookup + deinflection + word_at
                                   + grammar notes) and kanjidic.py (per-kanji
                                   info), both offline packs
-  arabic.py      Arabic anatomy: root/form/lemma via slim camel-tools +
-                 its morphology pack (arabic_packs/). No Qt.
+                   arabic/        morphology.py: root/Form I-X/lemma/gloss
+                                  via slim camel-tools + its pack
+                                  (arabic_packs/), plus the Form I-X table
   indonesian.py  Indonesian anatomy: Sastrawi root + affix labels. No Qt.
   kanjidic.py    per-kanji info pack (KANJIDIC2, jmdict_packs/). No Qt.
   grammar_notes.py  the Grammar tab's hand-written one-liners (ja reasons,
@@ -70,7 +71,7 @@ cards/           saved drafts (gitignored) — ALSO the project's bug tracker
 3. **Qt stays in `ui/` + `app.py`**, plus the signal layer of
    `detection/worker.py`. Detection stages, `source/`, `flashcard/`, the
    whole `language/` package, and every remaining word-data module
-   (`arabic/indonesian/grammar_notes`) plus `audio/settings/winapi` must
+   (`indonesian/grammar_notes`) plus `audio/settings/winapi` must
    import no Qt — that is what makes them unit-testable in isolation.
 4. **`winapi.py` owns Win32.** No raw `ctypes`/`win32gui` calls anywhere else;
    `winapi.py` itself never imports Qt.

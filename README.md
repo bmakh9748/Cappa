@@ -30,7 +30,7 @@ On launch a small startup window shows the settings in two tabs — *Languages* 
 | `cappa/language/dictionary.py` | Word meanings — Wiktionary definitions, Google as hint + fallback |
 | `cappa/language/examples.py` | Example sentences for the popup's Examples tab — JMdict pack (Japanese, offline), Wiktionary, Tatoeba |
 | `cappa/language/pronounce.py` | The popup's 🔊 — free Google TTS fetch, played through Windows (winmm) |
-| `cappa/arabic.py` | Arabic anatomy — root, verb form, lemma, gloss (slim CAMeL Tools + its offline morphology pack) |
+| `cappa/language/arabic/` | Arabic anatomy — root, verb form, lemma, gloss (slim CAMeL Tools + its offline morphology pack) |
 | `cappa/indonesian.py` | Indonesian anatomy — Sastrawi root + affix identification |
 | `cappa/language/japanese/kanjidic.py` | Per-kanji info — KANJIDIC2 pack (meanings, readings, strokes, grade, JLPT) |
 | `cappa/grammar_notes.py` | The Grammar tab's hand-written one-liners (Japanese inflection reasons, Arabic Forms I–X, Indonesian affixes) |

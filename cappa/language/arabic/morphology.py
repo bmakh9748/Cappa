@@ -36,7 +36,7 @@ import urllib.request
 import zipfile
 
 PACKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "..", "arabic_packs")
+                         "..", "..", "..", "arabic_packs")
 DB_NAME = "morphology.db"
 LANG = "ar"
 
@@ -232,6 +232,43 @@ def verb_form(lemma, root=""):
                                                         # enough to concede)
         if s[1] == "ا":                                 # ?ا..
             return "III"
+    return None
+
+
+# The ten verb forms (awzān) on the root ف-ع-ل, in order. Rows are
+# (form, pattern, transliteration, note): verb_form() above answers "X",
+# this table explains what X is. ʿ = ayn, ʾ = hamza. Voice: function
+# first, then a tiny example with gloss — accuracy over coverage.
+VERB_FORMS = (
+    ("I", "فَعَلَ", "faʿala",
+     "The base verb — the root's plain meaning (middle vowel varies): كَتَبَ kataba 'he wrote'."),
+    ("II", "فَعَّلَ", "faʿʿala",
+     "Doubled middle root letter — causative or intensive of I: عَلَّمَ ʿallama 'he taught' (I عَلِمَ ʿalima 'he knew')."),
+    ("III", "فَاعَلَ", "fāʿala",
+     "Long ā after the first root letter — action directed at someone: كَاتَبَ kātaba 'he corresponded with'."),
+    ("IV", "أَفْعَلَ", "ʾafʿala",
+     "Prefix ʾa- — causative: أَخْرَجَ ʾakhraja 'he took (it) out' (I خَرَجَ kharaja 'he went out')."),
+    ("V", "تَفَعَّلَ", "tafaʿʿala",
+     "ta- + Form II — reflexive of II, done to oneself: تَعَلَّمَ taʿallama 'he learned' (II عَلَّمَ 'he taught')."),
+    ("VI", "تَفَاعَلَ", "tafāʿala",
+     "ta- + Form III — reciprocal, doing it to each other: تَكَاتَبَ takātaba '(they) wrote to each other'."),
+    ("VII", "اِنْفَعَلَ", "infaʿala",
+     "Prefix in- — passive/middle of I, happens by itself: اِنْكَسَرَ inkasara 'it broke, got broken' (I كَسَرَ kasara 'he broke')."),
+    ("VIII", "اِفْتَعَلَ", "iftaʿala",
+     "-ta- infixed after the first root letter — reflexive of I, often idiomatic: اِجْتَمَعَ ijtamaʿa '(they) gathered, met' (I جَمَعَ jamaʿa 'he collected')."),
+    ("IX", "اِفْعَلَّ", "ifʿalla",
+     "Doubled last root letter — colors and physical states: اِحْمَرَّ iḥmarra 'it turned red' (أَحْمَر ʾaḥmar 'red')."),
+    ("X", "اِسْتَفْعَلَ", "istafʿala",
+     "Prefix ista- — ask for, seek, or consider X: اِسْتَغْفَرَ istaghfara 'he asked forgiveness' (I غَفَرَ ghafara 'he forgave')."),
+)
+
+
+def form_note(form):
+    """The (pattern, transliteration, note) for a form number ("I".."X"),
+    or None for anything else (quadriliteral forms, non-verbs)."""
+    for name, pattern, translit, note in VERB_FORMS:
+        if name == form:
+            return pattern, translit, note
     return None
 
 

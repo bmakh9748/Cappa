@@ -1,6 +1,7 @@
 """Unit test: the Grammar tab's content tables stay complete and honest.
-(The Japanese tripwire lives in test_jmdict.py, beside the rules it pins.)
-Pure data, no network, no Qt."""
+(The Japanese tripwire lives in test_jmdict.py and the Arabic one in
+test_arabic.py, beside the code each pins.) Pure data, no network, no
+Qt."""
 
 import os
 import sys
@@ -11,17 +12,6 @@ from cappa import grammar_notes, indonesian
 
 
 def main():
-    # ---- Arabic: the ten forms, I through X ------------------------------
-    names = [row[0] for row in grammar_notes.AR_VERB_FORMS]
-    assert names == ["I", "II", "III", "IV", "V",
-                     "VI", "VII", "VIII", "IX", "X"], names
-    for _name, pattern, translit, note in grammar_notes.AR_VERB_FORMS:
-        assert pattern and translit and note
-    got = grammar_notes.arabic_form_note("X")
-    assert got is not None and got[1] == "istafʿala", got
-    assert grammar_notes.arabic_form_note("XI") is None
-    print("PASS grammar_notes: the Form I-X table is complete and ordered")
-
     # ---- Indonesian: every label the affix reader can emit is covered ----
     notes = dict(grammar_notes.ID_AFFIX_NOTES)
     assert len(notes) == len(grammar_notes.ID_AFFIX_NOTES), "duplicate affix"

@@ -55,9 +55,9 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QTabWidget, QVBoxLayout, QWidget)
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 
-from .. import arabic, flashcard, grammar_notes, indonesian
+from .. import flashcard, grammar_notes, indonesian
 from ..detection.sentence import caption_block, click_pool
-from ..language import examples, pronounce
+from ..language import arabic, examples, pronounce
 from ..language import translate as translate_mod
 from ..language.dictionary import meaning
 from ..language.japanese import jmdict, kanjidic
@@ -281,7 +281,7 @@ def _arabic_grammar(surface):
         head.append(_dim(html.escape(analysis.gloss)))
     parts = [_para("<br>".join(head))]
     if analysis.form:
-        note = grammar_notes.arabic_form_note(analysis.form)
+        note = arabic.form_note(analysis.form)
         if note:
             pattern, translit, text = note
             parts.append(_para("Form %s — %s <i>%s</i><br>%s" % (

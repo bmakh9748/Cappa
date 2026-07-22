@@ -1,4 +1,4 @@
-"""Unit test: Arabic morphology (cappa.arabic).
+"""Unit test: Arabic morphology (cappa.language.arabic).
 
 verb_form()/_skeleton() are pure and always run. analyze() needs BOTH the
 slim camel-tools install and the 40 MB morphology pack; without either the
@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cappa import arabic
+from cappa.language.arabic import morphology as arabic
 
 # ---- the letter skeleton: harakat out, shadda doubled, wasla folded ------
 assert arabic._skeleton("كَتَبَ") == "كتب"
@@ -46,6 +46,17 @@ assert arabic.verb_form("") is None
 assert arabic.verb_form("اِحْمَرَّ", "ح.م.ر") == "IX"
 assert arabic.verb_form("اِضْطَرّ", "ض.ر.ر") is None
 print("PASS arabic: %d lemmas classify to their classical form" % len(CASES))
+
+# ---- the Form I-X table: complete, ordered, and honest ------------------
+names = [row[0] for row in arabic.VERB_FORMS]
+assert names == ["I", "II", "III", "IV", "V",
+                 "VI", "VII", "VIII", "IX", "X"], names
+for _name, pattern, translit, note in arabic.VERB_FORMS:
+    assert pattern and translit and note
+got = arabic.form_note("X")
+assert got is not None and got[1] == "istafʿala", got
+assert arabic.form_note("XI") is None
+print("PASS arabic: the Form I-X table is complete and ordered")
 
 # ---- gating: only "ar" ever downloads anything --------------------------
 assert arabic.ensure_pack("ja") is False
