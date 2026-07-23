@@ -51,6 +51,10 @@ def discard_draft(draft):
 
 def write_artifacts(draft):
     folder = draft.folder_path
+    if not folder:
+        return   # the draft was discarded out from under an edit worker;
+                 # there is no folder to write into (card_preview serializes
+                 # edits, but a stale job can still reach here)
     _write_text(os.path.join(folder, "word.txt"), draft.word)
     _write_text(os.path.join(folder, "sentence.txt"), draft.sentence)
     _write_text(os.path.join(folder, "word_translation.txt"),
@@ -110,6 +114,10 @@ def _metadata(draft, folder):
         # Set when a word-at-a-time sentence was completed from this run's
         # transcript + the caption track (holds the original OCR block).
         "sentence_assembly": draft.assembled,
+        # Set when the user edited the card in the preview (flashcard/edit.py:
+        # audio window slid, sentence regrown, text typed over) -- holds the
+        # originals, so the pipeline's own output stays reconstructable.
+        "edited": draft.edited,
         # The front/back layout and Anki-style template configured when
         # this card was made -- provenance only (the Anki notetype itself
         # is created once by anki_sync from the then-current design).

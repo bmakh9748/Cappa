@@ -15,6 +15,11 @@ The map (one ingredient per file):
     timing.py      window maths: pre/postroll, min/max clip (the appear/clear
                    lags come from cappa.detection — they measure the
                    pipeline, not the card)
+    edit.py        the preview's edit engine: a workspace of audio around
+                   the clip (cut once, held in memory), a timed word
+                   timeline over it, and the commits — re-cut audio.wav,
+                   regrow the sentence word by word, type over any text —
+                   each recorded under the draft's "edited" provenance
     model.py       CardDraft
     prefs.py       which fields a card collects and on which side (live copy
                    of the Flashcards settings tab)

@@ -15,6 +15,7 @@ class CardDraft:
         "audio_seconds", "audio_window", "screenshot_source", "word_box",
         "sentence_box", "word_index", "sentence_verified", "appeared_at",
         "cleared_at", "created_at", "notes", "source_meta", "assembled",
+        "edited",
     )
 
     def __init__(self, word, sentence):
@@ -51,6 +52,9 @@ class CardDraft:
         self.assembled = None     # sentence-completion provenance when the
                                   # word-at-a-time sentence was rebuilt from
                                   # this run's transcript + the track
+        self.edited = None        # what the user changed in the preview's
+                                  # editor (flashcard/edit.py) -- None until
+                                  # a first edit lands
 
     def summary(self):
         parts = [
