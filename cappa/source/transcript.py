@@ -165,6 +165,17 @@ class Transcript:
                 # so the caller can stand it in as a row of its own
                 "match_start": m["start"], "match_end": m["end"]}
 
+    def words_between(self, t0, t1):
+        """The track's words whose spoken span touches [t0, t1] (video
+        seconds), in time order, as (text, start, capped_end) tuples --
+        boundary markers ('>>') dropped, exactly as sentence_for's words.
+        The raw material for growing a caption window word by word past
+        the sentence it matched."""
+        if not self.tokens or t1 <= t0:
+            return []
+        return [(t.text, t.start, _capped_end(t)) for t in self.tokens
+                if not _marker(t) and _capped_end(t) >= t0 and t.start <= t1]
+
 
 _TERMINAL = ".?!…"     # a token ending with one of these ends a sentence
 SENTENCE_GAP = 1.5     # no punctuation? a silence this long splits sentences

@@ -246,6 +246,19 @@ class SourceSession:
         except Exception:
             return None
 
+    def words_between(self, t0, t1):
+        """The track's timed words touching video-time [t0, t1] as
+        (text, start, capped_end) tuples, or []. The card editor's word
+        timeline: what was SPOKEN around a clip, word by word."""
+        with self._lock:
+            transcript = self._transcript
+        if transcript is None:
+            return []
+        try:
+            return transcript.words_between(t0, t1)
+        except Exception:
+            return []
+
     def set_rows_lookup(self, lookup):
         """Supply a callable (t0, t1) -> this run's OCR transcript rows in
         that video-time window. Lets the sentence assembler merge what WE
