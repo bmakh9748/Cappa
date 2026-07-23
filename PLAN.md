@@ -2123,3 +2123,97 @@ Suite: ALL PASS (29 unit files) after every commit; a three-agent
 verification pass (stale refs / doc truth / import graph) came back clean
 except doc nits, fixed, including two pre-existing map gaps
 (screen_recorder.py, README's lexicon row).
+
+### 2026-07-23 — the preview learns to edit: slide the audio, regrow the sentence
+
+The user's ask: edit a flashcard when the preview comes up — slide the
+audio through the ~20 seconds that were caught to include more, and have
+the sentence follow "word by word" using the word-timing prediction (and
+the reverse: grow the sentence, the audio follows); the translation
+updates retroactively; the two must also move separately; a waveform so
+you can see where the noise is; and ✎ buttons to type over the word or
+sentence by hand, which must NOT move the sliders or touch the
+translations.
+
+Shipped:
+
+- `flashcard/edit.py` (new, Qt-free): the edit engine. At preview-open a
+  worker cuts ONE workspace of audio — the clip ±WORKSPACE_PAD (20s,
+  matching SEARCH_RADIUS) — from the downloaded source audio, or from the
+  loopback ring (cut EARLY on purpose: the ring rolls, ~90s). The samples
+  stay in memory, so every later re-cut and the waveform envelope are a
+  numpy slice, no ffmpeg per drag. Over the workspace it builds a word
+  timeline: the card's own sentence words (kind 'core', timed from the
+  track sentence when the words align — SequenceMatcher 'equal' runs, at
+  least half must match — else spread evenly over the clip span), plus
+  neighbours from `words_between` (new on Transcript/SourceSession) or,
+  trackless, this run's OCR rows exploded at their on-screen pace behind
+  the same `_boxes_overlap` spatial gate the assembler uses. A word joins
+  the sentence when the audio range covers its spoken MIDPOINT — one rule,
+  symmetric at both edges and in both directions. Commits: `recut()`
+  rewrites audio.wav sample-accurately, `set_sentence_span()` regrows the
+  text (CJK joins spaceless — `_join`), `set_text()` types over any field;
+  each rewrites the folder via write_artifacts and records itself under
+  the new metadata key `"edited"` (originals preserved; keys added, never
+  renamed — rule 10). `LoopbackRecorder.buffered_window()` (new) lets the
+  workspace clamp to what the ring actually holds instead of discovering
+  the loss as missing frames.
+- `ui/clip_editor.py` (new): the strip — waveform with the clip window
+  draggable over it (edges + pan), the word lane under it (core bright,
+  neighbours dim, the clicked word tinted), the sentence span dragging
+  word-quantized, 🔗 linked / ⛓ separate, ▶ plays the current cut.
+  Paint-and-mouse only; every number comes from the engine, every change
+  leaves as a signal with final=True on release — which is the only time
+  anything touches disk or network.
+- `ui/card_preview.py`: mounts the strip under the audio row once the
+  engine is ready (its old play button hides — the strip carries one);
+  linked drags live-update the sentence label word by word, release
+  commits off-thread and debounces the translation re-fetch
+  (RETRANSLATE_MS=700 — the free endpoint must not be hit per word-step);
+  ✎ on word/sentence/both translations swaps the label for an inline
+  editor; a typed word/sentence UNLINKS the strip (typed words must not be
+  slid away) and never re-translates. Add to Anki stays disabled while an
+  edit worker is in flight, so sync can never sweep a half-written folder.
+  word_popup hands the preview the same source/recorder pair the draft
+  was built from.
+
+Suite: ALL PASS after the change (test_clip_editor.py new in UNIT — engine
+maths, sample-accurate recuts proven by time-coded WAVs, the edited
+metadata record, the strip's widget contract).
+
+Adversarial review (five lenses × two skeptics) surfaced six real defects,
+all fixed before the feature was called done:
+
+- **Discard raced in-flight edit workers** (critical): Discard/supersede
+  rmtree'd the folder while a worker could still be writing it, leaving a
+  torn unreceipted folder that the next sync sweeps into Anki. Fixed by
+  serializing ALL folder writes onto one FIFO thread and taking a
+  `_disk_lock` around each write and around a now-synchronous Discard —
+  Discard blocks only for the millisecond a write holds it, the folder is
+  gone before it returns (so no later sync can sweep it), and a stale
+  worker afterwards sees folder_path=None and no-ops (guards added to
+  write_artifacts + recut). The editor workspace moved to a tempfile so
+  prep never touches the card folder at all.
+- **Unserialized workers tore sidecars** (major): two `write_artifacts`
+  could interleave; the single FIFO consumer above makes writes strictly
+  ordered and non-overlapping.
+- **Add inside the retranslate debounce shipped the stale translation**
+  (major): Add now flushes a pending retranslate into the queue and defers
+  the Anki delivery until the edit queue drains (`_pending_add`), so sync
+  always reads the finished folder.
+- **Span drag after a hand-typed sentence reverted it** (major): a manual
+  sentence edit now DETACHES — unlinks the strip, freezes the span handles
+  (`ClipEditor.lock_span`), and blocks any slider regrow — so typed words
+  can't be slid away.
+- **word_index recompute broke CJK** (minor): `_reindex` is script-aware
+  now (word-list index for spaced scripts, character offset for CJK,
+  matching the builder), and the strip finds the clicked chip by text
+  (`clicked_word_index`) instead of a per-character index.
+- **A manual word edit left a stale breakdown/TTS** (minor): editing the
+  Word now clears the auto-derived breakdown and deletes word_audio.mp3
+  (honest-empty beats an anatomy/pronunciation of the wrong word).
+
+Suite: ALL PASS (27 windowless unit files; test_card_preview grew the
+detach + Add-drains-then-delivers cases, test_clip_editor the word-edit /
+CJK-reindex / discarded-draft cases). LIVE tests not run (no operator
+present, per AGENTS).
