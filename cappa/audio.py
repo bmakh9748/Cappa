@@ -182,6 +182,18 @@ class LoopbackRecorder:
             del chunks[:i]
 
     # --------------------------------------------------------------- output
+    def buffered_window(self):
+        """The monotonic [start, end] the ring currently holds, or None.
+        Lets a caller (the card editor) clamp a wanted window to what is
+        actually cuttable instead of discovering the loss as missing
+        frames."""
+        with self._lock:
+            if not self._chunks or self.samplerate == 0:
+                return None
+            t0 = self._chunks[0][0]
+            t_last, arr = self._chunks[-1]
+            return t0, t_last + arr.shape[0] / self.samplerate
+
     def clip(self, t0, t1):
         """(int16 ndarray (frames, ch), samplerate) for monotonic window
         [t0, t1], or None if unavailable / out of the buffer. Edges are
