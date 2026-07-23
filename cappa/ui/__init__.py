@@ -17,7 +17,13 @@ The map (one window/widget per file):
                         Examples and Grammar tabs · Create Anki card
                         (every fetch and the card build off-thread)
     card_preview.py     what the built card holds, shown before it is
-                        delivered: Add to Anki, or Discard (deletes the draft)
+                        delivered — and edited: the clip_editor strip plus
+                        ✎ text edits, every commit rewritten to the draft
+                        folder; Add to Anki, or Discard (deletes the draft)
+    clip_editor.py      the preview's audio/sentence edit strip: waveform,
+                        draggable audio range, the word timeline with the
+                        sentence span dragging word by word; paint+mouse
+                        only, all state from flashcard/edit.DraftEditor
     template_dialog.py  advanced card-design editor (front/back HTML + CSS)
     logo.py             the Cappa logo as paint code; window/taskbar icons
 

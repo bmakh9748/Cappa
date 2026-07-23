@@ -829,7 +829,10 @@ class WordPopup(QWidget):
             return
         if self._preview is None:
             self._preview = CardPreview()
-        self._preview.show_draft(draft)
+        # The preview gets the same source/recorder pair the draft was built
+        # from: its edit strip re-cuts audio and walks the caption timeline.
+        self._preview.show_draft(draft, source=self._source,
+                                 recorder=self._recorder)
 
     def _place(self):
         self.adjustSize()
