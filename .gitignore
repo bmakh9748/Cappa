@@ -14,3 +14,6 @@ lexicon_packs/
 jmdict_packs/
 arabic_packs/
 settings.json
+
+# Kept as a local-only working note, not tracked in the repo.
+AGENTS.md
