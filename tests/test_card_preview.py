@@ -10,6 +10,8 @@ never be deleted out from under Anki.
 import os
 import sys
 import tempfile
+import threading
+import time
 import wave
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -49,6 +51,15 @@ def make_draft(cards_dir, name="card_0001"):
 
 
 app = QApplication.instance() or QApplication([])
+
+
+def drain(preview):
+    """Block until the preview's one edit thread has run every queued job:
+    a sentinel is FIFO-behind all real writes, so its completion means the
+    folder is fully written (the async edits finish before tmp cleanup)."""
+    done = threading.Event()
+    preview._jobs.put((preview._ereq, "text", done.set))
+    assert done.wait(3.0), "edit queue did not drain"
 
 with tempfile.TemporaryDirectory() as tmp:
     # ---- the preview shows every piece of the card, and its notes --------
@@ -114,5 +125,52 @@ with tempfile.TemporaryDirectory() as tmp:
     assert discard_draft(stray) is False
     assert os.path.isdir(stray.folder_path)
     print("PASS: discard_draft refuses a folder that isn't a card_ draft")
+
+    # ---- editable fields carry a ✎; a manual sentence edit detaches -------
+    edit_draft = make_draft(tmp, "card_0006")
+    preview._draft = edit_draft
+    preview._detached = False
+    preview._rebuild()
+    pencils = [b for b in preview._body.findChildren(QPushButton)
+               if b.text() == "✎"]
+    assert len(pencils) == 4, pencils   # word, sentence, both translations
+    preview._start_edit("sentence")
+    from PySide6.QtWidgets import QPlainTextEdit
+    box = preview._editing["sentence"][0]
+    assert isinstance(box, QPlainTextEdit)
+    box.setPlainText("a hand typed sentence")
+    preview._commit_edit("sentence")
+    assert preview._detached, "a typed sentence must detach the slider"
+    drain(preview)                      # let the async write land
+    assert edit_draft.sentence == "a hand typed sentence"
+    assert (edit_draft.edited or {}).get("manual") == ["sentence"]
+    on_disk = open(os.path.join(edit_draft.folder_path, "sentence.txt"),
+                   encoding="utf-8").read()
+    assert on_disk == "a hand typed sentence", on_disk
+    print("PASS: editable fields have a ✎; a typed sentence detaches the slider")
+
+    # ---- Add waits for in-flight edits to drain before syncing -----------
+    import cappa.flashcard as _fc
+    real_sync = _fc.sync_to_anki
+    synced = []
+    _fc.sync_to_anki = lambda: synced.append(True) or False
+    try:
+        drain = make_draft(tmp, "card_0007")
+        preview._draft = drain
+        preview._busy = 1               # an edit is 'in flight'
+        preview._pending_add = False
+        preview._add_to_anki()
+        assert preview._pending_add, "Add should wait, not sync mid-edit"
+        assert not synced, "sync must not start while an edit is pending"
+        # the edit lands: draining to zero releases the deferred Add
+        preview._edit_done(preview._ereq, "text", None, "")
+        deadline = time.monotonic() + 3.0
+        while not synced and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert synced, "the deferred Add never fired after edits drained"
+        assert not preview._pending_add
+    finally:
+        _fc.sync_to_anki = real_sync
+    print("PASS: Add defers until edits drain, then delivers what's on disk")
 
 print("\nALL PASS")
